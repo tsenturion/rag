@@ -55,6 +55,7 @@ class CleaningConfig(BaseModel):
     normalize_whitespace: bool = True
     remove_control_chars: bool = True
     drop_patterns: list[str] = Field(default_factory=list)
+    boilerplate_patterns: list[str] = Field(default_factory=list)
 
 
 class NormalizationConfig(BaseModel):

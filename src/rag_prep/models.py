@@ -23,10 +23,12 @@ class SourceFile(BaseModel):
 
 class RawElement(BaseModel):
     source_file: SourceFile
+    element_id: str
     element_index: int
     text: str
     element_type: str
     section: str
+    section_path: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -45,10 +47,12 @@ class ParseResult(BaseModel):
 
 class ProcessedElement(BaseModel):
     source_file: SourceFile
+    element_id: str
     element_index: int
     text: str
     element_type: str
     section: str
+    section_path: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -60,6 +64,10 @@ class DocumentMetadata(BaseModel):
     file_type: str
     source_hash: str
     text_hash: str
+    parent_ids: list[str] = Field(default_factory=list)
+    origin_element_ids: list[str] = Field(default_factory=list)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+    hierarchy: dict[str, Any] = Field(default_factory=dict)
     element_start: int
     element_end: int
     element_types: list[str]

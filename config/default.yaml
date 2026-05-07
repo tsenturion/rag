@@ -39,6 +39,11 @@ cleaning:
   normalize_whitespace: true
   remove_control_chars: true
   drop_patterns: []
+  boilerplate_patterns:
+    - "cookie|cookies|куки|cookie policy"
+    - "подписаться|subscribe|newsletter"
+    - "навигация|главное меню|menu"
+    - "©|copyright|all rights reserved"
 
 normalization:
   unicode_form: NFKC

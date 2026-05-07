@@ -8,9 +8,11 @@ from unstructured.partition.auto import partition
 
 from rag_prep.config import ParserConfig
 from rag_prep.models import ParseFailure, ParseResult, RawElement, SourceFile
+from rag_prep.utils import stable_id
 
 LOGGER = logging.getLogger(__name__)
 SECTION_TYPES = {"Title", "Header"}
+TITLE_TYPES = {"Title"}
 
 
 class UnstructuredParsingStage:
@@ -62,7 +64,7 @@ class UnstructuredParsingStage:
             metadata_filename=str(source.path),
         )
 
-        section = self.default_section
+        section_path = [self.default_section]
         raw_elements: list[RawElement] = []
         for index, element in enumerate(parsed):
             text = str(element).strip()
@@ -71,15 +73,18 @@ class UnstructuredParsingStage:
 
             element_type = getattr(element, "category", element.__class__.__name__)
             if element_type in SECTION_TYPES:
-                section = text
+                section_path = self._next_section_path(section_path, text, element_type)
+            section = section_path[-1] if section_path else self.default_section
 
             raw_elements.append(
                 RawElement(
                     source_file=source,
+                    element_id=self._element_id(source, index),
                     element_index=index,
                     text=text,
                     element_type=element_type,
                     section=section,
+                    section_path=section_path,
                     metadata=self._metadata_to_dict(getattr(element, "metadata", None)),
                 )
             )
@@ -98,10 +103,12 @@ class UnstructuredParsingStage:
                 raw_elements.append(
                     RawElement(
                         source_file=source,
+                        element_id=self._element_id(source, row_number - 1),
                         element_index=row_number - 1,
                         text=text,
                         element_type="CSVRow",
                         section=self._csv_section(normalized_row),
+                        section_path=self._csv_section_path(normalized_row),
                         metadata={
                             "csv_row_number": row_number,
                             "csv_columns": columns,
@@ -118,6 +125,20 @@ class UnstructuredParsingStage:
         if section and title:
             return f"{section} / {title}"
         return title or section or self.default_section
+
+    def _csv_section_path(self, row: dict[str, str]) -> list[str]:
+        section = self._csv_value(row, "section", "раздел", "секция", "category")
+        title = self._csv_value(row, "title", "заголовок", "тема", "name", "название")
+        return [value for value in [section, title] if value] or [self.default_section]
+
+    def _next_section_path(
+        self, current_path: list[str], title: str, element_type: str
+    ) -> list[str]:
+        if element_type in TITLE_TYPES:
+            return [title]
+        if current_path:
+            return [current_path[0], title]
+        return [title]
 
     @staticmethod
     def _normalize_csv_row(row: dict[str, Any]) -> dict[str, str]:
@@ -141,6 +162,10 @@ class UnstructuredParsingStage:
             if value:
                 return value
         return ""
+
+    @staticmethod
+    def _element_id(source: SourceFile, element_index: int) -> str:
+        return stable_id(source.source_hash, source.source, element_index)
 
     @staticmethod
     def _metadata_to_dict(metadata: Any) -> dict[str, Any]:

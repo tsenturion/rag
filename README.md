@@ -13,6 +13,8 @@
 7. экспорт в JSON и JSONL;
 8. orchestration через Prefect и логирование артефактов/метрик в MLflow.
 
+Выходной формат подготовлен для следующих этапов RAG: chunking, embeddings и vector DB. Эти этапы здесь намеренно не реализованы, но metadata уже содержит lineage, hierarchy и quality signals, чтобы downstream-процессы могли сохранять связь чанков с исходниками и элементами.
+
 ## Быстрый запуск
 
 Зависимости и локальный пакет уже установлены в глобальный Python. Запуск из корня проекта:
@@ -90,6 +92,20 @@ python -m pip check
     "file_type": "txt",
     "source_hash": "...",
     "text_hash": "...",
+    "parent_ids": ["source-id"],
+    "origin_element_ids": ["element-id-1", "element-id-2"],
+    "lineage": {
+      "source_id": "source-id",
+      "source_hash": "...",
+      "origin_element_ids": ["element-id-1", "element-id-2"],
+      "element_range": [0, 3],
+      "pipeline_stage": "prepared_document"
+    },
+    "hierarchy": {
+      "section_path": ["Раздел", "Подраздел"],
+      "section_depth": 2,
+      "document_order": 0
+    },
     "element_start": 0,
     "element_end": 3,
     "element_types": ["NarrativeText", "Title"],
@@ -103,6 +119,20 @@ python -m pip check
   }
 }
 ```
+
+## Downstream Readiness
+
+Поля, которые нужны следующим этапам без реализации самих этапов:
+
+- `metadata.id` - стабильный идентификатор подготовленного документа;
+- `metadata.parent_ids` - родительские сущности, сейчас это идентификатор source;
+- `metadata.origin_element_ids` - элементы парсинга, из которых собран документ;
+- `metadata.lineage` - цепочка `source -> parsed elements -> prepared document`;
+- `metadata.hierarchy.section_path` - путь секции для будущего document tree;
+- `metadata.hierarchy.document_order` - порядок документа внутри исходника;
+- `metadata.extra.quality` - диагностические scores для boilerplate/OCR garbage/menu leftovers.
+
+Quality scoring не удаляет документы сам по себе. Он даёт сигнал будущим этапам chunking/retrieval, чтобы можно было фильтровать мусор, расследовать retrieval misses и объяснять происхождение ответа.
 
 ## Конфигурация
 
