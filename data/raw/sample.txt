@@ -1,0 +1,8 @@
+RAG preparation pipeline
+
+This text file is a small source document for smoke testing. It contains enough text to survive cleaning and normalization.
+
+Architecture
+
+The preparation flow loads source files, parses document elements, cleans text, normalizes text, removes duplicates, and exports structured documents.
+

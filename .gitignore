@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.env.*
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.prefect/
+mlruns/
+data/prepared/
+data/raw/*
+!data/raw/.gitkeep
+!data/raw/sample.txt
+!data/raw/sample.html
+!data/raw/sample.csv

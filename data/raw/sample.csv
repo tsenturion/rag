@@ -1,0 +1,4 @@
+section,title,text
+overview,CSV Source,This row verifies CSV parsing for the preparation pipeline.
+details,Structured Metadata,CSV content is converted into prepared document text with stable metadata.
+

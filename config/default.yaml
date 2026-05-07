@@ -1,0 +1,64 @@
+run:
+  name: rag_data_preparation
+  seed: 42
+
+paths:
+  input_dir: data/raw
+  output_dir: data/prepared
+  json_filename: documents.json
+  jsonl_filename: documents.jsonl
+  manifest_filename: manifest.json
+
+loader:
+  recursive: true
+  allowed_extensions:
+    - .pdf
+    - .txt
+    - .html
+    - .htm
+    - .csv
+  exclude_hidden: true
+  num_files_limit: null
+
+parser:
+  strategy: fast
+  encoding: utf-8
+  languages:
+    - rus
+    - eng
+  pdf_infer_table_structure: false
+  skip_infer_table_types:
+    - pdf
+    - jpg
+    - png
+    - heic
+
+cleaning:
+  min_chars: 12
+  normalize_whitespace: true
+  remove_control_chars: true
+  drop_patterns: []
+
+normalization:
+  unicode_form: NFKC
+  lowercase: false
+  spacy_language: ru
+  collect_sentence_stats: true
+
+deduplication:
+  enabled: true
+  threshold: 0.9
+  num_perm: 128
+  shingle_size: 5
+  min_tokens: 8
+
+structuring:
+  group_by_section: true
+  default_section: full_document
+
+logging:
+  level: INFO
+  mlflow_enabled: true
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment: rag-data-preparation
+
