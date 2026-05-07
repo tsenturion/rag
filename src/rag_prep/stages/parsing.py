@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import logging
 from typing import Any
 
@@ -13,7 +14,7 @@ SECTION_TYPES = {"Title", "Header"}
 
 
 class UnstructuredParsingStage:
-    """Parse files into semantic elements with Unstructured."""
+    """Parse files into semantic elements with Unstructured and structured CSV rows."""
 
     def __init__(self, config: ParserConfig, default_section: str):
         self.config = config
@@ -27,6 +28,9 @@ class UnstructuredParsingStage:
         return elements
 
     def _parse_source(self, source: SourceFile) -> list[RawElement]:
+        if source.file_type == "csv":
+            return self._parse_csv_source(source)
+
         parsed = partition(
             filename=str(source.path),
             strategy=self.config.strategy,
@@ -60,6 +64,63 @@ class UnstructuredParsingStage:
             )
         return raw_elements
 
+    def _parse_csv_source(self, source: SourceFile) -> list[RawElement]:
+        with source.path.open("r", encoding=self.config.encoding, newline="") as file:
+            reader = csv.DictReader(file)
+            columns = reader.fieldnames or []
+            raw_elements: list[RawElement] = []
+            for row_number, row in enumerate(reader, start=1):
+                normalized_row = self._normalize_csv_row(row)
+                text = self._csv_row_to_text(normalized_row)
+                if not text:
+                    continue
+                raw_elements.append(
+                    RawElement(
+                        source_file=source,
+                        element_index=row_number - 1,
+                        text=text,
+                        element_type="CSVRow",
+                        section=self._csv_section(normalized_row),
+                        metadata={
+                            "csv_row_number": row_number,
+                            "csv_columns": columns,
+                            "csv": normalized_row,
+                            "languages": self.config.languages,
+                        },
+                    )
+                )
+        return raw_elements
+
+    def _csv_section(self, row: dict[str, str]) -> str:
+        section = self._csv_value(row, "section", "раздел", "секция", "category")
+        title = self._csv_value(row, "title", "заголовок", "тема", "name", "название")
+        if section and title:
+            return f"{section} / {title}"
+        return title or section or self.default_section
+
+    @staticmethod
+    def _normalize_csv_row(row: dict[str, Any]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for key, value in row.items():
+            if key is None:
+                continue
+            normalized[str(key).strip()] = "" if value is None else str(value).strip()
+        return normalized
+
+    @staticmethod
+    def _csv_row_to_text(row: dict[str, str]) -> str:
+        lines = [f"{key}: {value}" for key, value in row.items() if value]
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _csv_value(row: dict[str, str], *keys: str) -> str:
+        by_lower_key = {key.lower(): value for key, value in row.items()}
+        for key in keys:
+            value = by_lower_key.get(key.lower())
+            if value:
+                return value
+        return ""
+
     @staticmethod
     def _metadata_to_dict(metadata: Any) -> dict[str, Any]:
         if metadata is None:
@@ -69,4 +130,3 @@ class UnstructuredParsingStage:
         if isinstance(metadata, dict):
             return metadata
         return {}
-

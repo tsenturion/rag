@@ -5,7 +5,7 @@
 Пайплайн делает только подготовительные этапы:
 
 1. загрузка источников через LlamaIndex `SimpleDirectoryReader`;
-2. парсинг `pdf`, `txt`, `html`, `csv` через Unstructured;
+2. парсинг `pdf`, `txt`, `html` через Unstructured и строковый парсинг `csv` через структурированный CSV parser;
 3. очистка текста regex-правилами;
 4. нормализация Unicode/регистра и sentence statistics через spaCy;
 5. дедупликация exact hash + near-duplicate MinHash LSH через datasketch;
@@ -67,7 +67,7 @@ python -m pip check
 
 - `sample.txt` - регламент обработки заявок в ИТ-службе;
 - `sample.html` - инструкция по передаче документов в электронный архив;
-- `sample.csv` - табличный реестр этапов service desk;
+- `sample.csv` - табличный реестр этапов service desk, где каждая строка становится отдельным элементом, а в конце есть exact и near-дубли для проверки дедупликации;
 - `sample.pdf` - памятка по подготовке комплекта документов к архивированию.
 
 Эти файлы нужны для smoke-проверки пайплайна. Для своих данных можно заменить содержимое `data/raw/` или указать другой `paths.input_dir` в `config/default.yaml`.
