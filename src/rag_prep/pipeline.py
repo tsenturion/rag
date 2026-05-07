@@ -42,7 +42,8 @@ class RagPreparationPipeline:
         LOGGER.info("Starting RAG data preparation run %s", run_id)
 
         sources = self.loader.run(self.config.paths.input_dir)
-        raw_elements = self.parser.run(sources)
+        parse_result = self.parser.run(sources)
+        raw_elements = parse_result.elements
         cleaned = self.cleaner.run(raw_elements)
         normalized = self.normalizer.run(cleaned)
         dedupe_result = self.deduplicator.run(normalized)
@@ -52,14 +53,27 @@ class RagPreparationPipeline:
         counts = {
             "sources_count": len(sources),
             "raw_elements_count": len(raw_elements),
+            "parse_failed_sources_count": len(parse_result.failures),
             "cleaned_elements_count": len(cleaned),
             "normalized_elements_count": len(normalized),
             "deduplicated_elements_count": len(dedupe_result.elements),
             "duplicates_removed": dedupe_result.duplicates_removed,
+            "exact_duplicates_removed": dedupe_result.exact_duplicates_removed,
+            "near_duplicates_removed": dedupe_result.near_duplicates_removed,
             "prepared_documents_count": len(documents),
             "llama_index_documents_count": len(llama_documents),
         }
-        export = self.exporter.run(documents, run_id=run_id, counts=counts)
+        diagnostics = {
+            "parse_failures": [
+                failure.model_dump(mode="json") for failure in parse_result.failures
+            ]
+        }
+        export = self.exporter.run(
+            documents,
+            run_id=run_id,
+            counts=counts,
+            diagnostics=diagnostics,
+        )
         self.tracker.log_run(counts, export)
 
         LOGGER.info("Finished run %s with %d documents", run_id, len(documents))
@@ -67,8 +81,8 @@ class RagPreparationPipeline:
             run_id=run_id,
             sources_count=len(sources),
             raw_elements_count=len(raw_elements),
+            parse_failed_sources_count=len(parse_result.failures),
             prepared_documents_count=len(documents),
             duplicates_removed=dedupe_result.duplicates_removed,
             export=export,
         )
-

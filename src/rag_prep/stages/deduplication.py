@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from datasketch import MinHash, MinHashLSH
 
 from rag_prep.config import DeduplicationConfig
 from rag_prep.models import ProcessedElement
-from rag_prep.utils import stable_id, text_sha256
+from rag_prep.utils import text_sha256
 
 LOGGER = logging.getLogger(__name__)
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
@@ -18,6 +19,8 @@ TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 class DeduplicationResult:
     elements: list[ProcessedElement]
     duplicates_removed: int
+    exact_duplicates_removed: int = 0
+    near_duplicates_removed: int = 0
 
 
 class DeduplicationStage:
@@ -33,32 +36,79 @@ class DeduplicationStage:
         seen_hashes: set[str] = set()
         lsh = MinHashLSH(threshold=self.config.threshold, num_perm=self.config.num_perm)
         kept: list[ProcessedElement] = []
-        duplicates = 0
+        inserted_keys: set[str] = set()
+        kept_short_texts: list[str] = []
+        exact_duplicates = 0
+        near_duplicates = 0
 
-        for element in elements:
+        for position, element in enumerate(elements):
             digest = text_sha256(element.text)
             if digest in seen_hashes:
-                duplicates += 1
+                exact_duplicates += 1
                 continue
 
             tokens = self._tokens(element.text)
-            key = stable_id(element.source_file.source, element.element_index, digest)
-            if len(tokens) >= self.config.min_tokens:
+            if len(tokens) < self.config.min_tokens:
+                normalized_short_text = self._normalized_short_text(tokens)
+                if self._is_near_short_duplicate(normalized_short_text, kept_short_texts):
+                    seen_hashes.add(digest)
+                    near_duplicates += 1
+                    continue
+                kept_short_texts.append(normalized_short_text)
+            else:
                 minhash = self._minhash(tokens)
                 matches = lsh.query(minhash)
                 if matches:
-                    duplicates += 1
+                    seen_hashes.add(digest)
+                    near_duplicates += 1
                     continue
+                key = self._lsh_key(position, digest, inserted_keys)
                 lsh.insert(key, minhash)
+                inserted_keys.add(key)
 
             seen_hashes.add(digest)
             kept.append(element)
 
-        LOGGER.info("Deduplicated %d elements into %d elements", len(elements), len(kept))
-        return DeduplicationResult(elements=kept, duplicates_removed=duplicates)
+        duplicates = exact_duplicates + near_duplicates
+        LOGGER.info(
+            "Deduplicated %d elements into %d elements; exact=%d near=%d",
+            len(elements),
+            len(kept),
+            exact_duplicates,
+            near_duplicates,
+        )
+        return DeduplicationResult(
+            elements=kept,
+            duplicates_removed=duplicates,
+            exact_duplicates_removed=exact_duplicates,
+            near_duplicates_removed=near_duplicates,
+        )
+
+    @staticmethod
+    def _lsh_key(position: int, digest: str, inserted_keys: set[str]) -> str:
+        key = f"{position}:{digest}"
+        if key not in inserted_keys:
+            return key
+
+        suffix = 1
+        while f"{key}:{suffix}" in inserted_keys:
+            suffix += 1
+        return f"{key}:{suffix}"
 
     def _tokens(self, text: str) -> list[str]:
         return [token.lower() for token in TOKEN_RE.findall(text)]
+
+    @staticmethod
+    def _normalized_short_text(tokens: list[str]) -> str:
+        return " ".join(tokens)
+
+    def _is_near_short_duplicate(self, text: str, candidates: list[str]) -> bool:
+        if not text:
+            return False
+        return any(
+            SequenceMatcher(None, text, candidate).ratio() >= self.config.threshold
+            for candidate in candidates
+        )
 
     def _minhash(self, tokens: list[str]) -> MinHash:
         minhash = MinHash(num_perm=self.config.num_perm)
@@ -72,4 +122,3 @@ class DeduplicationStage:
         if len(tokens) < size:
             return [tuple(tokens)]
         return [tuple(tokens[index : index + size]) for index in range(len(tokens) - size + 1)]
-

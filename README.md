@@ -34,6 +34,8 @@ rag-prep --config config/default.yaml --no-prefect
 - `manifest.json`
 
 MLflow tracking по умолчанию пишется в `mlruns/`.
+В `manifest.json` сохраняются параметры запуска, числовые счётчики и диагностический блок `parse_failures` для файлов, которые не удалось разобрать при `parser.fail_on_error: false`.
+Файлы результата пишутся через временный файл и атомарную замену, поэтому частично записанный JSON/JSONL не остаётся на месте целевого файла.
 
 ## Установка
 
@@ -60,6 +62,7 @@ python -m pip check
 ```
 
 На Windows для Unstructured дополнительно установлен `python-magic-bin`, чтобы `unstructured.partition.auto` корректно определял типы файлов. Для OCR-режимов PDF могут понадобиться системные Tesseract и Poppler, но для текстовых PDF достаточно `parser.strategy: fast`.
+Команда `rag-prep` перед запуском Prefect выставляет `NO_PROXY=*`, чтобы локальный временный сервер Prefect не ломался из-за системных proxy-настроек. Импорт `rag_prep.flow` сам по себе переменные окружения не меняет.
 
 ## Примеры входных данных
 
@@ -108,10 +111,13 @@ python -m pip check
 - `paths.input_dir` и `paths.output_dir`;
 - `loader.allowed_extensions`;
 - `parser.strategy`: `fast`, `auto`, `hi_res`, `ocr_only`;
+- `parser.fail_on_error`: `false` пропускает проблемный файл и пишет failure в manifest, `true` останавливает пайплайн;
 - `cleaning.drop_patterns` для удаления boilerplate;
 - `normalization.spacy_language`;
 - `deduplication.threshold`, `num_perm`, `shingle_size`;
 - `structuring.group_by_section`;
 - `logging.mlflow_enabled`.
+
+Относительные пути в `paths.*` считаются относительно корня проекта, если конфиг лежит в папке `config/`. Если конфиг расположен в другой папке, относительные пути считаются относительно папки этого YAML-файла.
 
 Для OCR PDF на Windows могут дополнительно понадобиться системные Tesseract/Poppler. Для текстовых PDF используется `strategy: fast`.

@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -33,9 +35,41 @@ def stable_id(*parts: Any, length: int = 24) -> str:
 
 def json_dump(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file:
+    with atomic_text_writer(path) as file:
         json.dump(payload, file, ensure_ascii=False, indent=2)
         file.write("\n")
+
+
+class atomic_text_writer:
+    def __init__(self, path: Path):
+        self.path = path
+        self.temp_path: Path | None = None
+        self.file = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=self.path.parent,
+            delete=False,
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+        )
+        self.temp_path = Path(handle.name)
+        self.file = handle
+        return handle
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        if self.file is not None:
+            self.file.close()
+        if self.temp_path is None:
+            return False
+        if exc_type is None:
+            os.replace(self.temp_path, self.path)
+        else:
+            self.temp_path.unlink(missing_ok=True)
+        return False
 
 
 def flatten_dict(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
@@ -47,4 +81,3 @@ def flatten_dict(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
         else:
             flattened[next_key] = value
     return flattened
-

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 from typing import Any
 
 from llama_index.core import Document
@@ -44,14 +43,24 @@ class LlamaIndexStructuringStage:
     def _group_by_section(
         self, elements: list[ProcessedElement], run_id: str
     ) -> list[PreparedDocument]:
-        groups: dict[tuple[str, str], list[ProcessedElement]] = defaultdict(list)
+        groups: list[tuple[str, list[ProcessedElement]]] = []
+        current_key: tuple[str, str] | None = None
+        current_group: list[ProcessedElement] = []
+
         for element in elements:
-            groups[(element.source_file.source, element.section or self.config.default_section)].append(
-                element
-            )
+            section = element.section or self.config.default_section
+            key = (element.source_file.source, section)
+            if current_key is not None and key != current_key:
+                groups.append((current_key[1], current_group))
+                current_group = []
+            current_key = key
+            current_group.append(element)
+
+        if current_key is not None:
+            groups.append((current_key[1], current_group))
 
         documents: list[PreparedDocument] = []
-        for (_, section), group in groups.items():
+        for section, group in groups:
             documents.append(self._build_document(group=group, section=section, run_id=run_id))
         return documents
 
@@ -70,13 +79,20 @@ class LlamaIndexStructuringStage:
         text = "\n\n".join(element.text for element in group).strip()
         text_hash = text_sha256(text)
         page_number = self._first_page_number(group)
-        sentence_count = sum(
-            int(element.metadata.get("sentence_count", 0))
+        sentence_counts = [
+            int(element.metadata["sentence_count"])
             for element in group
             if element.metadata.get("sentence_count") is not None
-        )
+        ]
+        sentence_count = sum(sentence_counts) if sentence_counts else None
         metadata = DocumentMetadata(
-            id=stable_id(first.source_file.source, section, text_hash),
+            id=stable_id(
+                first.source_file.source,
+                section,
+                min(element.element_index for element in group),
+                max(element.element_index for element in group),
+                text_hash,
+            ),
             source=first.source_file.source,
             section=section or self.config.default_section,
             file_name=first.source_file.file_name,
@@ -89,7 +105,7 @@ class LlamaIndexStructuringStage:
             page_number=page_number,
             char_count=len(text),
             word_count=len(text.split()),
-            sentence_count=sentence_count or None,
+            sentence_count=sentence_count,
             pipeline_run_id=run_id,
             extra=self._merge_extra(group),
         )
@@ -108,8 +124,14 @@ class LlamaIndexStructuringStage:
         keys = {"languages", "file_directory", "filename", "last_modified", "token_count"}
         extra: dict[str, Any] = {}
         for key in keys:
-            values = [element.metadata.get(key) for element in group if element.metadata.get(key)]
+            values = [
+                element.metadata.get(key)
+                for element in group
+                if element.metadata.get(key) is not None
+            ]
             if values:
-                extra[key] = values[0] if len(set(map(str, values))) == 1 else values
+                if key == "token_count":
+                    extra[key] = sum(int(value) for value in values)
+                else:
+                    extra[key] = values[0] if len(set(map(str, values))) == 1 else values
         return extra
-

@@ -23,6 +23,7 @@ loader:
 parser:
   strategy: fast
   encoding: utf-8
+  fail_on_error: false
   languages:
     - rus
     - eng
@@ -61,4 +62,3 @@ logging:
   mlflow_enabled: true
   mlflow_tracking_uri: mlruns
   mlflow_experiment: rag-data-preparation
-

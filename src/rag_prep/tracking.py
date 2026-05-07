@@ -28,7 +28,10 @@ class MLflowTracker:
         mlflow.set_experiment(self.config.logging.mlflow_experiment)
 
         params = flatten_dict(self.config.model_dump(mode="json"))
-        with mlflow.start_run(run_name=self.config.run.name):
+        with mlflow.start_run(
+            run_name=self.config.run.name,
+            nested=mlflow.active_run() is not None,
+        ):
             mlflow.log_params({key: self._safe_param(value) for key, value in params.items()})
             for key, value in counts.items():
                 mlflow.log_metric(key, value)

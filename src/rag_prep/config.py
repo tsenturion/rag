@@ -44,6 +44,7 @@ class ParserConfig(BaseModel):
     encoding: str = "utf-8"
     languages: list[str] = Field(default_factory=lambda: ["rus", "eng"])
     pdf_infer_table_structure: bool = False
+    fail_on_error: bool = False
     skip_infer_table_types: list[str] = Field(
         default_factory=lambda: ["pdf", "jpg", "png", "heic"]
     )
@@ -98,13 +99,33 @@ class PipelineConfig(BaseModel):
 
 
 def load_config(path: str | Path) -> PipelineConfig:
-    load_dotenv()
-    config_path = Path(path)
+    config_path = _resolve_config_path(path)
+    base_dir = _config_base_dir(config_path)
+    load_dotenv(base_dir / ".env")
+
     with config_path.open("r", encoding="utf-8") as file:
         raw: dict[str, Any] = yaml.safe_load(file) or {}
     config = PipelineConfig.model_validate(raw)
-    base_dir = config_path.parent.parent if config_path.parent.name == "config" else Path.cwd()
     return _resolve_paths(config, base_dir=base_dir)
+
+
+def _resolve_config_path(path: str | Path) -> Path:
+    config_path = Path(path).expanduser()
+    if config_path.is_absolute() or config_path.exists():
+        return config_path.resolve()
+
+    project_root = Path(__file__).resolve().parents[2]
+    project_config_path = project_root / config_path
+    if project_config_path.exists():
+        return project_config_path.resolve()
+
+    return config_path.resolve()
+
+
+def _config_base_dir(config_path: Path) -> Path:
+    if config_path.parent.name == "config":
+        return config_path.parent.parent
+    return config_path.parent
 
 
 def _resolve_paths(config: PipelineConfig, base_dir: Path) -> PipelineConfig:
@@ -123,4 +144,3 @@ def _resolve_paths(config: PipelineConfig, base_dir: Path) -> PipelineConfig:
             )
         }
     )
-

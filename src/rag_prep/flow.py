@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-
-os.environ.setdefault("NO_PROXY", "*")
-os.environ.setdefault("no_proxy", "*")
 
 from prefect import flow, task
 from prefect.logging import get_run_logger
 
 from rag_prep.config import PipelineConfig, load_config
-from rag_prep.models import ExportResult, PipelineResult, PreparedDocument, ProcessedElement, RawElement, SourceFile
+from rag_prep.models import ExportResult, ParseResult, PipelineResult, PreparedDocument, ProcessedElement, RawElement, SourceFile
 from rag_prep.stages import (
     DeduplicationStage,
     ExportStage,
@@ -32,12 +28,16 @@ def load_sources_task(config: PipelineConfig) -> list[SourceFile]:
 
 
 @task(name="parse_documents")
-def parse_documents_task(config: PipelineConfig, sources: list[SourceFile]) -> list[RawElement]:
-    elements = UnstructuredParsingStage(
+def parse_documents_task(config: PipelineConfig, sources: list[SourceFile]) -> ParseResult:
+    result = UnstructuredParsingStage(
         config.parser, default_section=config.structuring.default_section
     ).run(sources)
-    get_run_logger().info("Parsed %d raw elements", len(elements))
-    return elements
+    get_run_logger().info(
+        "Parsed %d raw elements; %d files failed",
+        len(result.elements),
+        len(result.failures),
+    )
+    return result
 
 
 @task(name="clean_text")
@@ -59,21 +59,35 @@ def normalize_text_task(
 @task(name="deduplicate_text")
 def deduplicate_text_task(
     config: PipelineConfig, elements: list[ProcessedElement]
-) -> tuple[list[ProcessedElement], int]:
+) -> tuple[list[ProcessedElement], int, int, int]:
     result = DeduplicationStage(config.deduplication).run(elements)
-    get_run_logger().info("Removed %d duplicates", result.duplicates_removed)
-    return result.elements, result.duplicates_removed
+    get_run_logger().info(
+        "Removed %d duplicates: exact=%d near=%d",
+        result.duplicates_removed,
+        result.exact_duplicates_removed,
+        result.near_duplicates_removed,
+    )
+    return (
+        result.elements,
+        result.duplicates_removed,
+        result.exact_duplicates_removed,
+        result.near_duplicates_removed,
+    )
 
 
 @task(name="structure_documents")
 def structure_documents_task(
     config: PipelineConfig, elements: list[ProcessedElement], run_id: str
-) -> list[PreparedDocument]:
+) -> tuple[list[PreparedDocument], int]:
     stage = LlamaIndexStructuringStage(config.structuring)
     documents = stage.run(elements, run_id=run_id)
-    stage.to_llama_documents(documents)
-    get_run_logger().info("Structured %d documents", len(documents))
-    return documents
+    llama_documents = stage.to_llama_documents(documents)
+    get_run_logger().info(
+        "Structured %d prepared documents and %d LlamaIndex documents",
+        len(documents),
+        len(llama_documents),
+    )
+    return documents, len(llama_documents)
 
 
 @task(name="export_documents")
@@ -82,8 +96,14 @@ def export_documents_task(
     documents: list[PreparedDocument],
     run_id: str,
     counts: dict[str, int],
+    diagnostics: dict[str, object],
 ) -> ExportResult:
-    export = ExportStage(config).run(documents, run_id=run_id, counts=counts)
+    export = ExportStage(config).run(
+        documents,
+        run_id=run_id,
+        counts=counts,
+        diagnostics=diagnostics,
+    )
     get_run_logger().info("Exported %d documents", export.documents_count)
     return export
 
@@ -106,23 +126,37 @@ def rag_data_preparation_flow(config_path: str = "config/default.yaml") -> Pipel
     logger.info("Starting RAG data preparation run %s", run_id)
 
     sources = load_sources_task(config)
-    raw = parse_documents_task(config, sources)
+    parse_result = parse_documents_task(config, sources)
+    raw = parse_result.elements
     cleaned = clean_text_task(config, raw)
     normalized = normalize_text_task(config, cleaned)
-    deduped, duplicates_removed = deduplicate_text_task(config, normalized)
-    documents = structure_documents_task(config, deduped, run_id)
+    (
+        deduped,
+        duplicates_removed,
+        exact_duplicates_removed,
+        near_duplicates_removed,
+    ) = deduplicate_text_task(config, normalized)
+    documents, llama_documents_count = structure_documents_task(config, deduped, run_id)
 
     counts = {
         "sources_count": len(sources),
         "raw_elements_count": len(raw),
+        "parse_failed_sources_count": len(parse_result.failures),
         "cleaned_elements_count": len(cleaned),
         "normalized_elements_count": len(normalized),
         "deduplicated_elements_count": len(deduped),
         "duplicates_removed": duplicates_removed,
+        "exact_duplicates_removed": exact_duplicates_removed,
+        "near_duplicates_removed": near_duplicates_removed,
         "prepared_documents_count": len(documents),
-        "llama_index_documents_count": len(documents),
+        "llama_index_documents_count": llama_documents_count,
     }
-    export = export_documents_task(config, documents, run_id, counts)
+    diagnostics = {
+        "parse_failures": [
+            failure.model_dump(mode="json") for failure in parse_result.failures
+        ]
+    }
+    export = export_documents_task(config, documents, run_id, counts, diagnostics)
     log_mlflow_task(config, counts, export)
 
     logger.info("Finished run %s", run_id)
@@ -130,6 +164,7 @@ def rag_data_preparation_flow(config_path: str = "config/default.yaml") -> Pipel
         run_id=run_id,
         sources_count=len(sources),
         raw_elements_count=len(raw),
+        parse_failed_sources_count=len(parse_result.failures),
         prepared_documents_count=len(documents),
         duplicates_removed=duplicates_removed,
         export=export,

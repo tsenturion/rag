@@ -21,20 +21,27 @@ class TextNormalizationStage:
             self.nlp.add_pipe("sentencizer")
 
     def run(self, elements: list[ProcessedElement]) -> list[ProcessedElement]:
+        texts = [self._normalize_text(element.text) for element in elements]
+        if not self.config.collect_sentence_stats:
+            normalized = [
+                element.model_copy(update={"text": text})
+                for element, text in zip(elements, texts)
+            ]
+            LOGGER.info("Normalized %d elements", len(normalized))
+            return normalized
+
         normalized: list[ProcessedElement] = []
-        for element in elements:
-            text = unicodedata.normalize(self.config.unicode_form, element.text)
-            if self.config.lowercase:
-                text = text.lower()
-
+        for element, text, doc in zip(elements, texts, self.nlp.pipe(texts)):
             metadata = dict(element.metadata)
-            if self.config.collect_sentence_stats:
-                doc = self.nlp(text)
-                metadata["sentence_count"] = sum(1 for _ in doc.sents)
-                metadata["token_count"] = len(doc)
-
+            metadata["sentence_count"] = sum(1 for _ in doc.sents)
+            metadata["token_count"] = len(doc)
             normalized.append(element.model_copy(update={"text": text, "metadata": metadata}))
 
         LOGGER.info("Normalized %d elements", len(normalized))
         return normalized
 
+    def _normalize_text(self, text: str) -> str:
+        normalized = unicodedata.normalize(self.config.unicode_form, text)
+        if self.config.lowercase:
+            normalized = normalized.lower()
+        return normalized

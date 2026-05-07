@@ -8,7 +8,7 @@ from typing import Any
 
 from rag_prep.config import PipelineConfig
 from rag_prep.models import ExportResult, PreparedDocument
-from rag_prep.utils import json_dump
+from rag_prep.utils import atomic_text_writer, json_dump
 
 LOGGER = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ class ExportStage:
         *,
         run_id: str,
         counts: dict[str, int],
+        diagnostics: dict[str, Any] | None = None,
     ) -> ExportResult:
         output_dir = self.config.paths.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -42,6 +43,7 @@ class ExportStage:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "config": self.config.model_dump(mode="json"),
             "counts": counts,
+            "diagnostics": diagnostics or {},
             "outputs": {
                 "json": str(json_path),
                 "jsonl": str(jsonl_path),
@@ -61,8 +63,7 @@ class ExportStage:
 
     @staticmethod
     def _write_jsonl(path: Path, payload: list[dict[str, Any]]) -> None:
-        with path.open("w", encoding="utf-8") as file:
+        with atomic_text_writer(path) as file:
             for item in payload:
                 file.write(json.dumps(item, ensure_ascii=False))
                 file.write("\n")
-

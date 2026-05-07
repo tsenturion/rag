@@ -30,6 +30,19 @@ class RawElement(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ParseFailure(BaseModel):
+    source: str
+    file_name: str
+    file_type: str
+    error_type: str
+    error_message: str
+
+
+class ParseResult(BaseModel):
+    elements: list[RawElement] = Field(default_factory=list)
+    failures: list[ParseFailure] = Field(default_factory=list)
+
+
 class ProcessedElement(BaseModel):
     source_file: SourceFile
     element_index: int
@@ -77,7 +90,7 @@ class PipelineResult(BaseModel):
     run_id: str
     sources_count: int
     raw_elements_count: int
+    parse_failed_sources_count: int = 0
     prepared_documents_count: int
     duplicates_removed: int
     export: ExportResult
-

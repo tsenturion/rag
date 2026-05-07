@@ -7,7 +7,7 @@ from typing import Any
 from unstructured.partition.auto import partition
 
 from rag_prep.config import ParserConfig
-from rag_prep.models import RawElement, SourceFile
+from rag_prep.models import ParseFailure, ParseResult, RawElement, SourceFile
 
 LOGGER = logging.getLogger(__name__)
 SECTION_TYPES = {"Title", "Header"}
@@ -20,12 +20,33 @@ class UnstructuredParsingStage:
         self.config = config
         self.default_section = default_section
 
-    def run(self, sources: list[SourceFile]) -> list[RawElement]:
+    def run(self, sources: list[SourceFile]) -> ParseResult:
         elements: list[RawElement] = []
+        failures: list[ParseFailure] = []
         for source in sources:
-            elements.extend(self._parse_source(source))
-        LOGGER.info("Parsed %d raw elements from %d files", len(elements), len(sources))
-        return elements
+            try:
+                elements.extend(self._parse_source(source))
+            except Exception as exc:
+                if self.config.fail_on_error:
+                    raise
+                LOGGER.exception("Failed to parse %s", source.source)
+                failures.append(
+                    ParseFailure(
+                        source=source.source,
+                        file_name=source.file_name,
+                        file_type=source.file_type,
+                        error_type=exc.__class__.__name__,
+                        error_message=str(exc),
+                    )
+                )
+
+        LOGGER.info(
+            "Parsed %d raw elements from %d files; %d files failed",
+            len(elements),
+            len(sources),
+            len(failures),
+        )
+        return ParseResult(elements=elements, failures=failures)
 
     def _parse_source(self, source: SourceFile) -> list[RawElement]:
         if source.file_type == "csv":
