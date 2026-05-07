@@ -14,3 +14,4 @@ data/raw/*
 !data/raw/sample.txt
 !data/raw/sample.html
 !data/raw/sample.csv
+!data/raw/sample.pdf
