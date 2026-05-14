@@ -99,6 +99,47 @@ class PipelineConfig(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
 
+class ChunkingPathConfig(BaseModel):
+    input_jsonl: Path = Path("data/prepared/documents.jsonl")
+    output_dir: Path = Path("data/chunks")
+    json_filename: str = "chunks.json"
+    jsonl_filename: str = "chunks.jsonl"
+    manifest_filename: str = "manifest.json"
+
+
+class ChunkingConfig(BaseModel):
+    strategy: Literal["sentence", "token"] = "sentence"
+    chunk_size: int = Field(default=220, ge=32)
+    chunk_overlap: int = Field(default=40, ge=0)
+    tokenizer_model: str = "text-embedding-3-small"
+    embedding_model: str = "text-embedding-3-small"
+    preserve_section_boundaries: bool = True
+    preserve_block_boundaries: bool = True
+    min_chunk_tokens: int = Field(default=20, ge=1)
+    max_chunk_tokens: int = Field(default=280, ge=1)
+    min_quality_score: float = Field(default=0.2, ge=0.0, le=1.0)
+    fail_on_validation_error: bool = False
+
+    @field_validator("chunk_overlap")
+    @classmethod
+    def overlap_must_be_less_than_size(cls, value: int, info) -> int:
+        chunk_size = info.data.get("chunk_size")
+        if chunk_size is not None and value >= chunk_size:
+            raise ValueError("chunk_overlap must be smaller than chunk_size")
+        return value
+
+
+class ChunkingPipelineConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run: RunConfig = Field(default_factory=lambda: RunConfig(name="rag_chunking"))
+    paths: ChunkingPathConfig = Field(default_factory=ChunkingPathConfig)
+    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+    logging: LoggingConfig = Field(
+        default_factory=lambda: LoggingConfig(mlflow_experiment="rag-chunking")
+    )
+
+
 def load_config(path: str | Path) -> PipelineConfig:
     config_path = _resolve_config_path(path)
     base_dir = _config_base_dir(config_path)
@@ -108,6 +149,17 @@ def load_config(path: str | Path) -> PipelineConfig:
         raw: dict[str, Any] = yaml.safe_load(file) or {}
     config = PipelineConfig.model_validate(raw)
     return _resolve_paths(config, base_dir=base_dir)
+
+
+def load_chunking_config(path: str | Path) -> ChunkingPipelineConfig:
+    config_path = _resolve_config_path(path)
+    base_dir = _config_base_dir(config_path)
+    load_dotenv(base_dir / ".env")
+
+    with config_path.open("r", encoding="utf-8") as file:
+        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    config = ChunkingPipelineConfig.model_validate(raw)
+    return _resolve_chunking_paths(config, base_dir=base_dir)
 
 
 def _resolve_config_path(path: str | Path) -> Path:
@@ -140,6 +192,28 @@ def _resolve_paths(config: PipelineConfig, base_dir: Path) -> PipelineConfig:
             "paths": paths.model_copy(
                 update={
                     "input_dir": input_dir.resolve(),
+                    "output_dir": output_dir.resolve(),
+                }
+            )
+        }
+    )
+
+
+def _resolve_chunking_paths(
+    config: ChunkingPipelineConfig, base_dir: Path
+) -> ChunkingPipelineConfig:
+    paths = config.paths
+    input_jsonl = (
+        paths.input_jsonl if paths.input_jsonl.is_absolute() else base_dir / paths.input_jsonl
+    )
+    output_dir = (
+        paths.output_dir if paths.output_dir.is_absolute() else base_dir / paths.output_dir
+    )
+    return config.model_copy(
+        update={
+            "paths": paths.model_copy(
+                update={
+                    "input_jsonl": input_jsonl.resolve(),
                     "output_dir": output_dir.resolve(),
                 }
             )

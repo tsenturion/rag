@@ -13,3 +13,4 @@ PyYAML>=6.0.3
 spacy>=3.8.14
 unstructured[pdf]>=0.22.27
 unstructured-inference>=1.6.11
+tiktoken>=0.12.0

@@ -9,6 +9,7 @@ __pycache__/
 .prefect/
 mlruns/
 data/prepared/
+data/chunks/
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/sample.txt

@@ -7,18 +7,16 @@ from urllib.parse import urlparse
 
 import mlflow
 
-from rag_prep.config import PipelineConfig
-from rag_prep.models import ExportResult
 from rag_prep.utils import flatten_dict
 
 LOGGER = logging.getLogger(__name__)
 
 
 class MLflowTracker:
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: Any):
         self.config = config
 
-    def log_run(self, counts: dict[str, int], export: ExportResult) -> None:
+    def log_run(self, counts: dict[str, int | float], export: Any) -> None:
         if not self.config.logging.mlflow_enabled:
             LOGGER.info("MLflow logging disabled")
             return

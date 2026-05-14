@@ -85,6 +85,42 @@ class PreparedDocument(BaseModel):
     metadata: DocumentMetadata
 
 
+class ChunkMetadata(BaseModel):
+    id: str
+    document_id: str
+    source: str
+    section: str
+    position: int
+    chunk_start_char: int
+    chunk_end_char: int
+    chunk_token_count: int
+    chunk_size: int
+    chunk_overlap: int
+    chunking_strategy: str
+    tokenizer_model: str
+    embedding_model: str
+    semantic_block_ids: list[str] = Field(default_factory=list)
+    semantic_block_start: int | None = None
+    semantic_block_end: int | None = None
+    offset_strategy: str = "semantic_block_span"
+    parent_ids: list[str] = Field(default_factory=list)
+    origin_element_ids: list[str] = Field(default_factory=list)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+    hierarchy: dict[str, Any] = Field(default_factory=dict)
+    source_hash: str
+    document_text_hash: str
+    text_hash: str
+    file_name: str
+    file_type: str
+    quality: dict[str, Any] = Field(default_factory=dict)
+    chunked_at: datetime = Field(default_factory=utc_now)
+
+
+class PreparedChunk(BaseModel):
+    text: str
+    metadata: ChunkMetadata
+
+
 class ExportResult(BaseModel):
     json_path: Path
     jsonl_path: Path
@@ -102,3 +138,43 @@ class PipelineResult(BaseModel):
     prepared_documents_count: int
     duplicates_removed: int
     export: ExportResult
+
+
+class ChunkingExportResult(BaseModel):
+    json_path: Path
+    jsonl_path: Path
+    manifest_path: Path
+    chunks_count: int
+    run_id: str
+
+
+class ChunkingValidationResult(BaseModel):
+    empty_chunks_count: int = 0
+    undersized_chunks_count: int = 0
+    oversized_chunks_count: int = 0
+    estimated_offsets_count: int = 0
+    missing_parent_count: int = 0
+    missing_lineage_count: int = 0
+    low_quality_chunks_count: int = 0
+
+    @property
+    def has_errors(self) -> bool:
+        return any(
+            [
+                self.empty_chunks_count,
+                self.undersized_chunks_count,
+                self.oversized_chunks_count,
+                self.estimated_offsets_count,
+                self.missing_parent_count,
+                self.missing_lineage_count,
+                self.low_quality_chunks_count,
+            ]
+        )
+
+
+class ChunkingPipelineResult(BaseModel):
+    run_id: str
+    documents_count: int
+    chunks_count: int
+    validation: ChunkingValidationResult
+    export: ChunkingExportResult

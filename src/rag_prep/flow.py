@@ -5,8 +5,26 @@ from pathlib import Path
 from prefect import flow, task
 from prefect.logging import get_run_logger
 
-from rag_prep.config import PipelineConfig, load_config
-from rag_prep.models import ExportResult, ParseResult, PipelineResult, PreparedDocument, ProcessedElement, RawElement, SourceFile
+from rag_prep.chunking_stages import (
+    ChunkExportStage,
+    ChunkSplittingStage,
+    ChunkValidationStage,
+    PreparedDocumentLoadingStage,
+)
+from rag_prep.config import ChunkingPipelineConfig, PipelineConfig, load_chunking_config, load_config
+from rag_prep.models import (
+    ChunkingExportResult,
+    ChunkingPipelineResult,
+    ChunkingValidationResult,
+    ExportResult,
+    ParseResult,
+    PipelineResult,
+    PreparedChunk,
+    PreparedDocument,
+    ProcessedElement,
+    RawElement,
+    SourceFile,
+)
 from rag_prep.stages import (
     DeduplicationStage,
     ExportStage,
@@ -167,5 +185,135 @@ def rag_data_preparation_flow(config_path: str = "config/default.yaml") -> Pipel
         parse_failed_sources_count=len(parse_result.failures),
         prepared_documents_count=len(documents),
         duplicates_removed=duplicates_removed,
+        export=export,
+    )
+
+
+@task(name="load_prepared_documents")
+def load_prepared_documents_task(config: ChunkingPipelineConfig) -> list[PreparedDocument]:
+    documents = PreparedDocumentLoadingStage().run(config.paths.input_jsonl)
+    get_run_logger().info("Loaded %d prepared documents", len(documents))
+    return documents
+
+
+@task(name="split_chunks")
+def split_chunks_task(
+    config: ChunkingPipelineConfig, documents: list[PreparedDocument]
+) -> list[PreparedChunk]:
+    chunks = ChunkSplittingStage(config.chunking).run(documents)
+    get_run_logger().info("Created %d chunks", len(chunks))
+    return chunks
+
+
+@task(name="validate_chunks")
+def validate_chunks_task(
+    config: ChunkingPipelineConfig, chunks: list[PreparedChunk]
+) -> ChunkingValidationResult:
+    result = ChunkValidationStage(config.chunking).run(chunks)
+    get_run_logger().info(
+        (
+            "Validated chunks: empty=%d undersized=%d oversized=%d "
+            "estimated_offsets=%d missing_parent=%d missing_lineage=%d low_quality=%d"
+        ),
+        result.empty_chunks_count,
+        result.undersized_chunks_count,
+        result.oversized_chunks_count,
+        result.estimated_offsets_count,
+        result.missing_parent_count,
+        result.missing_lineage_count,
+        result.low_quality_chunks_count,
+    )
+    return result
+
+
+@task(name="export_chunks")
+def export_chunks_task(
+    config: ChunkingPipelineConfig,
+    chunks: list[PreparedChunk],
+    run_id: str,
+    counts: dict[str, int | float],
+    diagnostics: dict[str, object],
+) -> ChunkingExportResult:
+    export = ChunkExportStage(config).run(
+        chunks,
+        run_id=run_id,
+        counts=counts,
+        diagnostics=diagnostics,
+    )
+    get_run_logger().info("Exported %d chunks", export.chunks_count)
+    return export
+
+
+@task(name="log_chunking_mlflow")
+def log_chunking_mlflow_task(
+    config: ChunkingPipelineConfig,
+    counts: dict[str, int | float],
+    export: ChunkingExportResult,
+) -> None:
+    MLflowTracker(config).log_run(counts, export)
+
+
+@flow(name="rag-chunking")
+def rag_chunking_flow(config_path: str = "config/chunking.yaml") -> ChunkingPipelineResult:
+    import random
+    from uuid import uuid4
+
+    config = load_chunking_config(Path(config_path))
+    setup_logging(config.logging.level)
+    random.seed(config.run.seed)
+    run_id = uuid4().hex
+    logger = get_run_logger()
+    logger.info("Starting RAG chunking run %s", run_id)
+
+    documents = load_prepared_documents_task(config)
+    chunks = split_chunks_task(config, documents)
+    validation = validate_chunks_task(config, chunks)
+
+    token_counts = [chunk.metadata.chunk_token_count for chunk in chunks]
+    structure_scores = [
+        float(chunk.metadata.quality["structure_score"])
+        for chunk in chunks
+        if chunk.metadata.quality.get("structure_score") is not None
+    ]
+    unique_block_ids = {
+        block_id
+        for chunk in chunks
+        for block_id in chunk.metadata.semantic_block_ids
+    }
+    counts = {
+        "documents_count": len(documents),
+        "chunks_count": len(chunks),
+        "semantic_blocks_count": len(unique_block_ids),
+        "multi_block_chunks_count": sum(
+            1 for chunk in chunks if len(chunk.metadata.semantic_block_ids) > 1
+        ),
+        "avg_chunk_tokens": round(sum(token_counts) / len(token_counts), 3)
+        if token_counts
+        else 0.0,
+        "max_chunk_tokens": max(token_counts) if token_counts else 0,
+        "min_chunk_tokens": min(token_counts) if token_counts else 0,
+        "avg_chunk_structure_score": round(
+            sum(structure_scores) / len(structure_scores), 3
+        )
+        if structure_scores
+        else 0.0,
+        "empty_chunks_count": validation.empty_chunks_count,
+        "undersized_chunks_count": validation.undersized_chunks_count,
+        "oversized_chunks_count": validation.oversized_chunks_count,
+        "estimated_offsets_count": validation.estimated_offsets_count,
+        "missing_parent_count": validation.missing_parent_count,
+        "missing_lineage_count": validation.missing_lineage_count,
+        "low_quality_chunks_count": validation.low_quality_chunks_count,
+    }
+    diagnostics = {"validation": validation.model_dump(mode="json")}
+    export = export_chunks_task(config, chunks, run_id, counts, diagnostics)
+    log_chunking_mlflow_task(config, counts, export)
+
+    logger.info("Finished chunking run %s", run_id)
+    return ChunkingPipelineResult(
+        run_id=run_id,
+        documents_count=len(documents),
+        chunks_count=len(chunks),
+        validation=validation,
         export=export,
     )

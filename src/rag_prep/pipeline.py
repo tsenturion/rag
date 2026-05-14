@@ -4,8 +4,14 @@ import logging
 import random
 from uuid import uuid4
 
-from rag_prep.config import PipelineConfig
-from rag_prep.models import PipelineResult
+from rag_prep.chunking_stages import (
+    ChunkExportStage,
+    ChunkSplittingStage,
+    ChunkValidationStage,
+    PreparedDocumentLoadingStage,
+)
+from rag_prep.config import ChunkingPipelineConfig, PipelineConfig
+from rag_prep.models import ChunkingPipelineResult, PipelineResult
 from rag_prep.stages import (
     DeduplicationStage,
     ExportStage,
@@ -84,5 +90,80 @@ class RagPreparationPipeline:
             parse_failed_sources_count=len(parse_result.failures),
             prepared_documents_count=len(documents),
             duplicates_removed=dedupe_result.duplicates_removed,
+            export=export,
+        )
+
+
+class RagChunkingPipeline:
+    """OO facade around the chunking stages."""
+
+    def __init__(self, config: ChunkingPipelineConfig):
+        self.config = config
+        self.loader = PreparedDocumentLoadingStage()
+        self.splitter = ChunkSplittingStage(config.chunking)
+        self.validator = ChunkValidationStage(config.chunking)
+        self.exporter = ChunkExportStage(config)
+        self.tracker = MLflowTracker(config)
+
+    def run(self) -> ChunkingPipelineResult:
+        random.seed(self.config.run.seed)
+        run_id = uuid4().hex
+        LOGGER.info("Starting RAG chunking run %s", run_id)
+
+        documents = self.loader.run(self.config.paths.input_jsonl)
+        chunks = self.splitter.run(documents)
+        validation = self.validator.run(chunks)
+
+        token_counts = [chunk.metadata.chunk_token_count for chunk in chunks]
+        structure_scores = [
+            float(chunk.metadata.quality["structure_score"])
+            for chunk in chunks
+            if chunk.metadata.quality.get("structure_score") is not None
+        ]
+        unique_block_ids = {
+            block_id
+            for chunk in chunks
+            for block_id in chunk.metadata.semantic_block_ids
+        }
+        counts = {
+            "documents_count": len(documents),
+            "chunks_count": len(chunks),
+            "semantic_blocks_count": len(unique_block_ids),
+            "multi_block_chunks_count": sum(
+                1 for chunk in chunks if len(chunk.metadata.semantic_block_ids) > 1
+            ),
+            "avg_chunk_tokens": round(sum(token_counts) / len(token_counts), 3)
+            if token_counts
+            else 0.0,
+            "max_chunk_tokens": max(token_counts) if token_counts else 0,
+            "min_chunk_tokens": min(token_counts) if token_counts else 0,
+            "avg_chunk_structure_score": round(
+                sum(structure_scores) / len(structure_scores), 3
+            )
+            if structure_scores
+            else 0.0,
+            "empty_chunks_count": validation.empty_chunks_count,
+            "undersized_chunks_count": validation.undersized_chunks_count,
+            "oversized_chunks_count": validation.oversized_chunks_count,
+            "estimated_offsets_count": validation.estimated_offsets_count,
+            "missing_parent_count": validation.missing_parent_count,
+            "missing_lineage_count": validation.missing_lineage_count,
+            "low_quality_chunks_count": validation.low_quality_chunks_count,
+        }
+        diagnostics = {"validation": validation.model_dump(mode="json")}
+        export = self.exporter.run(
+            chunks,
+            run_id=run_id,
+            counts=counts,
+            diagnostics=diagnostics,
+        )
+        self.tracker.log_run(counts, export)
+
+        LOGGER.info("Finished chunking run %s with %d chunks", run_id, len(chunks))
+        return ChunkingPipelineResult(
+            run_id=run_id,
+            documents_count=len(documents),
+            chunks_count=len(chunks),
+            validation=validation,
             export=export,
         )
