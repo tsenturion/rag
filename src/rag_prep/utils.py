@@ -7,6 +7,7 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 def setup_logging(level: str) -> None:
@@ -31,6 +32,10 @@ def text_sha256(text: str) -> str:
 def stable_id(*parts: Any, length: int = 24) -> str:
     payload = "|".join(str(part) for part in parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:length]
+
+
+def new_run_id() -> str:
+    return str(uuid4())
 
 
 def json_dump(path: Path, payload: Any) -> None:

@@ -140,6 +140,41 @@ class ChunkingPipelineConfig(BaseModel):
     )
 
 
+class EmbeddingPathConfig(BaseModel):
+    input_jsonl: Path = Path("data/chunks/chunks.jsonl")
+    output_dir: Path = Path("data/embeddings")
+    json_filename: str = "embeddings.json"
+    jsonl_filename: str = "embeddings.jsonl"
+    manifest_filename: str = "manifest.json"
+
+
+class EmbeddingConfig(BaseModel):
+    provider: Literal["openai"] = "openai"
+    model: str = "text-embedding-3-small"
+    dimensions: int | None = Field(default=1536, ge=1)
+    api_key_env: str = "OPENAI_API_KEY"
+    env_file: Path | None = None
+    batch_size: int = Field(default=64, ge=1)
+    max_batch_tokens: int = Field(default=20000, ge=1)
+    max_input_tokens: int = Field(default=8191, ge=1)
+    max_retries: int = Field(default=5, ge=1)
+    timeout_seconds: float = Field(default=60.0, gt=0)
+    normalize: bool = False
+    clear_no_proxy_for_openai: bool = True
+    fail_on_validation_error: bool = True
+
+
+class EmbeddingPipelineConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run: RunConfig = Field(default_factory=lambda: RunConfig(name="rag_embeddings"))
+    paths: EmbeddingPathConfig = Field(default_factory=EmbeddingPathConfig)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    logging: LoggingConfig = Field(
+        default_factory=lambda: LoggingConfig(mlflow_experiment="rag-embeddings")
+    )
+
+
 def load_config(path: str | Path) -> PipelineConfig:
     config_path = _resolve_config_path(path)
     base_dir = _config_base_dir(config_path)
@@ -160,6 +195,29 @@ def load_chunking_config(path: str | Path) -> ChunkingPipelineConfig:
         raw: dict[str, Any] = yaml.safe_load(file) or {}
     config = ChunkingPipelineConfig.model_validate(raw)
     return _resolve_chunking_paths(config, base_dir=base_dir)
+
+
+def load_embedding_config(path: str | Path) -> EmbeddingPipelineConfig:
+    config_path = _resolve_config_path(path)
+    base_dir = _config_base_dir(config_path)
+    load_dotenv(base_dir / ".env")
+
+    with config_path.open("r", encoding="utf-8") as file:
+        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    config = EmbeddingPipelineConfig.model_validate(raw)
+    env_file = config.embedding.env_file or base_dir / ".env"
+    if not env_file.is_absolute():
+        env_file = base_dir / env_file
+    env_file = env_file.resolve()
+    load_dotenv(env_file)
+    config = config.model_copy(
+        update={
+            "embedding": config.embedding.model_copy(
+                update={"env_file": env_file}
+            )
+        }
+    )
+    return _resolve_embedding_paths(config, base_dir=base_dir)
 
 
 def _resolve_config_path(path: str | Path) -> Path:
@@ -202,6 +260,28 @@ def _resolve_paths(config: PipelineConfig, base_dir: Path) -> PipelineConfig:
 def _resolve_chunking_paths(
     config: ChunkingPipelineConfig, base_dir: Path
 ) -> ChunkingPipelineConfig:
+    paths = config.paths
+    input_jsonl = (
+        paths.input_jsonl if paths.input_jsonl.is_absolute() else base_dir / paths.input_jsonl
+    )
+    output_dir = (
+        paths.output_dir if paths.output_dir.is_absolute() else base_dir / paths.output_dir
+    )
+    return config.model_copy(
+        update={
+            "paths": paths.model_copy(
+                update={
+                    "input_jsonl": input_jsonl.resolve(),
+                    "output_dir": output_dir.resolve(),
+                }
+            )
+        }
+    )
+
+
+def _resolve_embedding_paths(
+    config: EmbeddingPipelineConfig, base_dir: Path
+) -> EmbeddingPipelineConfig:
     paths = config.paths
     input_jsonl = (
         paths.input_jsonl if paths.input_jsonl.is_absolute() else base_dir / paths.input_jsonl

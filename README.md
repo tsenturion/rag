@@ -64,7 +64,7 @@ python -m pip check
 ```
 
 На Windows для Unstructured дополнительно установлен `python-magic-bin`, чтобы `unstructured.partition.auto` корректно определял типы файлов. Для OCR-режимов PDF могут понадобиться системные Tesseract и Poppler, но для текстовых PDF достаточно `parser.strategy: fast`.
-Команда `rag-prep` перед запуском Prefect выставляет `NO_PROXY=*`, чтобы локальный временный сервер Prefect не ломался из-за системных proxy-настроек. Импорт `rag_prep.flow` сам по себе переменные окружения не меняет.
+Команда `rag-prep` перед запуском Prefect добавляет `localhost`, `127.0.0.1` и `::1` в `NO_PROXY`, чтобы локальный временный сервер Prefect не ломался из-за системных proxy-настроек. Для локальных CLI-запусков также отключается Prefect EventsWorker: это не мешает orchestration, но не даёт процессу зависать на websocket-событиях временного сервера. Внешние API, включая OpenAI, при этом не отключаются от системного proxy. Импорт `rag_prep.flow` сам по себе переменные окружения не меняет.
 
 ## Примеры входных данных
 
@@ -297,3 +297,96 @@ rag-prep --config config/default.yaml
 ```
 
 `position`, `chunk_start_char`, `chunk_end_char`, `semantic_block_ids`, `parent_ids`, `origin_element_ids` и `lineage` нужны для отладки retrieval misses, hallucinations и обратной трассировки ответа к исходному документу. `embedding_model` фиксируется заранее, чтобы следующий этап мог проверить совместимость чанков с выбранной моделью embeddings.
+
+# RAG Embeddings Pipeline
+
+Третий пайплайн считает embeddings для готовых чанков. Он не создаёт vector DB, не индексирует данные и не запускает retrieval.
+
+Вход:
+
+- `data/chunks/chunks.jsonl` - чанки из chunking pipeline.
+
+Выход:
+
+- `data/embeddings/embeddings.json`
+- `data/embeddings/embeddings.jsonl`
+- `data/embeddings/manifest.json`
+
+## Стек Embeddings
+
+- OpenAI Python SDK - вызов `client.embeddings.create`;
+- модель по умолчанию `text-embedding-3-small`;
+- `tiktoken` - контроль token limits и batch token budget;
+- `tenacity` - retry/backoff при временных ошибках OpenAI API;
+- `numpy` - расчёт нормы и опциональная L2-нормализация vectors;
+- Pydantic - строгие схемы `embedding + metadata`;
+- Prefect - orchestration;
+- MLflow - параметры, метрики и артефакты запуска.
+
+## Запуск Embeddings
+
+В `.env` должен быть OpenAI API key:
+
+```powershell
+OPENAI_API_KEY=sk-...
+```
+
+Через Prefect:
+
+```powershell
+rag-prep embed --config config/embeddings.yaml
+```
+
+Прямой запуск без Prefect:
+
+```powershell
+rag-prep embed --config config/embeddings.yaml --no-prefect
+```
+
+Перед запуском должен существовать `data/chunks/chunks.jsonl`.
+
+## Конфигурация Embeddings
+
+Параметры находятся в `config/embeddings.yaml`:
+
+- `paths.input_jsonl` - входной JSONL с чанками;
+- `paths.output_dir` - директория экспорта embeddings;
+- `embedding.provider` - сейчас поддерживается `openai`;
+- `embedding.model` - модель embeddings, по умолчанию `text-embedding-3-small`;
+- `embedding.dimensions` - ожидаемая размерность, для `text-embedding-3-small` используется `1536`;
+- `embedding.batch_size` - количество чанков в одном API batch;
+- `embedding.max_batch_tokens` - общий token budget batch;
+- `embedding.max_input_tokens` - лимит одного текста;
+- `embedding.max_retries` и `timeout_seconds` - сетевые guardrails;
+- `embedding.normalize` - опциональная L2-нормализация vectors;
+- `embedding.clear_no_proxy_for_openai` - создаёт OpenAI HTTP-клиент при очищенном `NO_PROXY/no_proxy`, но не меняет эти переменные во время самого API-запроса; это оставляет Prefect доступ к localhost и не ломает маршрут до OpenAI API;
+- `embedding.fail_on_validation_error` - останавливать пайплайн при ошибках validation.
+
+## Формат Embedding Record
+
+Каждая строка в `embeddings.jsonl` готова к загрузке в vector store:
+
+```json
+{
+  "text": "...",
+  "embedding": [0.0123, -0.0456],
+  "metadata": {
+    "id": "chunk-id",
+    "document_id": "prepared-document-id",
+    "source": "absolute/path/to/file",
+    "section": "Раздел",
+    "position": 0,
+    "chunk_token_count": 128,
+    "embedding_provider": "openai",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimensions": 1536,
+    "embedding_vector_hash": "...",
+    "embedding_norm": 1.02,
+    "embedding_run_id": "...",
+    "lineage": {},
+    "hierarchy": {}
+  }
+}
+```
+
+Validation проверяет соответствие количества chunks и embeddings, размерность vectors, `NaN/Infinity`, дубликаты chunk ids, наличие базовой metadata, соответствие модели и превышение token limit. `manifest.json` сохраняет config, counts и diagnostics, чтобы результат был воспроизводимым и пригодным для следующего этапа загрузки в Chroma, Qdrant, FAISS, pgvector или другую vector DB.

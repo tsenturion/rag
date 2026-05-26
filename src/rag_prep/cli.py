@@ -5,13 +5,15 @@ import json
 import os
 from pathlib import Path
 
-from rag_prep.config import load_chunking_config, load_config
-from rag_prep.pipeline import RagChunkingPipeline, RagPreparationPipeline
+from rag_prep.config import load_chunking_config, load_config, load_embedding_config
+from rag_prep.pipeline import RagChunkingPipeline, RagEmbeddingPipeline, RagPreparationPipeline
 from rag_prep.utils import setup_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run RAG preparation and chunking pipelines.")
+    parser = argparse.ArgumentParser(
+        description="Run RAG preparation, chunking, and embedding pipelines."
+    )
     parser.add_argument(
         "--config",
         default=None,
@@ -47,6 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run chunking directly without Prefect orchestration.",
     )
+
+    embed = subparsers.add_parser("embed", help="Run embeddings pipeline.")
+    embed.add_argument(
+        "--config",
+        default="config/embeddings.yaml",
+        help="Path to embeddings YAML config.",
+    )
+    embed.add_argument(
+        "--no-prefect",
+        action="store_true",
+        help="Run embeddings directly without Prefect orchestration.",
+    )
     return parser
 
 
@@ -61,10 +75,21 @@ def main() -> None:
             setup_logging(config.logging.level)
             result = RagChunkingPipeline(config).run()
         else:
-            _ensure_local_prefect_no_proxy()
+            _configure_local_prefect_runtime()
             from rag_prep.flow import rag_chunking_flow
 
             result = rag_chunking_flow(config_path=config_path)
+    elif command == "embed":
+        config_path = args.config or "config/embeddings.yaml"
+        if args.no_prefect:
+            config = load_embedding_config(Path(config_path))
+            setup_logging(config.logging.level)
+            result = RagEmbeddingPipeline(config).run()
+        else:
+            _configure_local_prefect_runtime()
+            from rag_prep.flow import rag_embeddings_flow
+
+            result = rag_embeddings_flow(config_path=config_path)
     else:
         config_path = args.config or "config/default.yaml"
         if args.no_prefect:
@@ -72,7 +97,7 @@ def main() -> None:
             setup_logging(config.logging.level)
             result = RagPreparationPipeline(config).run()
         else:
-            _ensure_local_prefect_no_proxy()
+            _configure_local_prefect_runtime()
             from rag_prep.flow import rag_data_preparation_flow
 
             result = rag_data_preparation_flow(config_path=config_path)
@@ -80,9 +105,32 @@ def main() -> None:
     print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
 
 
+def _configure_local_prefect_runtime() -> None:
+    _ensure_local_prefect_no_proxy()
+    _disable_prefect_events_worker()
+
+
 def _ensure_local_prefect_no_proxy() -> None:
-    os.environ.setdefault("NO_PROXY", "*")
-    os.environ.setdefault("no_proxy", "*")
+    local_hosts = ["localhost", "127.0.0.1", "::1"]
+    for name in ("NO_PROXY", "no_proxy"):
+        existing = os.environ.get(name, "")
+        if "*" in existing.split(","):
+            continue
+        values = [value.strip() for value in existing.split(",") if value.strip()]
+        for host in local_hosts:
+            if host not in values:
+                values.append(host)
+        os.environ[name] = ",".join(values)
+
+
+def _disable_prefect_events_worker() -> None:
+    try:
+        from prefect.events.clients import NullEventsClient
+        from prefect.events.worker import EventsWorker
+
+        EventsWorker.set_client_override(NullEventsClient)
+    except Exception:
+        return
 
 
 if __name__ == "__main__":

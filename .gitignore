@@ -10,6 +10,7 @@ __pycache__/
 mlruns/
 data/prepared/
 data/chunks/
+data/embeddings/
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/sample.txt

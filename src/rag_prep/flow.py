@@ -11,11 +11,30 @@ from rag_prep.chunking_stages import (
     ChunkValidationStage,
     PreparedDocumentLoadingStage,
 )
-from rag_prep.config import ChunkingPipelineConfig, PipelineConfig, load_chunking_config, load_config
+from rag_prep.config import (
+    ChunkingPipelineConfig,
+    EmbeddingPipelineConfig,
+    PipelineConfig,
+    load_chunking_config,
+    load_config,
+    load_embedding_config,
+)
+from rag_prep.embedding_stages import (
+    ChunkLoadingStage,
+    EmbeddingExportStage,
+    EmbeddingValidationStage,
+    OpenAIEmbeddingStage,
+    build_embedding_counts,
+    build_embedding_diagnostics,
+)
 from rag_prep.models import (
     ChunkingExportResult,
     ChunkingPipelineResult,
     ChunkingValidationResult,
+    EmbeddedChunk,
+    EmbeddingExportResult,
+    EmbeddingPipelineResult,
+    EmbeddingValidationResult,
     ExportResult,
     ParseResult,
     PipelineResult,
@@ -35,7 +54,7 @@ from rag_prep.stages import (
     UnstructuredParsingStage,
 )
 from rag_prep.tracking import MLflowTracker
-from rag_prep.utils import setup_logging
+from rag_prep.utils import new_run_id, setup_logging
 
 
 @task(name="load_sources")
@@ -134,12 +153,11 @@ def log_mlflow_task(config: PipelineConfig, counts: dict[str, int], export: Expo
 @flow(name="rag-data-preparation")
 def rag_data_preparation_flow(config_path: str = "config/default.yaml") -> PipelineResult:
     import random
-    from uuid import uuid4
 
     config = load_config(Path(config_path))
     setup_logging(config.logging.level)
     random.seed(config.run.seed)
-    run_id = uuid4().hex
+    run_id = new_run_id()
     logger = get_run_logger()
     logger.info("Starting RAG data preparation run %s", run_id)
 
@@ -256,12 +274,11 @@ def log_chunking_mlflow_task(
 @flow(name="rag-chunking")
 def rag_chunking_flow(config_path: str = "config/chunking.yaml") -> ChunkingPipelineResult:
     import random
-    from uuid import uuid4
 
     config = load_chunking_config(Path(config_path))
     setup_logging(config.logging.level)
     random.seed(config.run.seed)
-    run_id = uuid4().hex
+    run_id = new_run_id()
     logger = get_run_logger()
     logger.info("Starting RAG chunking run %s", run_id)
 
@@ -314,6 +331,107 @@ def rag_chunking_flow(config_path: str = "config/chunking.yaml") -> ChunkingPipe
         run_id=run_id,
         documents_count=len(documents),
         chunks_count=len(chunks),
+        validation=validation,
+        export=export,
+    )
+
+
+@task(name="load_chunks")
+def load_chunks_task(config: EmbeddingPipelineConfig) -> list[PreparedChunk]:
+    chunks = ChunkLoadingStage().run(config.paths.input_jsonl)
+    get_run_logger().info("Loaded %d chunks", len(chunks))
+    return chunks
+
+
+@task(name="calculate_embeddings")
+def calculate_embeddings_task(
+    config: EmbeddingPipelineConfig,
+    chunks: list[PreparedChunk],
+    run_id: str,
+) -> list[EmbeddedChunk]:
+    embedded_chunks = OpenAIEmbeddingStage(config.embedding).run(chunks, run_id=run_id)
+    get_run_logger().info("Calculated %d embeddings", len(embedded_chunks))
+    return embedded_chunks
+
+
+@task(name="validate_embeddings")
+def validate_embeddings_task(
+    config: EmbeddingPipelineConfig,
+    chunks: list[PreparedChunk],
+    embedded_chunks: list[EmbeddedChunk],
+) -> EmbeddingValidationResult:
+    result = EmbeddingValidationStage(config.embedding).run(chunks, embedded_chunks)
+    get_run_logger().info(
+        (
+            "Validated embeddings: count_mismatch=%d missing=%d "
+            "dimension_mismatch=%d non_finite=%d duplicate_ids=%d "
+            "missing_metadata=%d model_mismatch=%d token_limit_exceeded=%d"
+        ),
+        result.chunk_count_mismatch,
+        result.missing_embeddings_count,
+        result.dimension_mismatch_count,
+        result.non_finite_values_count,
+        result.duplicate_chunk_ids_count,
+        result.missing_metadata_count,
+        result.model_mismatch_count,
+        result.token_limit_exceeded_count,
+    )
+    return result
+
+
+@task(name="export_embeddings")
+def export_embeddings_task(
+    config: EmbeddingPipelineConfig,
+    embedded_chunks: list[EmbeddedChunk],
+    run_id: str,
+    counts: dict[str, int | float],
+    diagnostics: dict[str, object],
+) -> EmbeddingExportResult:
+    export = EmbeddingExportStage(config).run(
+        embedded_chunks,
+        run_id=run_id,
+        counts=counts,
+        diagnostics=diagnostics,
+    )
+    get_run_logger().info("Exported %d embeddings", export.embeddings_count)
+    return export
+
+
+@task(name="log_embedding_mlflow")
+def log_embedding_mlflow_task(
+    config: EmbeddingPipelineConfig,
+    counts: dict[str, int | float],
+    export: EmbeddingExportResult,
+) -> None:
+    MLflowTracker(config).log_run(counts, export)
+
+
+@flow(name="rag-embeddings")
+def rag_embeddings_flow(config_path: str = "config/embeddings.yaml") -> EmbeddingPipelineResult:
+    import random
+
+    config = load_embedding_config(Path(config_path))
+    setup_logging(config.logging.level)
+    OpenAIEmbeddingStage.ensure_api_key(config.embedding)
+    random.seed(config.run.seed)
+    run_id = new_run_id()
+    logger = get_run_logger()
+    logger.info("Starting RAG embeddings run %s", run_id)
+
+    chunks = load_chunks_task(config)
+    embedded_chunks = calculate_embeddings_task(config, chunks, run_id)
+    validation = validate_embeddings_task(config, chunks, embedded_chunks)
+
+    counts = build_embedding_counts(config, chunks, embedded_chunks, validation)
+    diagnostics = build_embedding_diagnostics(validation)
+    export = export_embeddings_task(config, embedded_chunks, run_id, counts, diagnostics)
+    log_embedding_mlflow_task(config, counts, export)
+
+    logger.info("Finished embeddings run %s", run_id)
+    return EmbeddingPipelineResult(
+        run_id=run_id,
+        chunks_count=len(chunks),
+        embeddings_count=len(embedded_chunks),
         validation=validation,
         export=export,
     )

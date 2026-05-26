@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import random
-from uuid import uuid4
 
 from rag_prep.chunking_stages import (
     ChunkExportStage,
@@ -10,8 +9,20 @@ from rag_prep.chunking_stages import (
     ChunkValidationStage,
     PreparedDocumentLoadingStage,
 )
-from rag_prep.config import ChunkingPipelineConfig, PipelineConfig
-from rag_prep.models import ChunkingPipelineResult, PipelineResult
+from rag_prep.config import ChunkingPipelineConfig, EmbeddingPipelineConfig, PipelineConfig
+from rag_prep.embedding_stages import (
+    ChunkLoadingStage,
+    EmbeddingExportStage,
+    EmbeddingValidationStage,
+    OpenAIEmbeddingStage,
+    build_embedding_counts,
+    build_embedding_diagnostics,
+)
+from rag_prep.models import (
+    ChunkingPipelineResult,
+    EmbeddingPipelineResult,
+    PipelineResult,
+)
 from rag_prep.stages import (
     DeduplicationStage,
     ExportStage,
@@ -22,6 +33,7 @@ from rag_prep.stages import (
     UnstructuredParsingStage,
 )
 from rag_prep.tracking import MLflowTracker
+from rag_prep.utils import new_run_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -44,7 +56,7 @@ class RagPreparationPipeline:
 
     def run(self) -> PipelineResult:
         random.seed(self.config.run.seed)
-        run_id = uuid4().hex
+        run_id = new_run_id()
         LOGGER.info("Starting RAG data preparation run %s", run_id)
 
         sources = self.loader.run(self.config.paths.input_dir)
@@ -107,7 +119,7 @@ class RagChunkingPipeline:
 
     def run(self) -> ChunkingPipelineResult:
         random.seed(self.config.run.seed)
-        run_id = uuid4().hex
+        run_id = new_run_id()
         LOGGER.info("Starting RAG chunking run %s", run_id)
 
         documents = self.loader.run(self.config.paths.input_jsonl)
@@ -164,6 +176,55 @@ class RagChunkingPipeline:
             run_id=run_id,
             documents_count=len(documents),
             chunks_count=len(chunks),
+            validation=validation,
+            export=export,
+        )
+
+
+class RagEmbeddingPipeline:
+    """OO facade around the embedding stages."""
+
+    def __init__(self, config: EmbeddingPipelineConfig):
+        self.config = config
+        self.loader = ChunkLoadingStage()
+        self.embedder = OpenAIEmbeddingStage(config.embedding)
+        self.validator = EmbeddingValidationStage(config.embedding)
+        self.exporter = EmbeddingExportStage(config)
+        self.tracker = MLflowTracker(config)
+
+    def run(self) -> EmbeddingPipelineResult:
+        random.seed(self.config.run.seed)
+        run_id = new_run_id()
+        LOGGER.info("Starting RAG embeddings run %s", run_id)
+
+        chunks = self.loader.run(self.config.paths.input_jsonl)
+        embedded_chunks = self.embedder.run(chunks, run_id=run_id)
+        validation = self.validator.run(chunks, embedded_chunks)
+
+        counts = build_embedding_counts(
+            self.config,
+            chunks,
+            embedded_chunks,
+            validation,
+        )
+        diagnostics = build_embedding_diagnostics(validation)
+        export = self.exporter.run(
+            embedded_chunks,
+            run_id=run_id,
+            counts=counts,
+            diagnostics=diagnostics,
+        )
+        self.tracker.log_run(counts, export)
+
+        LOGGER.info(
+            "Finished embeddings run %s with %d embeddings",
+            run_id,
+            len(embedded_chunks),
+        )
+        return EmbeddingPipelineResult(
+            run_id=run_id,
+            chunks_count=len(chunks),
+            embeddings_count=len(embedded_chunks),
             validation=validation,
             export=export,
         )
