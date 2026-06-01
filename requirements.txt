@@ -7,11 +7,13 @@ mlflow>=3.12.0
 numpy>=2.3.0
 openai>=2.17.0
 pandas>=2.3.3
+portalocker>=2.7.0,<4.0
 prefect>=3.7.0
 pydantic==2.12.5
 python-dotenv>=1.2.2
 python-magic-bin>=0.4.14; platform_system == "Windows"
 PyYAML>=6.0.3
+qdrant-client>=1.18.0
 spacy>=3.8.14
 unstructured[pdf]>=0.22.27
 unstructured-inference>=1.6.11

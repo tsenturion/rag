@@ -390,3 +390,106 @@ rag-prep embed --config config/embeddings.yaml --no-prefect
 ```
 
 Validation проверяет соответствие количества chunks и embeddings, размерность vectors, `NaN/Infinity`, дубликаты chunk ids, наличие базовой metadata, соответствие модели и превышение token limit. `manifest.json` сохраняет config, counts и diagnostics, чтобы результат был воспроизводимым и пригодным для следующего этапа загрузки в Chroma, Qdrant, FAISS, pgvector или другую vector DB.
+
+# RAG Vector Store Pipeline
+
+Четвёртый пайплайн создаёт локальное векторное хранилище, загружает уже готовые embeddings и выполняет smoke-проверку similarity search. Embeddings здесь повторно не считаются, OpenAI API не вызывается.
+
+Выбран **Qdrant**, потому что он даёт полноценную коллекцию с vectors + payload metadata, умеет filtering/search и при этом может работать локально без Docker через embedded storage.
+
+Вход:
+
+- `data/embeddings/embeddings.jsonl` - результат embeddings pipeline.
+
+Выход:
+
+- `data/vector_store/manifest.json`
+- `data/vector_store/validation.json`
+- `data/vector_store/search_results.json`
+- `data/qdrant_storage/` - локальное embedded-хранилище Qdrant.
+
+Embedded local mode удобен для локальной разработки, но это single-process режим. Pipeline берёт OS-lock на `.rag_prep.lock` внутри `data/qdrant_storage/` и остановит второй локальный запуск с понятной ошибкой. Сам файл lock может остаться после аварийного завершения, но блокировка держится операционной системой и освобождается при завершении процесса. Для конкурентных запусков лучше поднять Qdrant server и переключить `vector_store.mode: http`.
+
+## Стек Vector Store
+
+- `qdrant-client` - создание коллекции, upsert vectors, similarity search;
+- Qdrant local mode - локальное хранилище без отдельного сервера;
+- Pydantic - схемы результатов indexing/validation/search;
+- Prefect - orchestration;
+- MLflow - параметры, метрики и артефакты проверки.
+
+## Запуск Vector Store
+
+Перед запуском должен существовать `data/embeddings/embeddings.jsonl`.
+
+Через Prefect:
+
+```powershell
+rag-prep vector-store --config config/vector_store.yaml
+```
+
+Прямой запуск без Prefect:
+
+```powershell
+rag-prep vector-store --config config/vector_store.yaml --no-prefect
+```
+
+## Конфигурация Vector Store
+
+Параметры находятся в `config/vector_store.yaml`:
+
+- `paths.input_jsonl` - готовые embeddings;
+- `paths.output_dir` - директория отчётов;
+- `vector_store.provider` - сейчас `qdrant`;
+- `vector_store.mode` - `local` для embedded Qdrant или `http` для внешнего Qdrant server;
+- `vector_store.collection_name` - имя коллекции;
+- `vector_store.vector_size` - размерность vectors, для `text-embedding-3-small` это `1536`;
+- `vector_store.distance` - метрика similarity, по умолчанию `Cosine`;
+- `vector_store.recreate_collection` - пересоздавать коллекцию для воспроизводимого запуска; в кодовом дефолте это `false`, а в `config/vector_store.yaml` явно стоит `true`;
+- `vector_store.batch_size` - размер upsert batch;
+- `vector_store.local_storage_path` - путь к embedded-хранилищу;
+- `vector_store.search_limit` - количество результатов на тестовый запрос;
+- `vector_store.test_queries_count` - сколько готовых embeddings использовать как тестовые запросы;
+- `vector_store.validation_sample_size` - сколько точек проверить через scroll;
+- `vector_store.fail_on_validation_error` - останавливать пайплайн при некорректном индексе.
+
+## Что загружается в Qdrant
+
+Vector сохраняется как Qdrant vector, а payload содержит:
+
+```json
+{
+  "text": "...",
+  "chunk_id": "stable-chunk-id",
+  "document_id": "prepared-document-id",
+  "source": "absolute/path/to/file",
+  "section": "Раздел",
+  "position": 0,
+  "file_name": "sample.txt",
+  "file_type": "txt",
+  "embedding_model": "text-embedding-3-small",
+  "embedding_provider": "openai",
+  "embedding_dimensions": 1536,
+  "metadata": {}
+}
+```
+
+Qdrant point id строится детерминированно как UUID5 от `collection_name + chunk_id`, потому что исходный `metadata.id` не обязан быть UUID. Оригинальный chunk id сохраняется в `payload.chunk_id` и `payload.metadata.id`. Перед upsert pipeline проверяет дубликаты chunk ids и сгенерированных point ids, чтобы случайный повтор не перезаписал точку молча.
+
+## Проверки
+
+Pipeline проверяет:
+
+- количество points в коллекции совпадает с количеством embeddings;
+- направление расхождения counts сохраняется в `count_delta`, `extra_points_count` и `missing_points_count`;
+- размерность коллекции и vectors соответствует `vector_size`;
+- точки без возвращённого vector считаются отдельно в `missing_vector_count`, а не смешиваются с неправильной размерностью;
+- несовпадение размерности коллекции и отдельных point vectors логируется раздельно через `collection_vector_size_mismatch_count` и `point_vector_size_mismatch_count`;
+- distance metric соответствует конфигу;
+- payload содержит `text`;
+- payload содержит полную `metadata`;
+- обязательные поля metadata присутствуют;
+- similarity search возвращает результаты;
+- для smoke-запросов ближайший результат обычно совпадает с исходным chunk.
+
+`search_results.json` сохраняет тестовые запросы и найденные hits. Это не production retrieval, а базовая проверка корректности записи/чтения индекса перед следующим этапом RAG.

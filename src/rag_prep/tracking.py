@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 import mlflow
@@ -12,11 +12,15 @@ from rag_prep.utils import flatten_dict
 LOGGER = logging.getLogger(__name__)
 
 
+class SupportsArtifactPaths(Protocol):
+    def artifact_paths(self) -> list[Path]: ...
+
+
 class MLflowTracker:
     def __init__(self, config: Any):
         self.config = config
 
-    def log_run(self, counts: dict[str, int | float], export: Any) -> None:
+    def log_run(self, counts: dict[str, int | float], export: SupportsArtifactPaths) -> None:
         if not self.config.logging.mlflow_enabled:
             LOGGER.info("MLflow logging disabled")
             return
@@ -33,9 +37,8 @@ class MLflowTracker:
             mlflow.log_params({key: self._safe_param(value) for key, value in params.items()})
             for key, value in counts.items():
                 mlflow.log_metric(key, value)
-            mlflow.log_artifact(str(export.json_path))
-            mlflow.log_artifact(str(export.jsonl_path))
-            mlflow.log_artifact(str(export.manifest_path))
+            for path in export.artifact_paths():
+                mlflow.log_artifact(str(path))
 
         LOGGER.info("Logged run to MLflow tracking URI %s", tracking_uri)
 

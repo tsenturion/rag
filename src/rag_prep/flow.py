@@ -15,9 +15,11 @@ from rag_prep.config import (
     ChunkingPipelineConfig,
     EmbeddingPipelineConfig,
     PipelineConfig,
+    VectorStorePipelineConfig,
     load_chunking_config,
     load_config,
     load_embedding_config,
+    load_vector_store_config,
 )
 from rag_prep.embedding_stages import (
     ChunkLoadingStage,
@@ -43,6 +45,11 @@ from rag_prep.models import (
     ProcessedElement,
     RawElement,
     SourceFile,
+    VectorSearchResult,
+    VectorStoreExportResult,
+    VectorStoreIndexResult,
+    VectorStorePipelineResult,
+    VectorStoreValidationResult,
 )
 from rag_prep.stages import (
     DeduplicationStage,
@@ -55,6 +62,16 @@ from rag_prep.stages import (
 )
 from rag_prep.tracking import MLflowTracker
 from rag_prep.utils import new_run_id, setup_logging
+from rag_prep.vector_store_stages import (
+    EmbeddingLoadingStage,
+    QdrantIndexingStage,
+    QdrantSearchStage,
+    QdrantValidationStage,
+    VectorStoreExportStage,
+    build_vector_store_counts,
+    build_vector_store_diagnostics,
+    qdrant_client_context,
+)
 
 
 @task(name="load_sources")
@@ -432,6 +449,181 @@ def rag_embeddings_flow(config_path: str = "config/embeddings.yaml") -> Embeddin
         run_id=run_id,
         chunks_count=len(chunks),
         embeddings_count=len(embedded_chunks),
+        validation=validation,
+        export=export,
+    )
+
+
+@task(name="load_embedding_records")
+def load_embedding_records_task(config: VectorStorePipelineConfig) -> list[EmbeddedChunk]:
+    embedded_chunks = EmbeddingLoadingStage().run(config.paths.input_jsonl)
+    get_run_logger().info("Loaded %d embedding records", len(embedded_chunks))
+    return embedded_chunks
+
+
+@task(name="index_qdrant")
+def index_qdrant_task(
+    config: VectorStorePipelineConfig,
+    embedded_chunks: list[EmbeddedChunk],
+) -> VectorStoreIndexResult:
+    index = QdrantIndexingStage(config.vector_store).run(embedded_chunks)
+    get_run_logger().info(
+        "Indexed %d Qdrant points into collection %s",
+        index.points_upserted,
+        index.collection_name,
+    )
+    return index
+
+
+@task(name="validate_qdrant")
+def validate_qdrant_task(
+    config: VectorStorePipelineConfig,
+    embedded_chunks: list[EmbeddedChunk],
+) -> VectorStoreValidationResult:
+    validation = QdrantValidationStage(config.vector_store).run(embedded_chunks)
+    get_run_logger().info(
+        (
+            "Validated Qdrant collection: count_mismatch=%d count_delta=%d "
+            "extra_points=%d missing_points=%d missing_vectors=%d "
+            "collection_vector_size_mismatch=%d point_vector_size_mismatch=%d "
+            "vector_size_mismatch=%d distance_mismatch=%d missing_payload=%d "
+            "missing_text=%d missing_metadata=%d missing_required_metadata=%d"
+        ),
+        validation.count_mismatch,
+        validation.count_delta,
+        validation.extra_points_count,
+        validation.missing_points_count,
+        validation.missing_vector_count,
+        validation.collection_vector_size_mismatch_count,
+        validation.point_vector_size_mismatch_count,
+        validation.vector_size_mismatch_count,
+        validation.distance_mismatch_count,
+        validation.missing_payload_count,
+        validation.missing_text_count,
+        validation.missing_metadata_count,
+        validation.missing_required_metadata_count,
+    )
+    return validation
+
+
+@task(name="search_qdrant")
+def search_qdrant_task(
+    config: VectorStorePipelineConfig,
+    embedded_chunks: list[EmbeddedChunk],
+) -> list[VectorSearchResult]:
+    search_results = QdrantSearchStage(config.vector_store).run(embedded_chunks)
+    get_run_logger().info("Ran %d Qdrant search smoke tests", len(search_results))
+    return search_results
+
+
+@task(name="index_validate_search_qdrant")
+def index_validate_search_qdrant_task(
+    config: VectorStorePipelineConfig,
+    embedded_chunks: list[EmbeddedChunk],
+) -> tuple[VectorStoreIndexResult, VectorStoreValidationResult, list[VectorSearchResult]]:
+    with qdrant_client_context(config.vector_store) as client:
+        index = QdrantIndexingStage(config.vector_store).run(
+            embedded_chunks,
+            client=client,
+        )
+        validation = QdrantValidationStage(config.vector_store).run(
+            embedded_chunks,
+            client=client,
+        )
+        search_results = QdrantSearchStage(config.vector_store).run(
+            embedded_chunks,
+            client=client,
+        )
+
+    get_run_logger().info(
+        (
+            "Indexed and checked Qdrant collection %s: points=%d "
+            "count_mismatch=%d count_delta=%d search_queries=%d"
+        ),
+        index.collection_name,
+        index.collection_points_count,
+        validation.count_mismatch,
+        validation.count_delta,
+        len(search_results),
+    )
+    return index, validation, search_results
+
+
+@task(name="export_vector_store_report")
+def export_vector_store_report_task(
+    config: VectorStorePipelineConfig,
+    index: VectorStoreIndexResult,
+    validation: VectorStoreValidationResult,
+    search_results: list[VectorSearchResult],
+    run_id: str,
+    counts: dict[str, int | float],
+    diagnostics: dict[str, object],
+) -> VectorStoreExportResult:
+    export = VectorStoreExportStage(config).run(
+        index=index,
+        validation=validation,
+        search_results=search_results,
+        run_id=run_id,
+        counts=counts,
+        diagnostics=diagnostics,
+    )
+    get_run_logger().info("Exported vector store report")
+    return export
+
+
+@task(name="log_vector_store_mlflow")
+def log_vector_store_mlflow_task(
+    config: VectorStorePipelineConfig,
+    counts: dict[str, int | float],
+    export: VectorStoreExportResult,
+) -> None:
+    MLflowTracker(config).log_run(counts, export)
+
+
+@flow(name="rag-vector-store")
+def rag_vector_store_flow(
+    config_path: str = "config/vector_store.yaml",
+) -> VectorStorePipelineResult:
+    import random
+
+    config = load_vector_store_config(Path(config_path))
+    setup_logging(config.logging.level)
+    random.seed(config.run.seed)
+    run_id = new_run_id()
+    logger = get_run_logger()
+    logger.info("Starting RAG vector store run %s", run_id)
+
+    embedded_chunks = load_embedding_records_task(config)
+    index, validation, search_results = index_validate_search_qdrant_task(
+        config,
+        embedded_chunks,
+    )
+
+    counts = build_vector_store_counts(
+        config,
+        embedded_chunks,
+        index,
+        validation,
+        search_results,
+    )
+    diagnostics = build_vector_store_diagnostics(validation, search_results)
+    export = export_vector_store_report_task(
+        config,
+        index,
+        validation,
+        search_results,
+        run_id,
+        counts,
+        diagnostics,
+    )
+    log_vector_store_mlflow_task(config, counts, export)
+
+    logger.info("Finished vector store run %s", run_id)
+    return VectorStorePipelineResult(
+        run_id=run_id,
+        embeddings_count=len(embedded_chunks),
+        points_count=index.collection_points_count,
+        search_results_count=len(search_results),
         validation=validation,
         export=export,
     )

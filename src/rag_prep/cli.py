@@ -5,14 +5,24 @@ import json
 import os
 from pathlib import Path
 
-from rag_prep.config import load_chunking_config, load_config, load_embedding_config
-from rag_prep.pipeline import RagChunkingPipeline, RagEmbeddingPipeline, RagPreparationPipeline
+from rag_prep.config import (
+    load_chunking_config,
+    load_config,
+    load_embedding_config,
+    load_vector_store_config,
+)
+from rag_prep.pipeline import (
+    RagChunkingPipeline,
+    RagEmbeddingPipeline,
+    RagPreparationPipeline,
+    RagVectorStorePipeline,
+)
 from rag_prep.utils import setup_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run RAG preparation, chunking, and embedding pipelines."
+        description="Run RAG preparation, chunking, embedding, and vector store pipelines."
     )
     parser.add_argument(
         "--config",
@@ -61,6 +71,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run embeddings directly without Prefect orchestration.",
     )
+
+    vector_store = subparsers.add_parser(
+        "vector-store",
+        help="Load embeddings into a local vector store and run search checks.",
+    )
+    vector_store.add_argument(
+        "--config",
+        default="config/vector_store.yaml",
+        help="Path to vector store YAML config.",
+    )
+    vector_store.add_argument(
+        "--no-prefect",
+        action="store_true",
+        help="Run vector store indexing directly without Prefect orchestration.",
+    )
     return parser
 
 
@@ -90,6 +115,17 @@ def main() -> None:
             from rag_prep.flow import rag_embeddings_flow
 
             result = rag_embeddings_flow(config_path=config_path)
+    elif command == "vector-store":
+        config_path = args.config or "config/vector_store.yaml"
+        if args.no_prefect:
+            config = load_vector_store_config(Path(config_path))
+            setup_logging(config.logging.level)
+            result = RagVectorStorePipeline(config).run()
+        else:
+            _configure_local_prefect_runtime()
+            from rag_prep.flow import rag_vector_store_flow
+
+            result = rag_vector_store_flow(config_path=config_path)
     else:
         config_path = args.config or "config/default.yaml"
         if args.no_prefect:

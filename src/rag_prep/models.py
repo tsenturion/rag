@@ -136,13 +136,21 @@ class EmbeddedChunk(BaseModel):
     metadata: EmbeddedChunkMetadata
 
 
-class ExportResult(BaseModel):
+class ArtifactExportModel(BaseModel):
+    def artifact_paths(self) -> list[Path]:
+        return []
+
+
+class ExportResult(ArtifactExportModel):
     json_path: Path
     jsonl_path: Path
     manifest_path: Path
     documents_count: int
     duplicates_removed: int
     run_id: str
+
+    def artifact_paths(self) -> list[Path]:
+        return [self.json_path, self.jsonl_path, self.manifest_path]
 
 
 class PipelineResult(BaseModel):
@@ -155,12 +163,15 @@ class PipelineResult(BaseModel):
     export: ExportResult
 
 
-class ChunkingExportResult(BaseModel):
+class ChunkingExportResult(ArtifactExportModel):
     json_path: Path
     jsonl_path: Path
     manifest_path: Path
     chunks_count: int
     run_id: str
+
+    def artifact_paths(self) -> list[Path]:
+        return [self.json_path, self.jsonl_path, self.manifest_path]
 
 
 class ChunkingValidationResult(BaseModel):
@@ -195,12 +206,15 @@ class ChunkingPipelineResult(BaseModel):
     export: ChunkingExportResult
 
 
-class EmbeddingExportResult(BaseModel):
+class EmbeddingExportResult(ArtifactExportModel):
     json_path: Path
     jsonl_path: Path
     manifest_path: Path
     embeddings_count: int
     run_id: str
+
+    def artifact_paths(self) -> list[Path]:
+        return [self.json_path, self.jsonl_path, self.manifest_path]
 
 
 class EmbeddingValidationResult(BaseModel):
@@ -235,3 +249,89 @@ class EmbeddingPipelineResult(BaseModel):
     embeddings_count: int
     validation: EmbeddingValidationResult
     export: EmbeddingExportResult
+
+
+class VectorStoreIndexResult(BaseModel):
+    collection_name: str
+    provider: str
+    mode: str
+    points_upserted: int
+    collection_points_count: int
+    vector_size: int
+    distance: str
+    storage_path: Path | None = None
+    url: str | None = None
+
+
+class VectorStoreValidationResult(BaseModel):
+    embeddings_count: int = 0
+    collection_points_count: int = 0
+    count_mismatch: int = 0
+    count_delta: int = 0
+    extra_points_count: int = 0
+    missing_points_count: int = 0
+    missing_vector_count: int = 0
+    collection_vector_size_mismatch_count: int = 0
+    point_vector_size_mismatch_count: int = 0
+    vector_size_mismatch_count: int = 0
+    distance_mismatch_count: int = 0
+    missing_payload_count: int = 0
+    missing_text_count: int = 0
+    missing_metadata_count: int = 0
+    missing_required_metadata_count: int = 0
+    sampled_points_count: int = 0
+
+    @property
+    def has_errors(self) -> bool:
+        return any(
+            (
+                self.count_mismatch != 0,
+                self.missing_vector_count != 0,
+                self.vector_size_mismatch_count != 0,
+                self.distance_mismatch_count != 0,
+                self.missing_payload_count != 0,
+                self.missing_text_count != 0,
+                self.missing_metadata_count != 0,
+                self.missing_required_metadata_count != 0,
+            )
+        )
+
+
+class VectorSearchHit(BaseModel):
+    point_id: str
+    chunk_id: str | None = None
+    score: float
+    text: str | None = None
+    source: str | None = None
+    section: str | None = None
+    position: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class VectorSearchResult(BaseModel):
+    query_chunk_id: str
+    query_text: str
+    hits: list[VectorSearchHit] = Field(default_factory=list)
+    self_match_at_1: bool = False
+    self_match_returned: bool = False
+    unfiltered_self_match_at_1: bool | None = None
+    score_threshold: float | None = None
+
+
+class VectorStoreExportResult(ArtifactExportModel):
+    manifest_path: Path
+    validation_path: Path
+    search_results_path: Path
+    run_id: str
+
+    def artifact_paths(self) -> list[Path]:
+        return [self.manifest_path, self.validation_path, self.search_results_path]
+
+
+class VectorStorePipelineResult(BaseModel):
+    run_id: str
+    embeddings_count: int
+    points_count: int
+    search_results_count: int
+    validation: VectorStoreValidationResult
+    export: VectorStoreExportResult

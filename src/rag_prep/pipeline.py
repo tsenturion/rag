@@ -9,7 +9,12 @@ from rag_prep.chunking_stages import (
     ChunkValidationStage,
     PreparedDocumentLoadingStage,
 )
-from rag_prep.config import ChunkingPipelineConfig, EmbeddingPipelineConfig, PipelineConfig
+from rag_prep.config import (
+    ChunkingPipelineConfig,
+    EmbeddingPipelineConfig,
+    PipelineConfig,
+    VectorStorePipelineConfig,
+)
 from rag_prep.embedding_stages import (
     ChunkLoadingStage,
     EmbeddingExportStage,
@@ -22,6 +27,7 @@ from rag_prep.models import (
     ChunkingPipelineResult,
     EmbeddingPipelineResult,
     PipelineResult,
+    VectorStorePipelineResult,
 )
 from rag_prep.stages import (
     DeduplicationStage,
@@ -34,6 +40,16 @@ from rag_prep.stages import (
 )
 from rag_prep.tracking import MLflowTracker
 from rag_prep.utils import new_run_id
+from rag_prep.vector_store_stages import (
+    EmbeddingLoadingStage,
+    QdrantIndexingStage,
+    QdrantSearchStage,
+    QdrantValidationStage,
+    VectorStoreExportStage,
+    build_vector_store_counts,
+    build_vector_store_diagnostics,
+    qdrant_client_context,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -225,6 +241,62 @@ class RagEmbeddingPipeline:
             run_id=run_id,
             chunks_count=len(chunks),
             embeddings_count=len(embedded_chunks),
+            validation=validation,
+            export=export,
+        )
+
+
+class RagVectorStorePipeline:
+    """OO facade around the vector store indexing stages."""
+
+    def __init__(self, config: VectorStorePipelineConfig):
+        self.config = config
+        self.loader = EmbeddingLoadingStage()
+        self.indexer = QdrantIndexingStage(config.vector_store)
+        self.validator = QdrantValidationStage(config.vector_store)
+        self.searcher = QdrantSearchStage(config.vector_store)
+        self.exporter = VectorStoreExportStage(config)
+        self.tracker = MLflowTracker(config)
+
+    def run(self) -> VectorStorePipelineResult:
+        random.seed(self.config.run.seed)
+        run_id = new_run_id()
+        LOGGER.info("Starting RAG vector store run %s", run_id)
+
+        embedded_chunks = self.loader.run(self.config.paths.input_jsonl)
+        with qdrant_client_context(self.config.vector_store) as client:
+            index = self.indexer.run(embedded_chunks, client=client)
+            validation = self.validator.run(embedded_chunks, client=client)
+            search_results = self.searcher.run(embedded_chunks, client=client)
+
+        counts = build_vector_store_counts(
+            self.config,
+            embedded_chunks,
+            index,
+            validation,
+            search_results,
+        )
+        diagnostics = build_vector_store_diagnostics(validation, search_results)
+        export = self.exporter.run(
+            index=index,
+            validation=validation,
+            search_results=search_results,
+            run_id=run_id,
+            counts=counts,
+            diagnostics=diagnostics,
+        )
+        self.tracker.log_run(counts, export)
+
+        LOGGER.info(
+            "Finished vector store run %s with %d Qdrant points",
+            run_id,
+            index.collection_points_count,
+        )
+        return VectorStorePipelineResult(
+            run_id=run_id,
+            embeddings_count=len(embedded_chunks),
+            points_count=index.collection_points_count,
+            search_results_count=len(search_results),
             validation=validation,
             export=export,
         )

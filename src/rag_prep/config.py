@@ -175,6 +175,53 @@ class EmbeddingPipelineConfig(BaseModel):
     )
 
 
+class VectorStorePathConfig(BaseModel):
+    input_jsonl: Path = Path("data/embeddings/embeddings.jsonl")
+    output_dir: Path = Path("data/vector_store")
+    manifest_filename: str = "manifest.json"
+    validation_filename: str = "validation.json"
+    search_results_filename: str = "search_results.json"
+
+
+class VectorStoreConfig(BaseModel):
+    provider: Literal["qdrant"] = "qdrant"
+    mode: Literal["local", "http"] = "local"
+    collection_name: str = "rag_chunks"
+    vector_size: int = Field(default=1536, ge=1)
+    distance: Literal["Cosine", "Dot", "Euclid", "Manhattan"] = "Cosine"
+    recreate_collection: bool = False
+    batch_size: int = Field(default=128, ge=1)
+    local_storage_path: Path = Path("data/qdrant_storage")
+    host: str = "localhost"
+    port: int = Field(default=6333, ge=1, le=65535)
+    https: bool = False
+    api_key_env: str | None = None
+    timeout_seconds: float = Field(default=30.0, gt=0)
+    search_limit: int = Field(default=5, ge=1)
+    test_queries_count: int = Field(default=3, ge=0)
+    score_threshold: float | None = None
+    validation_sample_size: int = Field(default=1000, ge=1)
+    fail_on_validation_error: bool = True
+
+    @field_validator("score_threshold")
+    @classmethod
+    def score_threshold_must_be_positive(cls, value: float | None) -> float | None:
+        if value is not None and value < 0.0:
+            raise ValueError("score_threshold must be >= 0.0")
+        return value
+
+
+class VectorStorePipelineConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run: RunConfig = Field(default_factory=lambda: RunConfig(name="rag_vector_store"))
+    paths: VectorStorePathConfig = Field(default_factory=VectorStorePathConfig)
+    vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
+    logging: LoggingConfig = Field(
+        default_factory=lambda: LoggingConfig(mlflow_experiment="rag-vector-store")
+    )
+
+
 def load_config(path: str | Path) -> PipelineConfig:
     config_path = _resolve_config_path(path)
     base_dir = _config_base_dir(config_path)
@@ -218,6 +265,17 @@ def load_embedding_config(path: str | Path) -> EmbeddingPipelineConfig:
         }
     )
     return _resolve_embedding_paths(config, base_dir=base_dir)
+
+
+def load_vector_store_config(path: str | Path) -> VectorStorePipelineConfig:
+    config_path = _resolve_config_path(path)
+    base_dir = _config_base_dir(config_path)
+    load_dotenv(base_dir / ".env")
+
+    with config_path.open("r", encoding="utf-8") as file:
+        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    config = VectorStorePipelineConfig.model_validate(raw)
+    return _resolve_vector_store_paths(config, base_dir=base_dir)
 
 
 def _resolve_config_path(path: str | Path) -> Path:
@@ -297,5 +355,36 @@ def _resolve_embedding_paths(
                     "output_dir": output_dir.resolve(),
                 }
             )
+        }
+    )
+
+
+def _resolve_vector_store_paths(
+    config: VectorStorePipelineConfig, base_dir: Path
+) -> VectorStorePipelineConfig:
+    paths = config.paths
+    vector_store = config.vector_store
+    input_jsonl = (
+        paths.input_jsonl if paths.input_jsonl.is_absolute() else base_dir / paths.input_jsonl
+    )
+    output_dir = (
+        paths.output_dir if paths.output_dir.is_absolute() else base_dir / paths.output_dir
+    )
+    local_storage_path = (
+        vector_store.local_storage_path
+        if vector_store.local_storage_path.is_absolute()
+        else base_dir / vector_store.local_storage_path
+    )
+    return config.model_copy(
+        update={
+            "paths": paths.model_copy(
+                update={
+                    "input_jsonl": input_jsonl.resolve(),
+                    "output_dir": output_dir.resolve(),
+                }
+            ),
+            "vector_store": vector_store.model_copy(
+                update={"local_storage_path": local_storage_path.resolve()}
+            ),
         }
     )
