@@ -13,6 +13,7 @@ data/chunks/
 data/embeddings/
 data/vector_store/
 data/qdrant_storage/
+data/agent/
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/sample.txt

@@ -493,3 +493,114 @@ Pipeline проверяет:
 - для smoke-запросов ближайший результат обычно совпадает с исходным chunk.
 
 `search_results.json` сохраняет тестовые запросы и найденные hits. Это не production retrieval, а базовая проверка корректности записи/чтения индекса перед следующим этапом RAG.
+
+# Agent Tools and Memory Module
+
+Это модуль минимального LangGraph-агента с tools и полноценной памятью.
+
+## Что реализовано
+
+- LangGraph workflow `agent -> tools -> agent`;
+- OpenAI chat model, по умолчанию `gpt-4.1-nano`;
+- tools:
+  - `calculator` для точных вычислений;
+  - `current_datetime` для текущей даты и времени;
+  - `get_weather` для OpenWeatherMap через `httpx2`;
+  - `save_memory`;
+  - `search_memory`;
+  - `get_memory`;
+  - `update_memory`;
+  - `delete_memory`;
+  - `list_memories`;
+  - `clear_session_memory`;
+- short-term buffer memory для текущей сессии;
+- summary memory для сжатия длинного диалога;
+- long-term memory в SQLite;
+- CLI-команда `rag-agent`.
+
+## Конфигурация Agent
+
+Параметры находятся в `config/agent.yaml`:
+
+- `agent.model` - модель агента;
+- `agent.temperature` - температура генерации;
+- `agent.max_history_messages` - размер short-term buffer;
+- `agent.max_summary_chars` - ограничение summary memory;
+- `memory.sqlite_path` - SQLite-файл долговременной памяти;
+- `memory.default_user_id` и `default_session_id`;
+- `weather.api_key_env` - имя переменной окружения с OpenWeatherMap API key;
+- `weather.default_city`;
+- `weather.default_units`.
+
+В `.env` должны быть:
+
+```powershell
+OPENAI_API_KEY=...
+OPENWEATHER_API_KEY=...
+```
+
+## Запуск Agent
+
+Одноразовый запрос:
+
+```powershell
+rag-agent --config config/agent.yaml --message "Сколько будет 128 * 47?"
+```
+
+Интерактивный режим:
+
+```powershell
+rag-agent --config config/agent.yaml
+```
+
+Выбрать user/session scope:
+
+```powershell
+rag-agent --user-id default --session-id lesson-1 --message "Запомни, что мой проект называется RAG Engineer Assistant"
+```
+
+Посмотреть память:
+
+```powershell
+rag-agent --list-memory
+```
+
+Очистить память текущей сессии:
+
+```powershell
+rag-agent --clear-session-memory
+```
+
+## Проверочные запросы
+
+```text
+Сколько будет 128 * 47?
+```
+
+```text
+Какая сегодня дата?
+```
+
+```text
+Какая погода в Екатеринбурге?
+```
+
+```text
+Запомни, что мой проект называется RAG Engineer Assistant.
+```
+
+```text
+Как называется мой проект?
+```
+
+```text
+Что ты обо мне помнишь?
+```
+
+```text
+Обнови название моего проекта на Engineer Support Agent.
+```
+
+```text
+Забудь название моего проекта.
+```

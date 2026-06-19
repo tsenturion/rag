@@ -1,0 +1,23 @@
+agent:
+  model: gpt-4.1-nano
+  temperature: 0
+  max_history_messages: 12
+  max_summary_chars: 2500
+  timeout_seconds: 60
+  max_retries: 2
+
+memory:
+  sqlite_path: data/agent/memory.sqlite
+  default_user_id: default
+  default_session_id: default
+  search_limit: 5
+
+weather:
+  api_key_env: OPENWEATHER_API_KEY
+  default_city: Екатеринбург
+  default_units: metric
+  language: ru
+  timeout_seconds: 10
+
+logging:
+  level: INFO
