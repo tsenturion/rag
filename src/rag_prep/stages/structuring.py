@@ -13,7 +13,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class LlamaIndexStructuringStage:
-    """Create Pydantic and LlamaIndex documents for downstream RAG steps."""
+    """Создаёт Pydantic и LlamaIndex документы для следующих этапов RAG."""
 
     def __init__(self, config: StructuringConfig):
         self.config = config
@@ -24,7 +24,7 @@ class LlamaIndexStructuringStage:
             if self.config.group_by_section
             else self._one_document_per_element(elements, run_id)
         )
-        LOGGER.info("Structured %d prepared documents", len(documents))
+        LOGGER.info("Сформировано подготовленных документов: %d", len(documents))
         return documents
 
     def to_llama_documents(self, documents: list[PreparedDocument]) -> list[Document]:

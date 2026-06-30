@@ -16,7 +16,7 @@ OPENWEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
 class WeatherInput(BaseModel):
     city: str | None = Field(
         default=None,
-        description="City name. Use the user's city if it is present in the request.",
+        description="Название города. Используй город пользователя, если он есть в запросе.",
     )
 
 
@@ -27,7 +27,7 @@ def weather_tool(config: WeatherConfig) -> StructuredTool:
             return json.dumps(
                 {
                     "error": "missing_api_key",
-                    "message": f"Set {config.api_key_env} in .env or environment.",
+                    "message": f"Укажите {config.api_key_env} в .env или переменных окружения.",
                 },
                 ensure_ascii=False,
             )
@@ -76,8 +76,8 @@ def weather_tool(config: WeatherConfig) -> StructuredTool:
     return StructuredTool.from_function(
         name="get_weather",
         description=(
-            "Use this tool when the user asks about current weather. "
-            "Input is a city name; if the user does not provide one, use default city."
+            "Используй этот tool, когда пользователь спрашивает текущую погоду. "
+            "На входе название города; если пользователь не указал город, используй город по умолчанию."
         ),
         func=get_weather,
         args_schema=WeatherInput,

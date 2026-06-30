@@ -14,7 +14,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class EmbeddingExportStage:
-    """Write embedding-ready records for later vector store indexing."""
+    """Сохраняет записи embeddings для дальнейшей индексации в vector store."""
 
     def __init__(self, config: EmbeddingPipelineConfig):
         self.config = config
@@ -51,7 +51,7 @@ class EmbeddingExportStage:
         }
         json_dump(manifest_path, manifest)
 
-        LOGGER.info("Saved embeddings JSON to %s and JSONL to %s", json_path, jsonl_path)
+        LOGGER.info("Сохранены embeddings JSON в %s и JSONL в %s", json_path, jsonl_path)
         return EmbeddingExportResult(
             json_path=json_path,
             jsonl_path=jsonl_path,

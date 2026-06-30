@@ -17,10 +17,10 @@ def normalize_key(key: str) -> str:
 def validate_memory_value(value: str) -> str:
     cleaned = value.strip()
     if not cleaned:
-        raise ValueError("memory value cannot be empty")
+        raise ValueError("значение памяти не может быть пустым")
     for pattern in SECRET_PATTERNS:
         if pattern.search(cleaned):
-            raise ValueError("refusing to store likely secret value in memory")
+            raise ValueError("вероятный секрет нельзя сохранять в память")
     return cleaned
 
 

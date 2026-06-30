@@ -14,7 +14,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ExportStage:
-    """Write prepared documents as JSON and JSONL for downstream processing."""
+    """Сохраняет подготовленные документы в JSON и JSONL для следующих этапов."""
 
     def __init__(self, config: PipelineConfig):
         self.config = config
@@ -51,7 +51,7 @@ class ExportStage:
         }
         json_dump(manifest_path, manifest)
 
-        LOGGER.info("Saved JSON to %s and JSONL to %s", json_path, jsonl_path)
+        LOGGER.info("Сохранены JSON в %s и JSONL в %s", json_path, jsonl_path)
         return ExportResult(
             json_path=json_path,
             jsonl_path=jsonl_path,

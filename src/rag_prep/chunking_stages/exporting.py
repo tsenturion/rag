@@ -14,7 +14,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ChunkExportStage:
-    """Write embedding-ready chunks as JSON and JSONL."""
+    """Сохраняет чанки, готовые к embeddings, в JSON и JSONL."""
 
     def __init__(self, config: ChunkingPipelineConfig):
         self.config = config
@@ -51,7 +51,7 @@ class ChunkExportStage:
         }
         json_dump(manifest_path, manifest)
 
-        LOGGER.info("Saved chunks JSON to %s and JSONL to %s", json_path, jsonl_path)
+        LOGGER.info("Сохранены chunks JSON в %s и JSONL в %s", json_path, jsonl_path)
         return ChunkingExportResult(
             json_path=json_path,
             jsonl_path=jsonl_path,

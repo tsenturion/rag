@@ -125,7 +125,7 @@ class ChunkingConfig(BaseModel):
     def overlap_must_be_less_than_size(cls, value: int, info) -> int:
         chunk_size = info.data.get("chunk_size")
         if chunk_size is not None and value >= chunk_size:
-            raise ValueError("chunk_overlap must be smaller than chunk_size")
+            raise ValueError("chunk_overlap должен быть меньше chunk_size")
         return value
 
 
@@ -207,7 +207,7 @@ class VectorStoreConfig(BaseModel):
     @classmethod
     def score_threshold_must_be_positive(cls, value: float | None) -> float | None:
         if value is not None and value < 0.0:
-            raise ValueError("score_threshold must be >= 0.0")
+            raise ValueError("score_threshold должен быть >= 0.0")
         return value
 
 

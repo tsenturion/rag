@@ -9,7 +9,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ChunkValidationStage:
-    """Validate chunks before embeddings are computed by a later pipeline."""
+    """Валидирует чанки до расчёта embeddings в следующем пайплайне."""
 
     def __init__(self, config: ChunkingConfig):
         self.config = config
@@ -43,7 +43,7 @@ class ChunkValidationStage:
 
         LOGGER.info(
             (
-                "Validated %d chunks: empty=%d undersized=%d oversized=%d "
+                "Проверено чанков: %d; empty=%d undersized=%d oversized=%d "
                 "estimated_offsets=%d missing_parent=%d missing_lineage=%d low_quality=%d"
             ),
             len(chunks),
@@ -56,5 +56,5 @@ class ChunkValidationStage:
             result.low_quality_chunks_count,
         )
         if self.config.fail_on_validation_error and result.has_errors:
-            raise ValueError(f"Chunk validation failed: {result.model_dump()}")
+            raise ValueError(f"Валидация чанков завершилась ошибкой: {result.model_dump()}")
         return result

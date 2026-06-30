@@ -39,7 +39,7 @@ class LocatedSpan:
 
 
 class ChunkSplittingStage:
-    """Split prepared documents into embedding-ready chunks without embedding them."""
+    """Делит подготовленные документы на чанки для embeddings без расчёта embeddings."""
 
     def __init__(self, config: ChunkingConfig):
         self.config = config
@@ -47,7 +47,7 @@ class ChunkSplittingStage:
             self.encoding = tiktoken.encoding_for_model(config.tokenizer_model)
         except KeyError:
             LOGGER.warning(
-                "Unknown tokenizer model %s; falling back to cl100k_base",
+                "Неизвестная модель токенизатора %s; используется cl100k_base",
                 config.tokenizer_model,
             )
             self.encoding = tiktoken.get_encoding("cl100k_base")
@@ -57,7 +57,7 @@ class ChunkSplittingStage:
         chunks: list[PreparedChunk] = []
         for document in documents:
             chunks.extend(self._split_document(document))
-        LOGGER.info("Split %d documents into %d chunks", len(documents), len(chunks))
+        LOGGER.info("Разделено документов: %d; получено чанков: %d", len(documents), len(chunks))
         return chunks
 
     def _build_splitter(self):
@@ -378,8 +378,8 @@ class ChunkSplittingStage:
 
         LOGGER.debug(
             (
-                "Dropped block-level overlap because overlap plus next block exceeds "
-                "chunk_size: overlap_blocks=%d next_block=%s"
+                "Block-level overlap отброшен, потому что overlap вместе со следующим "
+                "блоком превышает chunk_size: overlap_blocks=%d next_block=%s"
             ),
             len(overlap),
             next_block.id,
@@ -418,8 +418,8 @@ class ChunkSplittingStage:
             start = min(cursor, len(source_text))
             LOGGER.warning(
                 (
-                    "Could not locate splitter output in source text; using estimated "
-                    "offsets. cursor=%d chunk_chars=%d source_chars=%d strategy=%s"
+                    "Не удалось найти результат splitter в исходном тексте; используются "
+                    "оценочные offsets. cursor=%d chunk_chars=%d source_chars=%d strategy=%s"
                 ),
                 cursor,
                 len(chunk_text),

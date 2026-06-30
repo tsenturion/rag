@@ -20,7 +20,7 @@ def system_prompt(*, summary: str, memories: list[MemoryRecord]) -> str:
         "- Если пользователь спрашивает сохранённый факт, используй search_memory.\n"
         "- Если пользователь просит обновить или забыть факт, используй update_memory "
         "или delete_memory.\n"
-        "- Не сохраняй API keys, пароли, токены и другие секреты.\n\n"
+        "- Не сохраняй API-ключи, пароли, токены и другие секреты.\n\n"
         f"Summary memory текущей сессии:\n{summary or 'Пока нет.'}\n\n"
         f"Долговременная память пользователя:\n{memory_block or 'Пока нет.'}"
     )

@@ -20,71 +20,112 @@ from rag_prep.pipeline import (
 from rag_prep.utils import setup_logging
 
 
+class RussianHelpFormatter(argparse.HelpFormatter):
+    def _format_usage(self, *args, **kwargs) -> str:
+        return super()._format_usage(*args, **kwargs).replace("usage:", "использование:", 1)
+
+
+def _add_russian_help(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-h",
+        "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="показать это сообщение и выйти",
+    )
+    parser._positionals.title = "позиционные аргументы"
+    parser._optionals.title = "параметры"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run RAG preparation, chunking, embedding, and vector store pipelines."
+        description="Запуск пайплайнов подготовки данных, чанкинга, embeddings и vector store для RAG.",
+        add_help=False,
+        formatter_class=RussianHelpFormatter,
     )
+    _add_russian_help(parser)
     parser.add_argument(
         "--config",
         default=None,
-        help="Legacy prepare config path. Defaults to config/default.yaml.",
+        help="Legacy-путь к конфигу подготовки. По умолчанию config/default.yaml.",
     )
     parser.add_argument(
         "--no-prefect",
         action="store_true",
-        help="Legacy flag: run preparation directly without Prefect orchestration.",
+        help="Legacy-флаг: запустить подготовку напрямую без оркестрации Prefect.",
     )
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command", title="команды")
 
-    prepare = subparsers.add_parser("prepare", help="Run data preparation pipeline.")
+    prepare = subparsers.add_parser(
+        "prepare",
+        help="Запустить пайплайн подготовки данных.",
+        add_help=False,
+        formatter_class=RussianHelpFormatter,
+    )
+    _add_russian_help(prepare)
     prepare.add_argument(
         "--config",
         default="config/default.yaml",
-        help="Path to preparation YAML config.",
+        help="Путь к YAML-конфигу подготовки данных.",
     )
     prepare.add_argument(
         "--no-prefect",
         action="store_true",
-        help="Run preparation directly without Prefect orchestration.",
+        help="Запустить подготовку напрямую без оркестрации Prefect.",
     )
 
-    chunk = subparsers.add_parser("chunk", help="Run chunking pipeline.")
+    chunk = subparsers.add_parser(
+        "chunk",
+        help="Запустить пайплайн чанкинга.",
+        add_help=False,
+        formatter_class=RussianHelpFormatter,
+    )
+    _add_russian_help(chunk)
     chunk.add_argument(
         "--config",
         default="config/chunking.yaml",
-        help="Path to chunking YAML config.",
+        help="Путь к YAML-конфигу чанкинга.",
     )
     chunk.add_argument(
         "--no-prefect",
         action="store_true",
-        help="Run chunking directly without Prefect orchestration.",
+        help="Запустить чанкинг напрямую без оркестрации Prefect.",
     )
 
-    embed = subparsers.add_parser("embed", help="Run embeddings pipeline.")
+    embed = subparsers.add_parser(
+        "embed",
+        help="Запустить пайплайн embeddings.",
+        add_help=False,
+        formatter_class=RussianHelpFormatter,
+    )
+    _add_russian_help(embed)
     embed.add_argument(
         "--config",
         default="config/embeddings.yaml",
-        help="Path to embeddings YAML config.",
+        help="Путь к YAML-конфигу embeddings.",
     )
     embed.add_argument(
         "--no-prefect",
         action="store_true",
-        help="Run embeddings directly without Prefect orchestration.",
+        help="Запустить embeddings напрямую без оркестрации Prefect.",
     )
 
     vector_store = subparsers.add_parser(
         "vector-store",
-        help="Load embeddings into a local vector store and run search checks.",
+        help="Загрузить embeddings в локальный vector store и выполнить проверки поиска.",
+        add_help=False,
+        formatter_class=RussianHelpFormatter,
     )
+    _add_russian_help(vector_store)
     vector_store.add_argument(
         "--config",
         default="config/vector_store.yaml",
-        help="Path to vector store YAML config.",
+        help="Путь к YAML-конфигу vector store.",
     )
     vector_store.add_argument(
         "--no-prefect",
         action="store_true",
-        help="Run vector store indexing directly without Prefect orchestration.",
+        help="Запустить индексацию vector store напрямую без оркестрации Prefect.",
     )
     return parser
 

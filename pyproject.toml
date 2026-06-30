@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rag-data-prep"
 version = "0.1.0"
-description = "Reproducible data preparation pipeline for RAG sources."
+description = "Воспроизводимый пайплайн подготовки источников для RAG."
 requires-python = ">=3.13"
 dependencies = [
   "beautifulsoup4>=4.14.3",

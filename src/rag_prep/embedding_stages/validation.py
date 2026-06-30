@@ -10,7 +10,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class EmbeddingValidationStage:
-    """Validate embedding outputs before vector store indexing."""
+    """Валидирует embeddings перед индексацией в vector store."""
 
     def __init__(self, config: EmbeddingConfig):
         self.config = config
@@ -62,7 +62,7 @@ class EmbeddingValidationStage:
 
         LOGGER.info(
             (
-                "Validated %d embeddings: count_mismatch=%d missing=%d "
+                "Проверено embeddings: %d; count_mismatch=%d missing=%d "
                 "dimension_mismatch=%d non_finite=%d duplicate_ids=%d "
                 "missing_metadata=%d model_mismatch=%d token_limit_exceeded=%d"
             ),
@@ -77,5 +77,5 @@ class EmbeddingValidationStage:
             result.token_limit_exceeded_count,
         )
         if self.config.fail_on_validation_error and result.has_errors:
-            raise ValueError(f"Embedding validation failed: {result.model_dump()}")
+            raise ValueError(f"Валидация embeddings завершилась ошибкой: {result.model_dump()}")
         return result

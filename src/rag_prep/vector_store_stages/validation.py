@@ -24,7 +24,7 @@ REQUIRED_METADATA_KEYS = (
 
 
 class QdrantValidationStage:
-    """Validate that Qdrant contains expected vectors and payload metadata."""
+    """Проверяет, что Qdrant содержит ожидаемые vectors и payload metadata."""
 
     def __init__(self, config: VectorStoreConfig):
         self.config = config
@@ -89,7 +89,7 @@ class QdrantValidationStage:
         )
         LOGGER.info(
             (
-                "Validated Qdrant collection %s: count_mismatch=%d count_delta=%d "
+                "Проверена коллекция Qdrant %s: count_mismatch=%d count_delta=%d "
                 "extra_points=%d missing_points=%d missing_vectors=%d "
                 "collection_vector_size_mismatch=%d point_vector_size_mismatch=%d "
                 "vector_size_mismatch=%d distance_mismatch=%d missing_payload=%d "
@@ -113,7 +113,7 @@ class QdrantValidationStage:
             result.sampled_points_count,
         )
         if self.config.fail_on_validation_error and result.has_errors:
-            raise ValueError(f"Vector store validation failed: {result.model_dump()}")
+            raise ValueError(f"Валидация vector store завершилась ошибкой: {result.model_dump()}")
         return result
 
     def _sample_points(self, client) -> list[qdrant_models.Record]:
@@ -128,8 +128,8 @@ class QdrantValidationStage:
             if iterations > max_iterations:
                 LOGGER.warning(
                     (
-                        "Stopped Qdrant scroll validation after %d iterations; "
-                        "sampled %d/%d requested points"
+                        "Qdrant scroll validation остановлена после %d итераций; "
+                        "проверено %d/%d запрошенных points"
                     ),
                     max_iterations,
                     len(points),

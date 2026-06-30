@@ -34,14 +34,14 @@ def resolve_openai_api_key(config: EmbeddingConfig) -> str:
 
     raise RuntimeError(
         (
-            f"OpenAI API key not found. Set {config.api_key_env} in the environment"
-            " or in the env_file configured for the embeddings pipeline."
+            f"OpenAI API-ключ не найден. Укажите {config.api_key_env} в переменных окружения"
+            " или в env_file, настроенном для пайплайна embeddings."
         )
     )
 
 
 class OpenAIEmbeddingStage:
-    """Calculate OpenAI embeddings for prepared chunks."""
+    """Считает OpenAI embeddings для подготовленных чанков."""
 
     def __init__(self, config: EmbeddingConfig):
         self.config = config
@@ -55,7 +55,7 @@ class OpenAIEmbeddingStage:
             self.encoding = tiktoken.encoding_for_model(config.model)
         except KeyError:
             LOGGER.warning(
-                "Unknown tokenizer model %s; falling back to cl100k_base",
+                "Неизвестная модель токенизатора %s; используется cl100k_base",
                 config.model,
             )
             self.encoding = tiktoken.get_encoding("cl100k_base")
@@ -68,7 +68,7 @@ class OpenAIEmbeddingStage:
             result = self._embed_texts(texts)
             if len(result.vectors) != len(batch):
                 raise ValueError(
-                    f"OpenAI returned {len(result.vectors)} embeddings for {len(batch)} inputs"
+                    f"OpenAI вернул {len(result.vectors)} embeddings для {len(batch)} входов"
                 )
             for chunk, vector in zip(batch, result.vectors, strict=True):
                 embedded.append(
@@ -80,13 +80,13 @@ class OpenAIEmbeddingStage:
                     )
                 )
             LOGGER.info(
-                "Embedded batch %d/%d with %d chunks",
+                "Посчитан batch embeddings %d/%d; чанков: %d",
                 batch_number,
                 len(batches),
                 len(batch),
             )
 
-        LOGGER.info("Calculated embeddings for %d chunks", len(embedded))
+        LOGGER.info("Посчитаны embeddings для чанков: %d", len(embedded))
         return embedded
 
     def _embed_texts(self, texts: list[str]) -> EmbeddingBatchResult:
@@ -123,7 +123,7 @@ class OpenAIEmbeddingStage:
             if token_count > self.config.max_input_tokens:
                 raise ValueError(
                     (
-                        "Chunk exceeds embedding model token limit: "
+                        "Чанк превышает token limit модели embeddings: "
                         f"id={chunk.metadata.id} tokens={token_count} "
                         f"limit={self.config.max_input_tokens}"
                     )
@@ -180,7 +180,7 @@ class OpenAIEmbeddingStage:
         array = np.array(vector, dtype=np.float32)
         norm = float(np.linalg.norm(array))
         if norm == 0.0 or not math.isfinite(norm):
-            LOGGER.warning("Cannot normalize embedding with invalid norm: %s", norm)
+            LOGGER.warning("Нельзя нормализовать embedding с некорректной нормой: %s", norm)
             return [float(value) for value in vector]
         return (array / norm).astype(float).tolist()
 

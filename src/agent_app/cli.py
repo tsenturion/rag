@@ -10,32 +10,51 @@ from agent_app.graph import AgentRunner
 from agent_app.memory import SQLiteMemoryStore
 
 
+class RussianHelpFormatter(argparse.HelpFormatter):
+    def _format_usage(self, *args, **kwargs) -> str:
+        return super()._format_usage(*args, **kwargs).replace("usage:", "использование:", 1)
+
+
+def _add_russian_help(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-h",
+        "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="показать это сообщение и выйти",
+    )
+    parser._optionals.title = "параметры"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the tools and memory LangGraph agent."
+        description="Запуск LangGraph-агента с tools и памятью.",
+        add_help=False,
+        formatter_class=RussianHelpFormatter,
     )
+    _add_russian_help(parser)
     parser.add_argument(
         "--config",
         default="config/agent.yaml",
-        help="Path to agent YAML config.",
+        help="Путь к YAML-конфигу агента.",
     )
-    parser.add_argument("--message", default=None, help="Single message to send.")
-    parser.add_argument("--user-id", default=None, help="Memory user id.")
-    parser.add_argument("--session-id", default=None, help="Memory session id.")
+    parser.add_argument("--message", default=None, help="Одно сообщение для отправки агенту.")
+    parser.add_argument("--user-id", default=None, help="Идентификатор пользователя для памяти.")
+    parser.add_argument("--session-id", default=None, help="Идентификатор сессии для памяти.")
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print machine-readable AgentResponse JSON.",
+        help="Напечатать машиночитаемый JSON AgentResponse.",
     )
     parser.add_argument(
         "--list-memory",
         action="store_true",
-        help="List current user's long-term memory and exit.",
+        help="Показать долговременную память текущего пользователя и выйти.",
     )
     parser.add_argument(
         "--clear-session-memory",
         action="store_true",
-        help="Clear current session-scoped memory and exit.",
+        help="Очистить память текущей сессии и выйти.",
     )
     return parser
 
@@ -77,10 +96,10 @@ def main() -> None:
         _print_response(response.model_dump(mode="json"), as_json=args.json)
         return
 
-    print("Interactive mode. Type exit or quit to stop.")
+    print("Интерактивный режим. Введите exit, quit или выход для завершения.")
     while True:
         try:
-            message = input("You: ").strip()
+            message = input("Вы: ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break

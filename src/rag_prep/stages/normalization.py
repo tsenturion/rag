@@ -12,7 +12,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class TextNormalizationStage:
-    """Normalize Unicode/case and collect spaCy sentence statistics."""
+    """Нормализует Unicode/регистр и собирает sentence statistics через spaCy."""
 
     def __init__(self, config: NormalizationConfig):
         self.config = config
@@ -27,7 +27,7 @@ class TextNormalizationStage:
                 element.model_copy(update={"text": text})
                 for element, text in zip(elements, texts)
             ]
-            LOGGER.info("Normalized %d elements", len(normalized))
+            LOGGER.info("Нормализовано элементов: %d", len(normalized))
             return normalized
 
         normalized: list[ProcessedElement] = []
@@ -37,7 +37,7 @@ class TextNormalizationStage:
             metadata["token_count"] = len(doc)
             normalized.append(element.model_copy(update={"text": text, "metadata": metadata}))
 
-        LOGGER.info("Normalized %d elements", len(normalized))
+        LOGGER.info("Нормализовано элементов: %d", len(normalized))
         return normalized
 
     def _normalize_text(self, text: str) -> str:

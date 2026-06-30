@@ -55,7 +55,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class RagPreparationPipeline:
-    """OO facade around the preparation stages."""
+    """ООП-фасад над стадиями подготовки данных."""
 
     def __init__(self, config: PipelineConfig):
         self.config = config
@@ -73,7 +73,7 @@ class RagPreparationPipeline:
     def run(self) -> PipelineResult:
         random.seed(self.config.run.seed)
         run_id = new_run_id()
-        LOGGER.info("Starting RAG data preparation run %s", run_id)
+        LOGGER.info("Старт запуска подготовки данных RAG: %s", run_id)
 
         sources = self.loader.run(self.config.paths.input_dir)
         parse_result = self.parser.run(sources)
@@ -110,7 +110,7 @@ class RagPreparationPipeline:
         )
         self.tracker.log_run(counts, export)
 
-        LOGGER.info("Finished run %s with %d documents", run_id, len(documents))
+        LOGGER.info("Запуск %s завершён; документов: %d", run_id, len(documents))
         return PipelineResult(
             run_id=run_id,
             sources_count=len(sources),
@@ -123,7 +123,7 @@ class RagPreparationPipeline:
 
 
 class RagChunkingPipeline:
-    """OO facade around the chunking stages."""
+    """ООП-фасад над стадиями чанкинга."""
 
     def __init__(self, config: ChunkingPipelineConfig):
         self.config = config
@@ -136,7 +136,7 @@ class RagChunkingPipeline:
     def run(self) -> ChunkingPipelineResult:
         random.seed(self.config.run.seed)
         run_id = new_run_id()
-        LOGGER.info("Starting RAG chunking run %s", run_id)
+        LOGGER.info("Старт запуска чанкинга RAG: %s", run_id)
 
         documents = self.loader.run(self.config.paths.input_jsonl)
         chunks = self.splitter.run(documents)
@@ -187,7 +187,7 @@ class RagChunkingPipeline:
         )
         self.tracker.log_run(counts, export)
 
-        LOGGER.info("Finished chunking run %s with %d chunks", run_id, len(chunks))
+        LOGGER.info("Запуск чанкинга %s завершён; чанков: %d", run_id, len(chunks))
         return ChunkingPipelineResult(
             run_id=run_id,
             documents_count=len(documents),
@@ -198,7 +198,7 @@ class RagChunkingPipeline:
 
 
 class RagEmbeddingPipeline:
-    """OO facade around the embedding stages."""
+    """ООП-фасад над стадиями embeddings."""
 
     def __init__(self, config: EmbeddingPipelineConfig):
         self.config = config
@@ -211,7 +211,7 @@ class RagEmbeddingPipeline:
     def run(self) -> EmbeddingPipelineResult:
         random.seed(self.config.run.seed)
         run_id = new_run_id()
-        LOGGER.info("Starting RAG embeddings run %s", run_id)
+        LOGGER.info("Старт запуска embeddings RAG: %s", run_id)
 
         chunks = self.loader.run(self.config.paths.input_jsonl)
         embedded_chunks = self.embedder.run(chunks, run_id=run_id)
@@ -233,7 +233,7 @@ class RagEmbeddingPipeline:
         self.tracker.log_run(counts, export)
 
         LOGGER.info(
-            "Finished embeddings run %s with %d embeddings",
+            "Запуск embeddings %s завершён; embeddings: %d",
             run_id,
             len(embedded_chunks),
         )
@@ -247,7 +247,7 @@ class RagEmbeddingPipeline:
 
 
 class RagVectorStorePipeline:
-    """OO facade around the vector store indexing stages."""
+    """ООП-фасад над стадиями индексации vector store."""
 
     def __init__(self, config: VectorStorePipelineConfig):
         self.config = config
@@ -261,7 +261,7 @@ class RagVectorStorePipeline:
     def run(self) -> VectorStorePipelineResult:
         random.seed(self.config.run.seed)
         run_id = new_run_id()
-        LOGGER.info("Starting RAG vector store run %s", run_id)
+        LOGGER.info("Старт запуска vector store RAG: %s", run_id)
 
         embedded_chunks = self.loader.run(self.config.paths.input_jsonl)
         with qdrant_client_context(self.config.vector_store) as client:
@@ -288,7 +288,7 @@ class RagVectorStorePipeline:
         self.tracker.log_run(counts, export)
 
         LOGGER.info(
-            "Finished vector store run %s with %d Qdrant points",
+            "Запуск vector store %s завершён; Qdrant points: %d",
             run_id,
             index.collection_points_count,
         )

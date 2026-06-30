@@ -13,7 +13,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class QdrantSearchStage:
-    """Run smoke-test similarity searches against the indexed vectors."""
+    """Запускает smoke-проверки similarity search по проиндексированным vectors."""
 
     def __init__(self, config: VectorStoreConfig):
         self.config = config
@@ -33,7 +33,7 @@ class QdrantSearchStage:
 
         queries = embedded_chunks[: self.config.test_queries_count]
         results = [self._search_one(client, query) for query in queries]
-        LOGGER.info("Ran %d Qdrant similarity search test queries", len(results))
+        LOGGER.info("Выполнено тестовых Qdrant similarity search запросов: %d", len(results))
         return results
 
     def _search_one(self, client, query: EmbeddedChunk) -> VectorSearchResult:

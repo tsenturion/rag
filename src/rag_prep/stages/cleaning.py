@@ -14,7 +14,7 @@ BLANK_LINES_RE = re.compile(r"\n{3,}")
 
 
 class TextCleaningStage:
-    """Remove parser noise and text artifacts without chunking text."""
+    """Удаляет шум парсинга и текстовые артефакты без чанкинга."""
 
     def __init__(self, config: CleaningConfig):
         self.config = config
@@ -49,7 +49,7 @@ class TextCleaningStage:
                     metadata=metadata,
                 )
             )
-        LOGGER.info("Cleaned %d elements into %d elements", len(elements), len(cleaned))
+        LOGGER.info("Очищено элементов: %d -> %d", len(elements), len(cleaned))
         return cleaned
 
     def _clean_text(self, text: str) -> str:

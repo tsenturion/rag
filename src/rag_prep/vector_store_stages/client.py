@@ -19,9 +19,9 @@ def _make_qdrant_client(config: VectorStoreConfig) -> QdrantClient:
         config.local_storage_path.mkdir(parents=True, exist_ok=True)
         LOGGER.warning(
             (
-                "Using embedded Qdrant local mode at %s. This storage is intended "
-                "for one process at a time; do not run parallel writers against "
-                "the same local_storage_path."
+                "Используется embedded Qdrant local mode в %s. Это хранилище рассчитано "
+                "на один процесс за раз; не запускайте параллельные записи в один "
+                "local_storage_path."
             ),
             config.local_storage_path,
         )
@@ -49,9 +49,9 @@ def qdrant_client_context(config: VectorStoreConfig):
         except portalocker.exceptions.LockException as exc:
             raise RuntimeError(
                 (
-                    "Embedded Qdrant local storage is already in use by another "
-                    f"process: {config.local_storage_path}. Stop the other run or "
-                    "use vector_store.mode=http with a Qdrant server for concurrent access."
+                    "Embedded Qdrant local storage уже используется другим процессом: "
+                    f"{config.local_storage_path}. Остановите другой запуск или используйте "
+                    "vector_store.mode=http с Qdrant server для конкурентного доступа."
                 )
             ) from exc
 

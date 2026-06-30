@@ -1,4 +1,4 @@
-"""Tools and memory agent module."""
+"""Модуль агента с tools и памятью."""
 
 from agent_app.config import AgentAppConfig, load_agent_config
 from agent_app.graph import AgentRunner

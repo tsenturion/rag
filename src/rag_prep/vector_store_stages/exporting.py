@@ -17,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class VectorStoreExportStage:
-    """Write vector store validation, search smoke tests, and run manifest."""
+    """Сохраняет validation, smoke-тесты поиска и manifest для vector store."""
 
     def __init__(self, config: VectorStorePipelineConfig):
         self.config = config
@@ -59,7 +59,7 @@ class VectorStoreExportStage:
         json_dump(manifest_path, manifest)
 
         LOGGER.info(
-            "Saved vector store manifest to %s and search results to %s",
+            "Сохранены manifest vector store в %s и результаты поиска в %s",
             manifest_path,
             search_results_path,
         )

@@ -9,7 +9,7 @@ from agent_app.config import AgentConfig
 
 def build_llm(config: AgentConfig) -> ChatOpenAI:
     if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is not set in .env or environment.")
+        raise RuntimeError("OPENAI_API_KEY не задан в .env или переменных окружения.")
     return ChatOpenAI(
         model=config.model,
         temperature=config.temperature,

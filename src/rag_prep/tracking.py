@@ -22,7 +22,7 @@ class MLflowTracker:
 
     def log_run(self, counts: dict[str, int | float], export: SupportsArtifactPaths) -> None:
         if not self.config.logging.mlflow_enabled:
-            LOGGER.info("MLflow logging disabled")
+            LOGGER.info("Логирование MLflow отключено")
             return
 
         tracking_uri = self._tracking_uri()
@@ -40,7 +40,7 @@ class MLflowTracker:
             for path in export.artifact_paths():
                 mlflow.log_artifact(str(path))
 
-        LOGGER.info("Logged run to MLflow tracking URI %s", tracking_uri)
+        LOGGER.info("Запуск залогирован в MLflow tracking URI %s", tracking_uri)
 
     def _tracking_uri(self) -> str:
         uri = self.config.logging.mlflow_tracking_uri

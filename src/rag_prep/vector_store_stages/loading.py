@@ -10,11 +10,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 class EmbeddingLoadingStage:
-    """Load embedding records produced by the embeddings pipeline."""
+    """Загружает записи embeddings, созданные пайплайном embeddings."""
 
     def run(self, input_jsonl: Path) -> list[EmbeddedChunk]:
         if not input_jsonl.exists():
-            raise FileNotFoundError(f"Embeddings file does not exist: {input_jsonl}")
+            raise FileNotFoundError(f"Файл embeddings не существует: {input_jsonl}")
 
         embedded_chunks: list[EmbeddedChunk] = []
         with input_jsonl.open("r", encoding="utf-8") as file:
@@ -25,8 +25,8 @@ class EmbeddingLoadingStage:
                     embedded_chunks.append(EmbeddedChunk.model_validate(json.loads(line)))
                 except Exception as exc:
                     raise ValueError(
-                        f"Invalid embedding record at {input_jsonl}:{line_number}"
+                        f"Некорректная запись embedding в {input_jsonl}:{line_number}"
                     ) from exc
 
-        LOGGER.info("Loaded %d embeddings from %s", len(embedded_chunks), input_jsonl)
+        LOGGER.info("Загружено embeddings: %d из %s", len(embedded_chunks), input_jsonl)
         return embedded_chunks

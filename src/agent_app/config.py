@@ -48,9 +48,9 @@ class AgentAppConfig(BaseModel):
     @classmethod
     def validate_memory_defaults(cls, value: MemoryConfig) -> MemoryConfig:
         if not value.default_user_id.strip():
-            raise ValueError("memory.default_user_id cannot be empty")
+            raise ValueError("memory.default_user_id не может быть пустым")
         if not value.default_session_id.strip():
-            raise ValueError("memory.default_session_id cannot be empty")
+            raise ValueError("memory.default_session_id не может быть пустым")
         return value
 
 

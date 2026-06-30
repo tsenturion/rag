@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 
 class CalculatorInput(BaseModel):
-    expression: str = Field(description="Mathematical expression, for example: 128 * 47")
+    expression: str = Field(description="Математическое выражение, например: 128 * 47")
 
 
 OPERATORS = {
@@ -30,7 +30,7 @@ def calculate(expression: str) -> str:
         tree = ast.parse(expression, mode="eval")
         result = _eval_node(tree.body)
     except Exception as exc:
-        return f"calculator_error: {exc}"
+        return f"ошибка калькулятора: {exc}"
     return str(result)
 
 
@@ -43,15 +43,15 @@ def _eval_node(node: ast.AST) -> Any:
         return OPERATORS[type(node.op)](left, right)
     if isinstance(node, ast.UnaryOp) and type(node.op) in OPERATORS:
         return OPERATORS[type(node.op)](_eval_node(node.operand))
-    raise ValueError(f"unsupported expression node: {type(node).__name__}")
+    raise ValueError(f"неподдерживаемый узел выражения: {type(node).__name__}")
 
 
 def calculator_tool() -> StructuredTool:
     return StructuredTool.from_function(
         name="calculator",
         description=(
-            "Use this tool for exact arithmetic. Input must be a math expression "
-            "with numbers and operators only."
+            "Используй этот tool для точной арифметики. На входе должно быть "
+            "математическое выражение только с числами и операторами."
         ),
         func=calculate,
         args_schema=CalculatorInput,

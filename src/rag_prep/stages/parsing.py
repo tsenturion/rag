@@ -16,7 +16,7 @@ TITLE_TYPES = {"Title"}
 
 
 class UnstructuredParsingStage:
-    """Parse files into semantic elements with Unstructured and structured CSV rows."""
+    """Парсит файлы в semantic elements через Unstructured и структурированные CSV-строки."""
 
     def __init__(self, config: ParserConfig, default_section: str):
         self.config = config
@@ -31,7 +31,7 @@ class UnstructuredParsingStage:
             except Exception as exc:
                 if self.config.fail_on_error:
                     raise
-                LOGGER.exception("Failed to parse %s", source.source)
+                LOGGER.exception("Не удалось распарсить %s", source.source)
                 failures.append(
                     ParseFailure(
                         source=source.source,
@@ -43,7 +43,7 @@ class UnstructuredParsingStage:
                 )
 
         LOGGER.info(
-            "Parsed %d raw elements from %d files; %d files failed",
+            "Распарсено raw elements: %d из %d файлов; файлов с ошибкой: %d",
             len(elements),
             len(sources),
             len(failures),

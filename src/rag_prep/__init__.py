@@ -1,4 +1,4 @@
-"""RAG data preparation, chunking, and embedding package."""
+"""Пакет подготовки данных, чанкинга и embeddings для RAG."""
 
 from rag_prep.config import (
     ChunkingPipelineConfig,

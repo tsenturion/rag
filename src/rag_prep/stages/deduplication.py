@@ -24,7 +24,7 @@ class DeduplicationResult:
 
 
 class DeduplicationStage:
-    """Remove exact and near-duplicate text with datasketch MinHash LSH."""
+    """Удаляет exact и near-дубли через datasketch MinHash LSH."""
 
     def __init__(self, config: DeduplicationConfig):
         self.config = config
@@ -71,7 +71,7 @@ class DeduplicationStage:
 
         duplicates = exact_duplicates + near_duplicates
         LOGGER.info(
-            "Deduplicated %d elements into %d elements; exact=%d near=%d",
+            "Дедупликация элементов: %d -> %d; exact=%d near=%d",
             len(elements),
             len(kept),
             exact_duplicates,

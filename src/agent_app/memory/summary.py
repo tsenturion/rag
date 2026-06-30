@@ -6,7 +6,7 @@ from agent_app.memory.store import SQLiteMemoryStore
 
 
 class SummaryMemory:
-    """Session summary stored as long-term memory with type=summary."""
+    """Резюме сессии, сохранённое в долговременной памяти с type=summary."""
 
     def __init__(
         self,

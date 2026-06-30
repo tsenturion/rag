@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 class DateTimeInput(BaseModel):
     timezone: str = Field(
         default="Asia/Yekaterinburg",
-        description="IANA timezone, for example Asia/Yekaterinburg or UTC.",
+        description="Часовой пояс IANA, например Asia/Yekaterinburg или UTC.",
     )
 
 
@@ -27,7 +27,7 @@ def current_datetime(timezone: str = "Asia/Yekaterinburg") -> str:
 def datetime_tool() -> StructuredTool:
     return StructuredTool.from_function(
         name="current_datetime",
-        description="Use this tool when the user asks for current date or time.",
+        description="Используй этот tool, когда пользователь спрашивает текущую дату или время.",
         func=current_datetime,
         args_schema=DateTimeInput,
     )

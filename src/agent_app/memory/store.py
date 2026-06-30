@@ -12,7 +12,7 @@ from agent_app.models import MemoryRecord, MemorySearchResult, MemorySource, Mem
 
 
 class SQLiteMemoryStore:
-    """Long-term memory store with typed records and simple LIKE search."""
+    """Долговременная память с типизированными записями и простым LIKE-поиском."""
 
     def __init__(self, path: Path):
         self.path = path
@@ -136,7 +136,7 @@ class SQLiteMemoryStore:
     ) -> MemoryRecord:
         current = self.get(memory_id)
         if current is None:
-            raise KeyError(f"Memory record not found: {memory_id}")
+            raise KeyError(f"Запись памяти не найдена: {memory_id}")
         updated = current.model_copy(
             update={
                 "value": validate_memory_value(value) if value is not None else current.value,

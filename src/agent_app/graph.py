@@ -17,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class AgentRunner:
-    """Minimal LangGraph agent with tools and full SQLite-backed memory."""
+    """LangGraph-агент с tools и полноценной SQLite-памятью."""
 
     def __init__(
         self,
@@ -81,7 +81,7 @@ class AgentRunner:
         if len(summarized_messages) != len(self.short_term.messages):
             self.short_term.messages = summarized_messages
 
-        LOGGER.info("Agent answered with %d tool calls", len(tool_calls))
+        LOGGER.info("Агент ответил; tool calls: %d", len(tool_calls))
         return AgentResponse(
             answer=answer,
             user_id=self.user_id,

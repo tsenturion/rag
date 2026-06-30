@@ -11,8 +11,8 @@ from agent_app.models import MemoryType
 
 class SaveMemoryInput(BaseModel):
     memory_type: MemoryType = Field(default="fact")
-    key: str = Field(description="Stable short key, for example project_name")
-    value: str = Field(description="Memory value to store")
+    key: str = Field(description="Стабильный короткий ключ, например project_name")
+    value: str = Field(description="Значение, которое нужно сохранить в памяти")
     tags: list[str] = Field(default_factory=list)
     importance: int = Field(default=3, ge=1, le=5)
     ttl_seconds: int | None = None
@@ -150,7 +150,7 @@ def memory_tools(
                 memory_type=memory_type,
             )
             return _json({"status": "deleted", "deleted_count": deleted_count, "key": key})
-        return _json({"status": "error", "message": "memory_id or key is required"})
+        return _json({"status": "error", "message": "нужно указать memory_id или key"})
 
     def list_memories(memory_type: MemoryType | None = None, limit: int = 20) -> str:
         records = store.list_memories(
@@ -170,7 +170,7 @@ def memory_tools(
             return _json(
                 {
                     "status": "confirmation_required",
-                    "message": "Call with confirm=true to clear current session memory records.",
+                    "message": "Для очистки памяти текущей сессии вызовите tool с confirm=true.",
                 }
             )
         deleted_count = store.clear_session(user_id=user_id, session_id=session_id)
@@ -180,45 +180,45 @@ def memory_tools(
         StructuredTool.from_function(
             name="save_memory",
             description=(
-                "Save durable user memory. Use this when the user asks to remember "
-                "a fact, preference, task, summary, or note."
+                "Сохраняет долговременную память пользователя. Используй, когда пользователь "
+                "просит запомнить факт, предпочтение, задачу, резюме или заметку."
             ),
             func=save_memory,
             args_schema=SaveMemoryInput,
         ),
         StructuredTool.from_function(
             name="search_memory",
-            description="Search durable memory for user facts, preferences, tasks, summaries, or notes.",
+            description="Ищет в долговременной памяти факты, предпочтения, задачи, резюме или заметки пользователя.",
             func=search_memory,
             args_schema=SearchMemoryInput,
         ),
         StructuredTool.from_function(
             name="get_memory",
-            description="Read one memory record by id.",
+            description="Читает одну запись памяти по id.",
             func=get_memory,
             args_schema=GetMemoryInput,
         ),
         StructuredTool.from_function(
             name="update_memory",
-            description="Update a memory record by id or by key.",
+            description="Обновляет запись памяти по id или key.",
             func=update_memory,
             args_schema=UpdateMemoryInput,
         ),
         StructuredTool.from_function(
             name="delete_memory",
-            description="Delete a memory record by id or by key when the user asks to forget it.",
+            description="Удаляет запись памяти по id или key, когда пользователь просит забыть её.",
             func=delete_memory,
             args_schema=DeleteMemoryInput,
         ),
         StructuredTool.from_function(
             name="list_memories",
-            description="List stored memories for the current user.",
+            description="Показывает сохранённые записи памяти текущего пользователя.",
             func=list_memories,
             args_schema=ListMemoryInput,
         ),
         StructuredTool.from_function(
             name="clear_session_memory",
-            description="Clear memory records scoped to the current session. Requires confirm=true.",
+            description="Очищает записи памяти текущей сессии. Требует confirm=true.",
             func=clear_session_memory,
             args_schema=ClearSessionMemoryInput,
         ),

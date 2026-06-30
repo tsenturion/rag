@@ -14,14 +14,14 @@ LOGGER = logging.getLogger(__name__)
 
 
 class LlamaIndexLoadingStage:
-    """Discover supported files through LlamaIndex's directory reader."""
+    """Находит поддерживаемые файлы через directory reader из LlamaIndex."""
 
     def __init__(self, config: LoaderConfig):
         self.config = config
 
     def run(self, input_dir: Path) -> list[SourceFile]:
         if not input_dir.exists():
-            raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
+            raise FileNotFoundError(f"Входная директория не существует: {input_dir}")
 
         try:
             reader = SimpleDirectoryReader(
@@ -39,7 +39,7 @@ class LlamaIndexLoadingStage:
             files = []
 
         sources = [self._to_source_file(path) for path in sorted(files)]
-        LOGGER.info("Loaded %d source files from %s", len(sources), input_dir)
+        LOGGER.info("Загружено исходных файлов: %d из %s", len(sources), input_dir)
         return sources
 
     def _to_source_file(self, path: Path) -> SourceFile:

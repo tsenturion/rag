@@ -4,7 +4,7 @@ from langchain_core.messages import BaseMessage
 
 
 class ShortTermMemory:
-    """In-session message buffer with fixed maximum length."""
+    """Буфер сообщений текущей сессии с фиксированной максимальной длиной."""
 
     def __init__(self, max_messages: int):
         self.max_messages = max_messages
