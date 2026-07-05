@@ -1,7 +1,7 @@
 agent:
   model: gpt-4.1-nano
   temperature: 0
-  max_history_messages: 12
+  max_history_messages: 3
   max_summary_chars: 2500
   timeout_seconds: 60
   max_retries: 2
