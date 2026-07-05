@@ -40,11 +40,38 @@ class MemorySearchResult(BaseModel):
     count: int = 0
 
 
+class AgentTraceState(BaseModel):
+    name: str
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentToolResult(BaseModel):
+    name: str | None = None
+    content: str
+    is_error: bool = False
+
+
+class AgentTrace(BaseModel):
+    user_request: str
+    start_state: AgentTraceState
+    intermediate_states: list[AgentTraceState] = Field(default_factory=list)
+    final_state: AgentTraceState
+    transition_rules: list[str] = Field(default_factory=list)
+    decision_points: list[str] = Field(default_factory=list)
+    tool_calls: list[str] = Field(default_factory=list)
+    tool_results: list[AgentToolResult] = Field(default_factory=list)
+    memory_created_ids: list[str] = Field(default_factory=list)
+    memory_updated_ids: list[str] = Field(default_factory=list)
+    memory_deleted_ids: list[str] = Field(default_factory=list)
+    recursion_limit: int
+
+
 class AgentResponse(BaseModel):
     answer: str
     user_id: str
     session_id: str
     tool_calls: list[str] = Field(default_factory=list)
+    trace: AgentTrace | None = None
 
 
 class AgentState(TypedDict):

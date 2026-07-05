@@ -15,6 +15,7 @@ class AgentConfig(BaseModel):
     max_summary_chars: int = Field(default=2500, ge=200)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
+    recursion_limit: int = Field(default=12, ge=3)
 
 
 class MemoryConfig(BaseModel):

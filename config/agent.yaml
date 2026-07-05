@@ -5,6 +5,7 @@ agent:
   max_summary_chars: 2500
   timeout_seconds: 60
   max_retries: 2
+  recursion_limit: 12
 
 memory:
   sqlite_path: data/agent/memory.sqlite

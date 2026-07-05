@@ -14,6 +14,14 @@ def normalize_key(key: str) -> str:
     return normalized.strip("_") or "memory"
 
 
+def validate_memory_key(key: str) -> str:
+    cleaned = key.strip()
+    for pattern in SECRET_PATTERNS:
+        if pattern.search(cleaned):
+            raise ValueError("ключ похож на секрет и не может использоваться для памяти")
+    return cleaned
+
+
 def validate_memory_value(value: str) -> str:
     cleaned = value.strip()
     if not cleaned:

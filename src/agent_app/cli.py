@@ -8,6 +8,7 @@ from pathlib import Path
 from agent_app.config import load_agent_config
 from agent_app.graph import AgentRunner
 from agent_app.memory import SQLiteMemoryStore
+from agent_app.scenarios import ScenarioRunner, load_scenario_suite
 
 
 class RussianHelpFormatter(argparse.HelpFormatter):
@@ -56,6 +57,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Очистить память текущей сессии и выйти.",
     )
+    parser.add_argument(
+        "--scenarios-config",
+        default="config/agent_scenarios.yaml",
+        help="Путь к YAML-конфигу сценариев MVP-агента.",
+    )
+    parser.add_argument(
+        "--run-scenario",
+        default=None,
+        help="Запустить один сценарий по id и выйти.",
+    )
+    parser.add_argument(
+        "--run-scenarios",
+        action="store_true",
+        help="Запустить все сценарии MVP-агента и выйти.",
+    )
+    parser.add_argument(
+        "--scenario-report",
+        default=None,
+        help="Путь для JSON-отчёта сценариев.",
+    )
     return parser
 
 
@@ -83,6 +104,27 @@ def main() -> None:
         store = SQLiteMemoryStore(config.memory.sqlite_path)
         deleted_count = store.clear_session(user_id=user_id, session_id=session_id)
         print(json.dumps({"deleted_count": deleted_count}, ensure_ascii=False, indent=2))
+        return
+
+    if args.run_scenario or args.run_scenarios:
+        suite = load_scenario_suite(Path(args.scenarios_config))
+        scenario_runner = ScenarioRunner(
+            config,
+            suite,
+            config_path=str(Path(args.scenarios_config)),
+        )
+        report = (
+            scenario_runner.run_one(args.run_scenario)
+            if args.run_scenario
+            else scenario_runner.run_all()
+        )
+        report_path = scenario_runner.write_report(
+            report,
+            Path(args.scenario_report) if args.scenario_report else None,
+        )
+        payload = report.model_dump(mode="json")
+        payload["report_path"] = str(report_path)
+        _print_scenario_report(payload, as_json=args.json)
         return
 
     runner = AgentRunner(
@@ -116,6 +158,20 @@ def _print_response(payload: dict[str, object], *, as_json: bool) -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(payload.get("answer", ""))
+
+
+def _print_scenario_report(payload: dict[str, object], *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    results = payload.get("results", [])
+    passed = bool(payload.get("passed"))
+    print(f"Сценарии: {'passed' if passed else 'failed'}")
+    for result in results if isinstance(results, list) else []:
+        if not isinstance(result, dict):
+            continue
+        print(f"- {result.get('id')}: {'passed' if result.get('passed') else 'failed'}")
+    print(f"Отчёт: {payload.get('report_path')}")
 
 
 if __name__ == "__main__":

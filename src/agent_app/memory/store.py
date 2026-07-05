@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from agent_app.memory.policy import clamp_importance, normalize_key, validate_memory_value
+from agent_app.memory.policy import (
+    clamp_importance,
+    normalize_key,
+    validate_memory_key,
+    validate_memory_value,
+)
 from agent_app.models import MemoryRecord, MemorySearchResult, MemorySource, MemoryType, utc_now
 
 
@@ -34,7 +39,7 @@ class SQLiteMemoryStore:
         metadata: dict[str, Any] | None = None,
     ) -> MemoryRecord:
         now = utc_now()
-        normalized_key = normalize_key(key)
+        normalized_key = normalize_key(validate_memory_key(key))
         cleaned_value = validate_memory_value(value)
         existing = self.find_by_key(
             user_id=user_id,
@@ -242,6 +247,11 @@ class SQLiteMemoryStore:
                 "DELETE FROM memories WHERE user_id = ? AND session_id = ?",
                 (user_id, session_id),
             )
+            return int(cursor.rowcount)
+
+    def clear_user(self, *, user_id: str) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             return int(cursor.rowcount)
 
     def _valid_record(self, row: sqlite3.Row) -> MemoryRecord | None:

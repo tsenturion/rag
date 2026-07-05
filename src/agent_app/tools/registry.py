@@ -7,6 +7,8 @@ from agent_app.memory.store import SQLiteMemoryStore
 from agent_app.tools.calculator import calculator_tool
 from agent_app.tools.datetime_tool import datetime_tool
 from agent_app.tools.memory_tools import memory_tools
+from agent_app.tools.project import project_tools
+from agent_app.tools.travel import travel_tools
 from agent_app.tools.weather import weather_tool
 
 
@@ -21,6 +23,12 @@ def build_tools(
         calculator_tool(),
         datetime_tool(),
         weather_tool(config.weather),
+        *travel_tools(),
+        *project_tools(
+            store,
+            user_id=user_id,
+            session_id=session_id,
+        ),
         *memory_tools(
             store,
             user_id=user_id,
