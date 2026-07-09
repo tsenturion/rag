@@ -25,9 +25,10 @@ from rag_prep.embedding_stages import (
     ChunkLoadingStage,
     EmbeddingExportStage,
     EmbeddingValidationStage,
-    OpenAIEmbeddingStage,
     build_embedding_counts,
     build_embedding_diagnostics,
+    build_embedding_stage,
+    ensure_embedding_runtime,
 )
 from rag_prep.models import (
     ChunkingExportResult,
@@ -366,7 +367,7 @@ def calculate_embeddings_task(
     chunks: list[PreparedChunk],
     run_id: str,
 ) -> list[EmbeddedChunk]:
-    embedded_chunks = OpenAIEmbeddingStage(config.embedding).run(chunks, run_id=run_id)
+    embedded_chunks = build_embedding_stage(config.embedding).run(chunks, run_id=run_id)
     get_run_logger().info("Посчитано embeddings: %d", len(embedded_chunks))
     return embedded_chunks
 
@@ -429,7 +430,7 @@ def rag_embeddings_flow(config_path: str = "config/embeddings.yaml") -> Embeddin
 
     config = load_embedding_config(Path(config_path))
     setup_logging(config.logging.level)
-    OpenAIEmbeddingStage.ensure_api_key(config.embedding)
+    ensure_embedding_runtime(config.embedding)
     random.seed(config.run.seed)
     run_id = new_run_id()
     logger = get_run_logger()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
 
 from agent_app.config import load_agent_config
@@ -81,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    _configure_stdio()
     args = build_parser().parse_args()
     config = load_agent_config(Path(args.config))
     logging.basicConfig(
@@ -172,6 +174,12 @@ def _print_scenario_report(payload: dict[str, object], *, as_json: bool) -> None
             continue
         print(f"- {result.get('id')}: {'passed' if result.get('passed') else 'failed'}")
     print(f"Отчёт: {payload.get('report_path')}")
+
+
+def _configure_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 if __name__ == "__main__":

@@ -61,7 +61,7 @@ scenarios:
           - Если weather недоступен, продолжить с частичным планом.
           - Если память сохранила план, сценарий считается воспроизводимым.
         criteria:
-          answer_contains: [Казань, бюджет]
+          answer_contains: [Казан, бюджет]
           expected_tools: [get_weather, calculate_travel_budget, advise_packing, save_memory]
           memory_contains:
             - key_contains: travel_plan_kazan

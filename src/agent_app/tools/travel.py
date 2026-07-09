@@ -7,12 +7,12 @@ from pydantic import BaseModel, Field
 
 
 class TravelBudgetInput(BaseModel):
-    city: str = Field(description="Город поездки.")
+    city: str = Field(default="Екатеринбург", description="Город поездки.")
     days: int = Field(default=1, ge=1, le=60, description="Количество дней поездки.")
-    hotel_per_night: float = Field(default=0.0, ge=0.0, description="Стоимость проживания за ночь.")
-    meals_per_day: float = Field(default=0.0, ge=0.0, description="Расходы на питание в день.")
-    transport_total: float = Field(default=0.0, ge=0.0, description="Общие расходы на транспорт.")
-    extra_per_day: float = Field(default=0.0, ge=0.0, description="Дополнительные расходы в день.")
+    hotel_per_night: float = Field(default=4200.0, ge=0.0, description="Стоимость проживания за ночь.")
+    meals_per_day: float = Field(default=1500.0, ge=0.0, description="Расходы на питание в день.")
+    transport_total: float = Field(default=3000.0, ge=0.0, description="Общие расходы на транспорт.")
+    extra_per_day: float = Field(default=800.0, ge=0.0, description="Дополнительные расходы в день.")
     currency: str = Field(default="RUB", description="Валюта расчёта.")
 
 
@@ -25,12 +25,12 @@ class PackingAdvisorInput(BaseModel):
 
 
 def calculate_travel_budget(
-    city: str,
+    city: str = "Екатеринбург",
     days: int = 1,
-    hotel_per_night: float = 0.0,
-    meals_per_day: float = 0.0,
-    transport_total: float = 0.0,
-    extra_per_day: float = 0.0,
+    hotel_per_night: float = 4200.0,
+    meals_per_day: float = 1500.0,
+    transport_total: float = 3000.0,
+    extra_per_day: float = 800.0,
     currency: str = "RUB",
 ) -> str:
     nights = max(days - 1, 0)

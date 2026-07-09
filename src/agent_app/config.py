@@ -9,13 +9,21 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AgentConfig(BaseModel):
+    provider: Literal["openai", "local"] = "openai"
     model: str = "gpt-4.1-nano"
+    adapter_path: Path | None = None
     temperature: float = 0.0
+    max_new_tokens: int = Field(default=220, ge=1)
     max_history_messages: int = Field(default=12, ge=2)
     max_summary_chars: int = Field(default=2500, ge=200)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
     recursion_limit: int = Field(default=12, ge=3)
+    local_device: Literal["auto", "xpu", "cuda", "cpu"] = "auto"
+    local_dtype: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
+    local_files_only: bool = True
+    trust_remote_code: bool = True
+    low_cpu_mem_usage: bool = True
 
 
 class MemoryConfig(BaseModel):
@@ -67,8 +75,19 @@ def load_agent_config(path: str | Path = "config/agent.yaml") -> AgentAppConfig:
     sqlite_path = config.memory.sqlite_path
     if not sqlite_path.is_absolute():
         sqlite_path = base_dir / sqlite_path
+    agent = config.agent
+    agent_update: dict[str, Any] = {}
+    if agent.provider == "local":
+        agent_update["model"] = _resolve_local_reference(agent.model, base_dir=base_dir)
+        if agent.adapter_path is not None:
+            adapter_path = agent.adapter_path
+            if not adapter_path.is_absolute():
+                adapter_path = base_dir / adapter_path
+            agent_update["adapter_path"] = adapter_path.resolve()
+
     return config.model_copy(
         update={
+            "agent": agent.model_copy(update=agent_update),
             "memory": config.memory.model_copy(
                 update={"sqlite_path": sqlite_path.resolve()}
             )
@@ -93,3 +112,15 @@ def _config_base_dir(config_path: Path) -> Path:
     if config_path.parent.name == "config":
         return config_path.parent.parent
     return config_path.parent
+
+
+def _resolve_local_reference(value: str, *, base_dir: Path) -> str:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return str(path.resolve()) if path.exists() else value
+    candidate = base_dir / path
+    if candidate.exists():
+        return str(candidate.resolve())
+    if value.startswith(".") or value.startswith("data/") or value.startswith("data\\"):
+        return str(candidate.resolve())
+    return value

@@ -149,7 +149,7 @@ class EmbeddingPathConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    provider: Literal["openai"] = "openai"
+    provider: Literal["openai", "local"] = "openai"
     model: str = "text-embedding-3-small"
     dimensions: int | None = Field(default=1536, ge=1)
     api_key_env: str = "OPENAI_API_KEY"
@@ -161,6 +161,15 @@ class EmbeddingConfig(BaseModel):
     timeout_seconds: float = Field(default=60.0, gt=0)
     normalize: bool = False
     clear_no_proxy_for_openai: bool = True
+    local_device: Literal["auto", "xpu", "cuda", "cpu"] = "auto"
+    local_dtype: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
+    local_files_only: bool = True
+    trust_remote_code: bool = False
+    pooling: Literal["mean", "cls"] = "mean"
+    passage_prefix: str = "passage: "
+    query_prefix: str = "query: "
+    hub_disable_xet: bool = True
+    hub_disable_symlink_warning: bool = True
     fail_on_validation_error: bool = True
 
 
@@ -257,10 +266,16 @@ def load_embedding_config(path: str | Path) -> EmbeddingPipelineConfig:
         env_file = base_dir / env_file
     env_file = env_file.resolve()
     load_dotenv(env_file)
+    embedding_update: dict[str, Any] = {"env_file": env_file}
+    if config.embedding.provider == "local":
+        embedding_update["model"] = _resolve_local_model_reference(
+            config.embedding.model,
+            base_dir=base_dir,
+        )
     config = config.model_copy(
         update={
             "embedding": config.embedding.model_copy(
-                update={"env_file": env_file}
+                update=embedding_update
             )
         }
     )
@@ -388,3 +403,23 @@ def _resolve_vector_store_paths(
             ),
         }
     )
+
+
+def _resolve_local_model_reference(model: str, *, base_dir: Path) -> str:
+    path = Path(model).expanduser()
+    if path.is_absolute():
+        return str(path.resolve()) if path.exists() else model
+
+    candidate = base_dir / path
+    if candidate.exists():
+        return str(candidate.resolve())
+
+    looks_like_path = (
+        model.startswith(".")
+        or model.startswith("data/")
+        or model.startswith("data\\")
+        or "\\" in model
+    )
+    if looks_like_path:
+        return str(candidate.resolve())
+    return model

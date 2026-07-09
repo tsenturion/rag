@@ -1,0 +1,32 @@
+agent:
+  provider: local
+  model: data/models/hf/Qwen2.5-1.5B-Instruct
+  adapter_path: null
+  temperature: 0
+  max_new_tokens: 512
+  max_history_messages: 3
+  max_summary_chars: 2500
+  timeout_seconds: 60
+  max_retries: 0
+  recursion_limit: 14
+  local_device: auto
+  local_dtype: auto
+  local_files_only: true
+  trust_remote_code: true
+  low_cpu_mem_usage: true
+
+memory:
+  sqlite_path: data/agent/memory.sqlite
+  default_user_id: local
+  default_session_id: local
+  search_limit: 5
+
+weather:
+  api_key_env: OPENWEATHER_API_KEY
+  default_city: Екатеринбург
+  default_units: metric
+  language: ru
+  timeout_seconds: 10
+
+logging:
+  level: INFO

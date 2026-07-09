@@ -104,6 +104,24 @@ class AgentRunner:
             config={"recursion_limit": self.config.agent.recursion_limit},
         )
         messages: list[BaseMessage] = result["messages"]
+        missing_tools = self._missing_required_tools(message, messages)
+        if missing_tools:
+            retry_message = HumanMessage(
+                content=(
+                    "Предыдущий ответ не вызвал обязательные tools: "
+                    f"{', '.join(missing_tools)}. Верни только tool calls для этих "
+                    "инструментов и не описывай результат обычным текстом до их выполнения."
+                )
+            )
+            result = self.graph.invoke(
+                {
+                    "messages": [*messages, retry_message],
+                    "user_id": self.user_id,
+                    "session_id": self.session_id,
+                },
+                config={"recursion_limit": self.config.agent.recursion_limit},
+            )
+            messages = result["messages"]
         answer_message = self._last_ai_message(messages)
         answer = str(answer_message.content if answer_message else "")
         tool_calls = self._tool_call_names(messages)
@@ -149,6 +167,16 @@ class AgentRunner:
         return self.store.clear_session(user_id=self.user_id, session_id=self.session_id)
 
     def _build_graph(self):
+        if not getattr(self.llm, "supports_tool_calling", True):
+            def local_agent_node(state: AgentState) -> dict[str, list[BaseMessage]]:
+                response = self.llm.invoke(state["messages"])
+                return {"messages": [response]}
+
+            workflow = StateGraph(AgentState)
+            workflow.add_node("agent", local_agent_node)
+            workflow.add_edge(START, "agent")
+            return workflow.compile()
+
         llm_with_tools = self.llm.bind_tools(self.tools)
 
         def agent_node(state: AgentState) -> dict[str, list[BaseMessage]]:
@@ -180,6 +208,37 @@ class AgentRunner:
                     names.append(str(name))
         return names
 
+    def _missing_required_tools(
+        self,
+        user_message: str,
+        messages: list[BaseMessage],
+    ) -> list[str]:
+        requested = self._requested_tools(user_message)
+        if not requested:
+            return []
+        called = set(self._tool_call_names(messages))
+        return [tool for tool in requested if tool not in called]
+
+    def _requested_tools(self, user_message: str) -> list[str]:
+        lower = user_message.lower()
+        tool_names = [tool.name for tool in self.tools]
+        requested = [name for name in tool_names if name.lower() in lower]
+        if "обнови статус" in lower and "задач" in lower:
+            requested.append("update_task_status")
+        if "создай проект" in lower:
+            requested.append("create_project")
+        if "создай" in lower and "задач" in lower:
+            requested.append("create_task")
+        if "сохрани" in lower and "памят" in lower:
+            requested.append("save_memory")
+
+        deduplicated: list[str] = []
+        known = set(tool_names)
+        for name in requested:
+            if name in known and name not in deduplicated:
+                deduplicated.append(name)
+        return deduplicated
+
     @staticmethod
     def _is_secret_storage_request(message: str) -> bool:
         return bool(SECRET_STORAGE_RE.search(message))
@@ -197,6 +256,7 @@ class AgentRunner:
                         content=content[:2000],
                         is_error='"status": "error"' in lowered
                         or '"error":' in lowered
+                        or "error invoking tool" in lowered
                         or "ошибка" in lowered,
                     )
                 )
