@@ -35,7 +35,9 @@ class TextNormalizationStage:
             metadata = dict(element.metadata)
             metadata["sentence_count"] = sum(1 for _ in doc.sents)
             metadata["token_count"] = len(doc)
-            normalized.append(element.model_copy(update={"text": text, "metadata": metadata}))
+            normalized.append(
+                element.model_copy(update={"text": text, "metadata": metadata})
+            )
 
         LOGGER.info("Нормализовано элементов: %d", len(normalized))
         return normalized

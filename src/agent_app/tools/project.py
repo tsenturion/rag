@@ -14,14 +14,18 @@ TaskStatus = Literal["todo", "in_progress", "blocked", "done"]
 class CreateProjectInput(BaseModel):
     project_name: str = Field(description="Название проекта.")
     goal: str = Field(description="Цель проекта.")
-    deadline: str | None = Field(default=None, description="Срок проекта в свободной форме.")
+    deadline: str | None = Field(
+        default=None, description="Срок проекта в свободной форме."
+    )
 
 
 class CreateTaskInput(BaseModel):
     project_name: str = Field(description="Название проекта.")
     task_title: str = Field(description="Название задачи.")
     status: TaskStatus = Field(default="todo", description="Статус задачи.")
-    due_date: str | None = Field(default=None, description="Срок задачи в свободной форме.")
+    due_date: str | None = Field(
+        default=None, description="Срок задачи в свободной форме."
+    )
     owner: str | None = Field(default=None, description="Ответственный.")
 
 
@@ -136,6 +140,7 @@ def project_tools(
         )
         updated = store.update(
             record.id,
+            user_id=user_id,
             value=value,
             tags=["project_task", _slug(project_name), status],
             metadata=metadata,
@@ -145,7 +150,9 @@ def project_tools(
     def list_project_tasks(project_name: str) -> str:
         tasks = [
             record
-            for record in store.list_memories(user_id=user_id, memory_type="task", limit=200)
+            for record in store.list_memories(
+                user_id=user_id, memory_type="task", limit=200
+            )
             if record.metadata.get("project_name") == project_name
             or _slug(project_name) in record.tags
         ]

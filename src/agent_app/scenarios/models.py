@@ -4,11 +4,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agent_app.models import AgentResponse, MemoryType, utc_now
 
-ScenarioType = Literal["main", "alternative", "error", "recovery", "tool_failure"]
+ScenarioType = Literal[
+    "main",
+    "alternative",
+    "error",
+    "recovery",
+    "tool_failure",
+    "loop_guard",
+]
 
 
 class MemorySeed(BaseModel):
@@ -37,6 +44,8 @@ class ScenarioCriteria(BaseModel):
     require_memory_created: bool = False
     require_memory_updated: bool = False
     allow_tool_errors: bool = False
+    require_loop_guard: bool = False
+    forbid_loop_guard: bool = False
     min_tool_calls: int = 0
     max_tool_calls: int | None = None
 
@@ -78,7 +87,7 @@ class ScenarioSuite(BaseModel):
     default_user_id: str = "mvp_agent_scenarios"
     session_prefix: str = "scenario"
     report_path: Path = Path("data/agent/scenario_report.json")
-    scenarios: list[AgentScenario]
+    scenarios: list[AgentScenario] = Field(min_length=1)
 
 
 class ScenarioCheck(BaseModel):
@@ -125,3 +134,9 @@ class ScenarioRunReport(BaseModel):
     user_id: str
     passed: bool = False
     results: list[ScenarioResult]
+
+    @model_validator(mode="after")
+    def empty_report_cannot_pass(self) -> "ScenarioRunReport":
+        if self.passed and not self.results:
+            raise ValueError("Пустой набор результатов не может считаться успешным")
+        return self

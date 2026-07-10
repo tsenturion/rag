@@ -22,7 +22,11 @@ from rag_prep.utils import setup_logging
 
 class RussianHelpFormatter(argparse.HelpFormatter):
     def _format_usage(self, *args, **kwargs) -> str:
-        return super()._format_usage(*args, **kwargs).replace("usage:", "использование:", 1)
+        return (
+            super()
+            ._format_usage(*args, **kwargs)
+            .replace("usage:", "использование:", 1)
+        )
 
 
 def _add_russian_help(parser: argparse.ArgumentParser) -> None:

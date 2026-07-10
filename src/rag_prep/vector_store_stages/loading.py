@@ -22,7 +22,9 @@ class EmbeddingLoadingStage:
                 if not line.strip():
                     continue
                 try:
-                    embedded_chunks.append(EmbeddedChunk.model_validate(json.loads(line)))
+                    embedded_chunks.append(
+                        EmbeddedChunk.model_validate(json.loads(line))
+                    )
                 except Exception as exc:
                     raise ValueError(
                         f"Некорректная запись embedding в {input_jsonl}:{line_number}"

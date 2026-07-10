@@ -12,7 +12,11 @@ from rag_prep.utils import setup_logging
 
 class RussianHelpFormatter(argparse.HelpFormatter):
     def _format_usage(self, *args, **kwargs) -> str:
-        return super()._format_usage(*args, **kwargs).replace("usage:", "использование:", 1)
+        return (
+            super()
+            ._format_usage(*args, **kwargs)
+            .replace("usage:", "использование:", 1)
+        )
 
 
 def _add_russian_help(parser: argparse.ArgumentParser) -> None:
@@ -84,12 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_russian_help(compare)
     compare.add_argument(
         "--baseline-report",
-        default=None,
+        required=True,
         help="Путь к baseline_report.json.",
     )
     compare.add_argument(
         "--tuned-report",
-        default=None,
+        required=True,
         help="Путь к tuned_report.json.",
     )
 
@@ -149,16 +153,8 @@ def main() -> None:
             adapter_path=Path(args.adapter_path).expanduser().resolve()
         ).model_dump(mode="json")
     elif command == "compare":
-        baseline_report = (
-            Path(args.baseline_report).expanduser().resolve()
-            if args.baseline_report
-            else config.paths.reports_dir / config.paths.baseline_report_filename
-        )
-        tuned_report = (
-            Path(args.tuned_report).expanduser().resolve()
-            if args.tuned_report
-            else config.paths.reports_dir / config.paths.tuned_report_filename
-        )
+        baseline_report = Path(args.baseline_report).expanduser().resolve()
+        tuned_report = Path(args.tuned_report).expanduser().resolve()
         payload = pipeline.compare_reports(
             baseline_report_path=baseline_report,
             tuned_report_path=tuned_report,
@@ -169,12 +165,16 @@ def main() -> None:
             if args.adapter_path
             else None
         )
-        payload = LocalGenerationStage(config).run(
-            prompt=args.prompt,
-            system_prompt=args.system,
-            adapter_path=adapter_path,
-            max_new_tokens=args.max_new_tokens,
-        ).model_dump(mode="json")
+        payload = (
+            LocalGenerationStage(config)
+            .run(
+                prompt=args.prompt,
+                system_prompt=args.system,
+                adapter_path=adapter_path,
+                max_new_tokens=args.max_new_tokens,
+            )
+            .model_dump(mode="json")
+        )
     else:
         raise ValueError(f"Неизвестная команда: {command}")
 

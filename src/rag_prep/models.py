@@ -14,6 +14,7 @@ def utc_now() -> datetime:
 class SourceFile(BaseModel):
     path: Path
     source: str
+    source_key: str
     file_name: str
     file_type: str
     source_hash: str
@@ -59,6 +60,7 @@ class ProcessedElement(BaseModel):
 class DocumentMetadata(BaseModel):
     id: str
     source: str
+    source_key: str | None = None
     section: str
     file_name: str
     file_type: str
@@ -220,9 +222,14 @@ class EmbeddingExportResult(ArtifactExportModel):
 class EmbeddingValidationResult(BaseModel):
     chunk_count_mismatch: int = 0
     missing_embeddings_count: int = 0
+    missing_chunk_ids_count: int = 0
+    unexpected_chunk_ids_count: int = 0
+    source_chunk_duplicate_ids_count: int = 0
     dimension_mismatch_count: int = 0
     non_finite_values_count: int = 0
     duplicate_chunk_ids_count: int = 0
+    text_mismatch_count: int = 0
+    metadata_mismatch_count: int = 0
     missing_metadata_count: int = 0
     model_mismatch_count: int = 0
     token_limit_exceeded_count: int = 0
@@ -233,9 +240,14 @@ class EmbeddingValidationResult(BaseModel):
             (
                 self.chunk_count_mismatch,
                 self.missing_embeddings_count,
+                self.missing_chunk_ids_count,
+                self.unexpected_chunk_ids_count,
+                self.source_chunk_duplicate_ids_count,
                 self.dimension_mismatch_count,
                 self.non_finite_values_count,
                 self.duplicate_chunk_ids_count,
+                self.text_mismatch_count,
+                self.metadata_mismatch_count,
                 self.missing_metadata_count,
                 self.model_mismatch_count,
                 self.token_limit_exceeded_count,

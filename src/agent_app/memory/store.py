@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from agent_app.memory.policy import (
@@ -13,7 +14,13 @@ from agent_app.memory.policy import (
     validate_memory_key,
     validate_memory_value,
 )
-from agent_app.models import MemoryRecord, MemorySearchResult, MemorySource, MemoryType, utc_now
+from agent_app.models import (
+    MemoryRecord,
+    MemorySearchResult,
+    MemorySource,
+    MemoryType,
+    utc_now,
+)
 
 
 class SQLiteMemoryStore:
@@ -50,6 +57,7 @@ class SQLiteMemoryStore:
         if existing is not None:
             return self.update(
                 existing.id,
+                user_id=user_id,
                 value=cleaned_value,
                 tags=tags,
                 importance=importance,
@@ -86,12 +94,14 @@ class SQLiteMemoryStore:
             )
         return record
 
-    def get(self, memory_id: str) -> MemoryRecord | None:
+    def get(self, memory_id: str, *, user_id: str | None = None) -> MemoryRecord | None:
+        query = "SELECT * FROM memories WHERE id = ?"
+        params: list[Any] = [memory_id]
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM memories WHERE id = ?",
-                (memory_id,),
-            ).fetchone()
+            row = conn.execute(query, params).fetchone()
         if row is None:
             return None
         record = self._from_row(row)
@@ -115,8 +125,10 @@ class SQLiteMemoryStore:
         if memory_type is not None:
             query += " AND memory_type = ?"
             params.append(memory_type)
-        if session_id is not None:
-            query += " AND (session_id = ? OR session_id IS NULL)"
+        if session_id is None:
+            query += " AND session_id IS NULL"
+        else:
+            query += " AND session_id = ?"
             params.append(session_id)
         query += " ORDER BY updated_at DESC LIMIT 1"
         with self._connect() as conn:
@@ -133,50 +145,64 @@ class SQLiteMemoryStore:
         self,
         memory_id: str,
         *,
+        user_id: str | None = None,
         value: str | None = None,
         tags: list[str] | None = None,
         importance: int | None = None,
         ttl_seconds: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> MemoryRecord:
-        current = self.get(memory_id)
+        current = self.get(memory_id, user_id=user_id)
         if current is None:
             raise KeyError(f"Запись памяти не найдена: {memory_id}")
         updated = current.model_copy(
             update={
-                "value": validate_memory_value(value) if value is not None else current.value,
+                "value": validate_memory_value(value)
+                if value is not None
+                else current.value,
                 "tags": tags if tags is not None else current.tags,
                 "importance": clamp_importance(importance)
                 if importance is not None
                 else current.importance,
-                "ttl_seconds": ttl_seconds if ttl_seconds is not None else current.ttl_seconds,
+                "ttl_seconds": ttl_seconds
+                if ttl_seconds is not None
+                else current.ttl_seconds,
                 "metadata": metadata if metadata is not None else current.metadata,
                 "updated_at": utc_now(),
             }
         )
-        with self._connect() as conn:
-            conn.execute(
-                """
+        query = """
                 UPDATE memories
                 SET value = ?, tags = ?, importance = ?, updated_at = ?,
                     ttl_seconds = ?, metadata = ?
                 WHERE id = ?
-                """,
-                (
-                    updated.value,
-                    json.dumps(updated.tags, ensure_ascii=False),
-                    updated.importance,
-                    updated.updated_at.isoformat(),
-                    updated.ttl_seconds,
-                    json.dumps(updated.metadata, ensure_ascii=False),
-                    updated.id,
-                ),
-            )
+                """
+        params: list[Any] = [
+            updated.value,
+            json.dumps(updated.tags, ensure_ascii=False),
+            updated.importance,
+            updated.updated_at.isoformat(),
+            updated.ttl_seconds,
+            json.dumps(updated.metadata, ensure_ascii=False),
+            updated.id,
+        ]
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        with self._connect() as conn:
+            cursor = conn.execute(query, params)
+            if cursor.rowcount == 0:
+                raise KeyError(f"Запись памяти не найдена: {memory_id}")
         return updated
 
-    def delete(self, memory_id: str) -> bool:
+    def delete(self, memory_id: str, *, user_id: str | None = None) -> bool:
+        query = "DELETE FROM memories WHERE id = ?"
+        params: list[Any] = [memory_id]
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
         with self._connect() as conn:
-            cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            cursor = conn.execute(query, params)
             return cursor.rowcount > 0
 
     def delete_by_key(
@@ -185,6 +211,7 @@ class SQLiteMemoryStore:
         user_id: str,
         key: str,
         memory_type: MemoryType | None = None,
+        session_id: str | None = None,
     ) -> int:
         normalized_key = normalize_key(key)
         query = "DELETE FROM memories WHERE user_id = ? AND key = ?"
@@ -192,6 +219,11 @@ class SQLiteMemoryStore:
         if memory_type is not None:
             query += " AND memory_type = ?"
             params.append(memory_type)
+        if session_id is None:
+            query += " AND session_id IS NULL"
+        else:
+            query += " AND session_id = ?"
+            params.append(session_id)
         with self._connect() as conn:
             cursor = conn.execute(query, params)
             return int(cursor.rowcount)
@@ -218,7 +250,9 @@ class SQLiteMemoryStore:
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        records = [record for row in rows if (record := self._valid_record(row)) is not None]
+        records = [
+            record for row in rows if (record := self._valid_record(row)) is not None
+        ]
         for record in records:
             self._mark_accessed(record.id)
         return MemorySearchResult(records=records, query=query, count=len(records))
@@ -239,7 +273,9 @@ class SQLiteMemoryStore:
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [record for row in rows if (record := self._valid_record(row)) is not None]
+        return [
+            record for row in rows if (record := self._valid_record(row)) is not None
+        ]
 
     def clear_session(self, *, user_id: str, session_id: str) -> int:
         with self._connect() as conn:
@@ -296,9 +332,13 @@ class SQLiteMemoryStore:
                 )
                 """
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_user_id ON memories(user_id)"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)"
+            )
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique_scoped_key
@@ -306,10 +346,15 @@ class SQLiteMemoryStore:
                 """
             )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     @staticmethod
     def _to_row(record: MemoryRecord) -> tuple[Any, ...]:

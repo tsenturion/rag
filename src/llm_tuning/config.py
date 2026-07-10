@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import yaml
 from dotenv import load_dotenv
@@ -27,7 +28,7 @@ class FineTuningPathConfig(BaseModel):
 
 class LocalModelConfig(BaseModel):
     model_id: str = "Qwen/Qwen2.5-1.5B-Instruct"
-    fallback_model_id: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    fallback_model_id: str | None = "Qwen/Qwen2.5-0.5B-Instruct"
     tokenizer_id: str | None = None
     trust_remote_code: bool = True
     max_seq_length: int = Field(default=1024, ge=128)
@@ -138,7 +139,10 @@ def load_fine_tuning_config(path: str | Path) -> FineTuningPipelineConfig:
     with config_path.open("r", encoding="utf-8") as file:
         raw: dict[str, Any] = yaml.safe_load(file) or {}
     config = FineTuningPipelineConfig.model_validate(raw)
-    return _resolve_paths(config, base_dir=base_dir)
+    return _resolve_logging_tracking_uri(
+        _resolve_paths(config, base_dir=base_dir),
+        base_dir=base_dir,
+    )
 
 
 def _resolve_config_path(path: str | Path) -> Path:
@@ -175,5 +179,66 @@ def _resolve_paths(
         "reports_dir",
     ):
         value = getattr(paths, name)
-        resolved[name] = value.resolve() if value.is_absolute() else (base_dir / value).resolve()
-    return config.model_copy(update={"paths": paths.model_copy(update=resolved)})
+        resolved[name] = (
+            value.resolve() if value.is_absolute() else (base_dir / value).resolve()
+        )
+    model = config.model
+    resolved_model = {
+        "model_id": _resolve_model_reference(model.model_id, base_dir=base_dir),
+        "tokenizer_id": _resolve_optional_model_reference(
+            model.tokenizer_id,
+            base_dir=base_dir,
+        ),
+        "fallback_model_id": _resolve_optional_model_reference(
+            model.fallback_model_id,
+            base_dir=base_dir,
+        ),
+    }
+    return config.model_copy(
+        update={
+            "paths": paths.model_copy(update=resolved),
+            "model": model.model_copy(update=resolved_model),
+        }
+    )
+
+
+def _resolve_optional_model_reference(
+    value: str | None,
+    *,
+    base_dir: Path,
+) -> str | None:
+    if value is None:
+        return None
+    return _resolve_model_reference(value, base_dir=base_dir)
+
+
+def _resolve_model_reference(value: str, *, base_dir: Path) -> str:
+    expanded = Path(value).expanduser()
+    if expanded.is_absolute():
+        return str(expanded.resolve())
+
+    candidate = base_dir / expanded
+    if candidate.exists() or _looks_like_local_path(value):
+        return str(candidate.resolve())
+    return value
+
+
+def _looks_like_local_path(value: str) -> bool:
+    normalized = value.replace("\\", "/")
+    return normalized.startswith(("./", "../", "data/"))
+
+
+def _resolve_logging_tracking_uri(
+    config: FineTuningPipelineConfig,
+    *,
+    base_dir: Path,
+) -> FineTuningPipelineConfig:
+    uri = config.logging.mlflow_tracking_uri
+    path = Path(uri).expanduser()
+    if path.is_absolute() or path.drive or urlparse(uri).scheme:
+        return config
+
+    logging_config = config.logging.model_copy(
+        update={"mlflow_tracking_uri": str((base_dir / path).resolve())}
+    )
+    return config.model_copy(update={"logging": logging_config})

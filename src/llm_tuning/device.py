@@ -35,7 +35,9 @@ def build_device_report(config: LocalModelConfig) -> DeviceReport:
 
     selected_dtype = select_dtype_name(config.dtype, selected_device)
     if selected_device == "xpu":
-        notes.append("Для Intel Arc используется torch.xpu; CUDA-зависимые режимы не включаются.")
+        notes.append(
+            "Для Intel Arc используется torch.xpu; CUDA-зависимые режимы не включаются."
+        )
     if selected_dtype == "fp32":
         notes.append("Выбран fp32: режим устойчивый, но потребляет больше памяти.")
 

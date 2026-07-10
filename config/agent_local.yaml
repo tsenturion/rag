@@ -9,6 +9,7 @@ agent:
   timeout_seconds: 60
   max_retries: 0
   recursion_limit: 14
+  tool_error_retries: 1
   local_device: auto
   local_dtype: auto
   local_files_only: true

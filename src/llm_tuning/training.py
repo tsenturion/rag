@@ -66,7 +66,11 @@ class FineTuningTrainingStage:
             processing_class=tokenizer,
         )
 
-        LOGGER.info("Старт fine-tuning run_id=%s, model=%s", run_id, self.config.model.model_id)
+        LOGGER.info(
+            "Старт fine-tuning run_id=%s, model=%s",
+            run_id,
+            self.model_loader.active_model_id,
+        )
         train_output = trainer.train(
             resume_from_checkpoint=self.config.training.resume_from_checkpoint
         )
@@ -88,7 +92,7 @@ class FineTuningTrainingStage:
         )
         return TrainingResult(
             run_id=run_id,
-            model_id=self.config.model.model_id,
+            model_id=self.model_loader.active_model_id,
             method=self.config.peft.method,
             adapter_path=adapter_path,
             trainer_output_dir=trainer_output_dir,

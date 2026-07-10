@@ -18,7 +18,9 @@ class LlamaIndexStructuringStage:
     def __init__(self, config: StructuringConfig):
         self.config = config
 
-    def run(self, elements: list[ProcessedElement], run_id: str) -> list[PreparedDocument]:
+    def run(
+        self, elements: list[ProcessedElement], run_id: str
+    ) -> list[PreparedDocument]:
         documents = (
             self._group_by_section(elements, run_id)
             if self.config.group_by_section
@@ -61,14 +63,18 @@ class LlamaIndexStructuringStage:
 
         documents: list[PreparedDocument] = []
         for section, group in groups:
-            documents.append(self._build_document(group=group, section=section, run_id=run_id))
+            documents.append(
+                self._build_document(group=group, section=section, run_id=run_id)
+            )
         return documents
 
     def _one_document_per_element(
         self, elements: list[ProcessedElement], run_id: str
     ) -> list[PreparedDocument]:
         return [
-            self._build_document(group=[element], section=element.section, run_id=run_id)
+            self._build_document(
+                group=[element], section=element.section, run_id=run_id
+            )
             for element in elements
         ]
 
@@ -82,7 +88,7 @@ class LlamaIndexStructuringStage:
         element_start = min(element.element_index for element in group)
         element_end = max(element.element_index for element in group)
         origin_element_ids = [element.element_id for element in group]
-        source_id = stable_id(first.source_file.source_hash, first.source_file.source)
+        source_id = stable_id(first.source_file.source_hash)
         section_path = self._section_path(group, section)
         sentence_counts = [
             int(element.metadata["sentence_count"])
@@ -92,13 +98,14 @@ class LlamaIndexStructuringStage:
         sentence_count = sum(sentence_counts) if sentence_counts else None
         metadata = DocumentMetadata(
             id=stable_id(
-                first.source_file.source,
+                first.source_file.source_hash,
                 section,
                 element_start,
                 element_end,
                 text_hash,
             ),
             source=first.source_file.source,
+            source_key=first.source_file.source_key,
             section=section or self.config.default_section,
             file_name=first.source_file.file_name,
             file_type=first.source_file.file_type,
@@ -108,6 +115,7 @@ class LlamaIndexStructuringStage:
             origin_element_ids=origin_element_ids,
             lineage={
                 "source_id": source_id,
+                "source_key": first.source_file.source_key,
                 "source_hash": first.source_file.source_hash,
                 "origin_element_ids": origin_element_ids,
                 "element_range": [element_start, element_end],
@@ -147,7 +155,13 @@ class LlamaIndexStructuringStage:
 
     @staticmethod
     def _merge_extra(group: list[ProcessedElement]) -> dict[str, Any]:
-        keys = {"languages", "file_directory", "filename", "last_modified", "token_count"}
+        keys = {
+            "languages",
+            "file_directory",
+            "filename",
+            "last_modified",
+            "token_count",
+        }
         extra: dict[str, Any] = {}
         for key in keys:
             values = [
@@ -159,7 +173,9 @@ class LlamaIndexStructuringStage:
                 if key == "token_count":
                     extra[key] = sum(int(value) for value in values)
                 else:
-                    extra[key] = values[0] if len(set(map(str, values))) == 1 else values
+                    extra[key] = (
+                        values[0] if len(set(map(str, values))) == 1 else values
+                    )
         quality_values = [
             element.metadata.get("quality")
             for element in group
@@ -174,7 +190,9 @@ class LlamaIndexStructuringStage:
         numeric_keys = ["meaningful_score", "boilerplate_score", "garbage_score"]
         merged: dict[str, Any] = {}
         for key in numeric_keys:
-            scores = [float(value[key]) for value in values if value.get(key) is not None]
+            scores = [
+                float(value[key]) for value in values if value.get(key) is not None
+            ]
             if scores:
                 merged[key] = round(sum(scores) / len(scores), 3)
         merged["is_probable_boilerplate"] = any(

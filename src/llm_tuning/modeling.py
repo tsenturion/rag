@@ -16,16 +16,21 @@ LOGGER = logging.getLogger(__name__)
 class LocalCausalModelLoader:
     def __init__(self, config: FineTuningPipelineConfig):
         self.config = config
+        self.active_model_id = config.model.model_id
         self._configure_hf_hub_downloads()
 
     def load_tokenizer(self) -> Any:
         from transformers import AutoTokenizer
 
-        tokenizer_id = self.config.model.tokenizer_id or self.config.model.model_id
-        tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_id = self.config.model.tokenizer_id or self.active_model_id
+        tokenizer, loaded_id = self._load_with_fallback(
+            AutoTokenizer.from_pretrained,
             tokenizer_id,
+            component_name="tokenizer",
             trust_remote_code=self.config.model.trust_remote_code,
         )
+        if self.config.model.tokenizer_id is None:
+            self.active_model_id = loaded_id
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "right"
@@ -43,10 +48,13 @@ class LocalCausalModelLoader:
         if self.config.peft.method == "qlora":
             model_kwargs.update(self._qlora_quantization_kwargs(device_report))
 
-        model = AutoModelForCausalLM.from_pretrained(
-            self.config.model.model_id,
+        model, loaded_id = self._load_with_fallback(
+            AutoModelForCausalLM.from_pretrained,
+            self.active_model_id,
+            component_name="model",
             **model_kwargs,
         )
+        self.active_model_id = loaded_id
         if self.config.peft.method != "qlora":
             model = model.to(device_report.selected_device)
         if hasattr(model.config, "use_cache"):
@@ -64,7 +72,12 @@ class LocalCausalModelLoader:
         return model
 
     def prepare_peft_model(self, model: Any) -> Any:
-        from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+        from peft import (
+            LoraConfig,
+            TaskType,
+            get_peft_model,
+            prepare_model_for_kbit_training,
+        )
 
         if self.config.peft.method == "qlora":
             model = prepare_model_for_kbit_training(model)
@@ -110,6 +123,28 @@ class LocalCausalModelLoader:
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         if self.config.model.hub_disable_symlink_warning:
             os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+    def _load_with_fallback(
+        self,
+        loader: Any,
+        model_id: str,
+        *,
+        component_name: str,
+        **kwargs: Any,
+    ) -> tuple[Any, str]:
+        try:
+            return loader(model_id, **kwargs), model_id
+        except OSError:
+            fallback_id = self.config.model.fallback_model_id
+            if not fallback_id or fallback_id == model_id:
+                raise
+            LOGGER.warning(
+                "Не удалось загрузить %s %s; используется fallback %s",
+                component_name,
+                model_id,
+                fallback_id,
+            )
+            return loader(fallback_id, **kwargs), fallback_id
 
 
 def trainable_parameter_metrics(model: Any) -> TrainingMetrics:

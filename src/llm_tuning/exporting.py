@@ -27,12 +27,15 @@ class FineTuningExportStage:
         *,
         filename: str,
     ) -> Path:
-        path = self.config.paths.reports_dir / filename
+        path = self._report_path(report.run_id, filename)
         json_dump(path, report.model_dump(mode="json"))
         return path
 
     def write_comparison(self, comparison: ComparisonResult) -> Path:
-        path = self.config.paths.reports_dir / self.config.paths.comparison_report_filename
+        path = self._report_path(
+            comparison.run_id,
+            self.config.paths.comparison_report_filename,
+        )
         json_dump(path, comparison.model_dump(mode="json"))
         return path
 
@@ -49,8 +52,10 @@ class FineTuningExportStage:
         comparison_report_path: Path | None = None,
         diagnostics: dict[str, Any] | None = None,
     ) -> FineTuningExportResult:
-        self.config.paths.reports_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = self.config.paths.reports_dir / self.config.paths.manifest_filename
+        manifest_path = self._report_path(
+            run_id,
+            self.config.paths.manifest_filename,
+        )
         effective_adapter_path = training.adapter_path if training else adapter_path
         payload = {
             "run_id": run_id,
@@ -68,7 +73,9 @@ class FineTuningExportStage:
                 "comparison_report": str(comparison_report_path)
                 if comparison_report_path
                 else None,
-                "adapter": str(effective_adapter_path) if effective_adapter_path else None,
+                "adapter": str(effective_adapter_path)
+                if effective_adapter_path
+                else None,
             },
         }
         json_dump(manifest_path, payload)
@@ -85,3 +92,15 @@ class FineTuningExportStage:
     def load_evaluation_report(path: Path) -> EvaluationReport:
         with path.open("r", encoding="utf-8") as file:
             return EvaluationReport.model_validate(json.load(file))
+
+    def _report_path(self, run_id: str, filename: str) -> Path:
+        self._validate_path_component(run_id, name="run_id")
+        self._validate_path_component(filename, name="имя отчёта")
+        run_dir = self.config.paths.reports_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir / filename
+
+    @staticmethod
+    def _validate_path_component(value: str, *, name: str) -> None:
+        if not value or Path(value).name != value or value in {".", ".."}:
+            raise ValueError(f"Некорректный {name}: {value!r}")

@@ -83,7 +83,9 @@ def load_sources_task(config: PipelineConfig) -> list[SourceFile]:
 
 
 @task(name="parse_documents")
-def parse_documents_task(config: PipelineConfig, sources: list[SourceFile]) -> ParseResult:
+def parse_documents_task(
+    config: PipelineConfig, sources: list[SourceFile]
+) -> ParseResult:
     result = UnstructuredParsingStage(
         config.parser, default_section=config.structuring.default_section
     ).run(sources)
@@ -96,7 +98,9 @@ def parse_documents_task(config: PipelineConfig, sources: list[SourceFile]) -> P
 
 
 @task(name="clean_text")
-def clean_text_task(config: PipelineConfig, elements: list[RawElement]) -> list[ProcessedElement]:
+def clean_text_task(
+    config: PipelineConfig, elements: list[RawElement]
+) -> list[ProcessedElement]:
     cleaned = TextCleaningStage(config.cleaning).run(elements)
     get_run_logger().info("Очищено элементов: %d", len(cleaned))
     return cleaned
@@ -164,12 +168,16 @@ def export_documents_task(
 
 
 @task(name="log_mlflow")
-def log_mlflow_task(config: PipelineConfig, counts: dict[str, int], export: ExportResult) -> None:
+def log_mlflow_task(
+    config: PipelineConfig, counts: dict[str, int], export: ExportResult
+) -> None:
     MLflowTracker(config).log_run(counts, export)
 
 
 @flow(name="rag-data-preparation")
-def rag_data_preparation_flow(config_path: str = "config/default.yaml") -> PipelineResult:
+def rag_data_preparation_flow(
+    config_path: str = "config/default.yaml",
+) -> PipelineResult:
     import random
 
     config = load_config(Path(config_path))
@@ -226,7 +234,9 @@ def rag_data_preparation_flow(config_path: str = "config/default.yaml") -> Pipel
 
 
 @task(name="load_prepared_documents")
-def load_prepared_documents_task(config: ChunkingPipelineConfig) -> list[PreparedDocument]:
+def load_prepared_documents_task(
+    config: ChunkingPipelineConfig,
+) -> list[PreparedDocument]:
     documents = PreparedDocumentLoadingStage().run(config.paths.input_jsonl)
     get_run_logger().info("Загружено подготовленных документов: %d", len(documents))
     return documents
@@ -290,7 +300,9 @@ def log_chunking_mlflow_task(
 
 
 @flow(name="rag-chunking")
-def rag_chunking_flow(config_path: str = "config/chunking.yaml") -> ChunkingPipelineResult:
+def rag_chunking_flow(
+    config_path: str = "config/chunking.yaml",
+) -> ChunkingPipelineResult:
     import random
 
     config = load_chunking_config(Path(config_path))
@@ -311,9 +323,7 @@ def rag_chunking_flow(config_path: str = "config/chunking.yaml") -> ChunkingPipe
         if chunk.metadata.quality.get("structure_score") is not None
     ]
     unique_block_ids = {
-        block_id
-        for chunk in chunks
-        for block_id in chunk.metadata.semantic_block_ids
+        block_id for chunk in chunks for block_id in chunk.metadata.semantic_block_ids
     }
     counts = {
         "documents_count": len(documents),
@@ -382,14 +392,21 @@ def validate_embeddings_task(
     get_run_logger().info(
         (
             "Проверены embeddings: count_mismatch=%d missing=%d "
+            "missing_ids=%d unexpected_ids=%d source_duplicate_ids=%d "
             "dimension_mismatch=%d non_finite=%d duplicate_ids=%d "
-            "missing_metadata=%d model_mismatch=%d token_limit_exceeded=%d"
+            "text_mismatch=%d metadata_mismatch=%d missing_metadata=%d "
+            "model_mismatch=%d token_limit_exceeded=%d"
         ),
         result.chunk_count_mismatch,
         result.missing_embeddings_count,
+        result.missing_chunk_ids_count,
+        result.unexpected_chunk_ids_count,
+        result.source_chunk_duplicate_ids_count,
         result.dimension_mismatch_count,
         result.non_finite_values_count,
         result.duplicate_chunk_ids_count,
+        result.text_mismatch_count,
+        result.metadata_mismatch_count,
         result.missing_metadata_count,
         result.model_mismatch_count,
         result.token_limit_exceeded_count,
@@ -425,7 +442,9 @@ def log_embedding_mlflow_task(
 
 
 @flow(name="rag-embeddings")
-def rag_embeddings_flow(config_path: str = "config/embeddings.yaml") -> EmbeddingPipelineResult:
+def rag_embeddings_flow(
+    config_path: str = "config/embeddings.yaml",
+) -> EmbeddingPipelineResult:
     import random
 
     config = load_embedding_config(Path(config_path))
@@ -442,7 +461,9 @@ def rag_embeddings_flow(config_path: str = "config/embeddings.yaml") -> Embeddin
 
     counts = build_embedding_counts(config, chunks, embedded_chunks, validation)
     diagnostics = build_embedding_diagnostics(validation)
-    export = export_embeddings_task(config, embedded_chunks, run_id, counts, diagnostics)
+    export = export_embeddings_task(
+        config, embedded_chunks, run_id, counts, diagnostics
+    )
     log_embedding_mlflow_task(config, counts, export)
 
     logger.info("Запуск embeddings завершён: %s", run_id)
@@ -456,7 +477,9 @@ def rag_embeddings_flow(config_path: str = "config/embeddings.yaml") -> Embeddin
 
 
 @task(name="load_embedding_records")
-def load_embedding_records_task(config: VectorStorePipelineConfig) -> list[EmbeddedChunk]:
+def load_embedding_records_task(
+    config: VectorStorePipelineConfig,
+) -> list[EmbeddedChunk]:
     embedded_chunks = EmbeddingLoadingStage().run(config.paths.input_jsonl)
     get_run_logger().info("Загружено записей embeddings: %d", len(embedded_chunks))
     return embedded_chunks
@@ -513,7 +536,9 @@ def search_qdrant_task(
     embedded_chunks: list[EmbeddedChunk],
 ) -> list[VectorSearchResult]:
     search_results = QdrantSearchStage(config.vector_store).run(embedded_chunks)
-    get_run_logger().info("Выполнено Qdrant search smoke-тестов: %d", len(search_results))
+    get_run_logger().info(
+        "Выполнено Qdrant search smoke-тестов: %d", len(search_results)
+    )
     return search_results
 
 
@@ -521,7 +546,9 @@ def search_qdrant_task(
 def index_validate_search_qdrant_task(
     config: VectorStorePipelineConfig,
     embedded_chunks: list[EmbeddedChunk],
-) -> tuple[VectorStoreIndexResult, VectorStoreValidationResult, list[VectorSearchResult]]:
+) -> tuple[
+    VectorStoreIndexResult, VectorStoreValidationResult, list[VectorSearchResult]
+]:
     with qdrant_client_context(config.vector_store) as client:
         index = QdrantIndexingStage(config.vector_store).run(
             embedded_chunks,

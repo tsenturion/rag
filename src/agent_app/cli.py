@@ -14,7 +14,11 @@ from agent_app.scenarios import ScenarioRunner, load_scenario_suite
 
 class RussianHelpFormatter(argparse.HelpFormatter):
     def _format_usage(self, *args, **kwargs) -> str:
-        return super()._format_usage(*args, **kwargs).replace("usage:", "использование:", 1)
+        return (
+            super()
+            ._format_usage(*args, **kwargs)
+            .replace("usage:", "использование:", 1)
+        )
 
 
 def _add_russian_help(parser: argparse.ArgumentParser) -> None:
@@ -40,9 +44,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="config/agent.yaml",
         help="Путь к YAML-конфигу агента.",
     )
-    parser.add_argument("--message", default=None, help="Одно сообщение для отправки агенту.")
-    parser.add_argument("--user-id", default=None, help="Идентификатор пользователя для памяти.")
-    parser.add_argument("--session-id", default=None, help="Идентификатор сессии для памяти.")
+    parser.add_argument(
+        "--message", default=None, help="Одно сообщение для отправки агенту."
+    )
+    parser.add_argument(
+        "--user-id", default=None, help="Идентификатор пользователя для памяти."
+    )
+    parser.add_argument(
+        "--session-id", default=None, help="Идентификатор сессии для памяти."
+    )
     parser.add_argument(
         "--json",
         action="store_true",
@@ -81,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main() -> int:
     _configure_stdio()
     args = build_parser().parse_args()
     config = load_agent_config(Path(args.config))
@@ -100,13 +110,15 @@ def main() -> None:
             for record in store.list_memories(user_id=user_id, limit=100)
         ]
         print(json.dumps(records, ensure_ascii=False, indent=2))
-        return
+        return 0
 
     if args.clear_session_memory:
         store = SQLiteMemoryStore(config.memory.sqlite_path)
         deleted_count = store.clear_session(user_id=user_id, session_id=session_id)
-        print(json.dumps({"deleted_count": deleted_count}, ensure_ascii=False, indent=2))
-        return
+        print(
+            json.dumps({"deleted_count": deleted_count}, ensure_ascii=False, indent=2)
+        )
+        return 0
 
     if args.run_scenario or args.run_scenarios:
         suite = load_scenario_suite(Path(args.scenarios_config))
@@ -127,7 +139,7 @@ def main() -> None:
         payload = report.model_dump(mode="json")
         payload["report_path"] = str(report_path)
         _print_scenario_report(payload, as_json=args.json)
-        return
+        return 0 if report.passed else 1
 
     runner = AgentRunner(
         config,
@@ -138,7 +150,7 @@ def main() -> None:
     if args.message:
         response = runner.ask(args.message)
         _print_response(response.model_dump(mode="json"), as_json=args.json)
-        return
+        return 0
 
     print("Интерактивный режим. Введите exit, quit или выход для завершения.")
     while True:
@@ -153,6 +165,7 @@ def main() -> None:
             continue
         response = runner.ask(message)
         _print_response(response.model_dump(mode="json"), as_json=args.json)
+    return 0
 
 
 def _print_response(payload: dict[str, object], *, as_json: bool) -> None:
@@ -183,4 +196,4 @@ def _configure_stdio() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

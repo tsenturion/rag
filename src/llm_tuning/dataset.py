@@ -60,7 +60,9 @@ class FineTuningDatasetLoader:
 
     @staticmethod
     def _stats(path: Path, examples: list[FineTuningExample]) -> DatasetStats:
-        prompt_lengths = [len(ChatFormatter.prompt_text(example)) for example in examples]
+        prompt_lengths = [
+            len(ChatFormatter.prompt_text(example)) for example in examples
+        ]
         answer_lengths = [len(examples_answer(example)) for example in examples]
         ids = [example.id for example in examples]
         return DatasetStats(
@@ -83,7 +85,9 @@ class FineTuningDatasetLoader:
         # Здесь нужен только ранний sanity-check, точная обрезка делается tokenizer-ом.
         if not examples:
             return 0
-        return max(max(1, len(ChatFormatter.full_text(example)) // 3) for example in examples)
+        return max(
+            max(1, len(ChatFormatter.full_text(example)) // 3) for example in examples
+        )
 
 
 class ChatFormatter:

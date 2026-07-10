@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -63,6 +63,7 @@ class AgentTrace(BaseModel):
     memory_created_ids: list[str] = Field(default_factory=list)
     memory_updated_ids: list[str] = Field(default_factory=list)
     memory_deleted_ids: list[str] = Field(default_factory=list)
+    loop_guard_triggered: bool = False
     recursion_limit: int
 
 
@@ -78,3 +79,4 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     user_id: str
     session_id: str
+    loop_guard_triggered: NotRequired[bool]

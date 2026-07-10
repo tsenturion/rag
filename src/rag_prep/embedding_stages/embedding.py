@@ -13,7 +13,12 @@ from typing import Any, Iterable
 import numpy as np
 import tiktoken
 from openai import OpenAI, OpenAIError
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+from tenacity import (
+    Retrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from rag_prep.config import EmbeddingConfig
 from rag_prep.models import EmbeddedChunk, EmbeddedChunkMetadata, PreparedChunk, utc_now
@@ -36,6 +41,19 @@ def resolve_openai_api_key(config: EmbeddingConfig) -> str:
         (
             f"OpenAI API-ключ не найден. Укажите {config.api_key_env} в переменных окружения"
             " или в env_file, настроенном для пайплайна embeddings."
+        )
+    )
+
+
+def resolve_gigachat_auth_key(config: EmbeddingConfig) -> str:
+    value = os.getenv(config.api_key_env)
+    if value:
+        return _clean_api_key(value, config.api_key_env)
+
+    raise RuntimeError(
+        (
+            f"GigaChat Authorization key не найден. Укажите {config.api_key_env} "
+            "в переменных окружения или в env_file, настроенном для пайплайна embeddings."
         )
     )
 
@@ -75,7 +93,9 @@ class EmbeddingRecordMixin:
         array = np.array(vector, dtype=np.float32)
         norm = float(np.linalg.norm(array))
         if norm == 0.0 or not math.isfinite(norm):
-            LOGGER.warning("Нельзя нормализовать embedding с некорректной нормой: %s", norm)
+            LOGGER.warning(
+                "Нельзя нормализовать embedding с некорректной нормой: %s", norm
+            )
             return [float(value) for value in vector]
         return (array / norm).astype(float).tolist()
 
@@ -329,8 +349,10 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
             return outputs.last_hidden_state[:, 0]
 
         token_embeddings = outputs.last_hidden_state
-        mask = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).to(
-            token_embeddings.dtype
+        mask = (
+            attention_mask.unsqueeze(-1)
+            .expand(token_embeddings.size())
+            .to(token_embeddings.dtype)
         )
         summed = (token_embeddings * mask).sum(dim=1)
         counts = mask.sum(dim=1).clamp(min=1e-9)
@@ -370,7 +392,11 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         return len(self.tokenizer.encode(text, add_special_tokens=True))
 
     def _passage_text(self, text: str) -> str:
-        return f"{self.config.passage_prefix}{text}" if self.config.passage_prefix else text
+        return (
+            f"{self.config.passage_prefix}{text}"
+            if self.config.passage_prefix
+            else text
+        )
 
     def _configure_hf_hub_downloads(self) -> None:
         if self.config.hub_disable_xet:
@@ -404,14 +430,136 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         raise ValueError(f"Неизвестный dtype для локальных embeddings: {dtype}")
 
 
-def build_embedding_stage(config: EmbeddingConfig) -> OpenAIEmbeddingStage | LocalEmbeddingStage:
+class GigaChatEmbeddingStage(EmbeddingRecordMixin):
+    """Считает GigaChat embeddings для подготовленных чанков."""
+
+    def __init__(self, config: EmbeddingConfig):
+        self.config = config
+        credentials = resolve_gigachat_auth_key(config)
+        try:
+            from langchain_gigachat.embeddings import GigaChatEmbeddings
+        except ImportError as exc:
+            raise RuntimeError(
+                "Пакет langchain-gigachat не установлен. Выполните: "
+                "python -m pip install langchain-gigachat gigachat"
+            ) from exc
+
+        self.client = GigaChatEmbeddings(
+            credentials=credentials,
+            scope=config.gigachat_scope,
+            model=config.model,
+            timeout=config.timeout_seconds,
+            max_retries=config.max_retries,
+            verify_ssl_certs=config.gigachat_verify_ssl_certs,
+            prefix_query=config.gigachat_prefix_query,
+            use_prefix_query=config.gigachat_use_prefix_query,
+        )
+
+    def run(self, chunks: list[PreparedChunk], *, run_id: str) -> list[EmbeddedChunk]:
+        embedded: list[EmbeddedChunk] = []
+        batches = list(self._batches(chunks))
+        for batch_number, batch in enumerate(batches, start=1):
+            texts = [chunk.text for chunk in batch]
+            result = self._embed_texts(texts)
+            if len(result.vectors) != len(batch):
+                raise ValueError(
+                    f"GigaChat вернул {len(result.vectors)} embeddings "
+                    f"для {len(batch)} входов"
+                )
+            for chunk, vector in zip(batch, result.vectors, strict=True):
+                embedded.append(
+                    self._build_embedded_chunk(
+                        chunk,
+                        vector,
+                        run_id=run_id,
+                        embedded_at=result.embedded_at,
+                    )
+                )
+            LOGGER.info(
+                "Посчитан GigaChat batch embeddings %d/%d; чанков: %d",
+                batch_number,
+                len(batches),
+                len(batch),
+            )
+
+        LOGGER.info("Посчитаны GigaChat embeddings для чанков: %d", len(embedded))
+        return embedded
+
+    def _embed_texts(self, texts: list[str]) -> EmbeddingBatchResult:
+        try:
+            from gigachat.exceptions import GigaChatException
+        except ImportError:
+            GigaChatException = Exception  # type: ignore[assignment]
+
+        retryer = Retrying(
+            stop=stop_after_attempt(self.config.max_retries),
+            wait=wait_exponential_jitter(initial=1, max=30),
+            retry=retry_if_exception_type(
+                (GigaChatException, TimeoutError, ConnectionError)
+            ),
+            reraise=True,
+        )
+        return retryer(self._request_embeddings, texts)
+
+    def _request_embeddings(self, texts: list[str]) -> EmbeddingBatchResult:
+        vectors = self.client.embed_documents(texts)
+        return EmbeddingBatchResult(
+            vectors=[[float(value) for value in vector] for vector in vectors],
+            embedded_at=utc_now(),
+        )
+
+    def _batches(self, chunks: list[PreparedChunk]) -> Iterable[list[PreparedChunk]]:
+        batch: list[PreparedChunk] = []
+        batch_tokens = 0
+        for chunk in chunks:
+            token_count = self._token_count(chunk.text)
+            if token_count > self.config.max_input_tokens:
+                raise ValueError(
+                    (
+                        "Чанк превышает token limit GigaChat embeddings-модели: "
+                        f"id={chunk.metadata.id} tokens~={token_count} "
+                        f"limit={self.config.max_input_tokens}"
+                    )
+                )
+
+            would_exceed_size = len(batch) >= self.config.batch_size
+            would_exceed_tokens = (
+                bool(batch)
+                and batch_tokens + token_count > self.config.max_batch_tokens
+            )
+            if would_exceed_size or would_exceed_tokens:
+                yield batch
+                batch = []
+                batch_tokens = 0
+
+            batch.append(chunk)
+            batch_tokens += token_count
+
+        if batch:
+            yield batch
+
+    def _token_count(self, text: str) -> int:
+        return max(1, math.ceil(len(text) / self.config.gigachat_chars_per_token))
+
+    @staticmethod
+    def ensure_api_key(config: EmbeddingConfig) -> None:
+        resolve_gigachat_auth_key(config)
+
+
+def build_embedding_stage(
+    config: EmbeddingConfig,
+) -> OpenAIEmbeddingStage | LocalEmbeddingStage | GigaChatEmbeddingStage:
     if config.provider == "openai":
         return OpenAIEmbeddingStage(config)
     if config.provider == "local":
         return LocalEmbeddingStage(config)
+    if config.provider == "gigachat":
+        return GigaChatEmbeddingStage(config)
     raise ValueError(f"Неизвестный provider embeddings: {config.provider}")
 
 
 def ensure_embedding_runtime(config: EmbeddingConfig) -> None:
     if config.provider == "openai":
         OpenAIEmbeddingStage.ensure_api_key(config)
+    if config.provider == "gigachat":
+        GigaChatEmbeddingStage.ensure_api_key(config)

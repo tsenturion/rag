@@ -18,7 +18,9 @@ def validate_memory_key(key: str) -> str:
     cleaned = key.strip()
     for pattern in SECRET_PATTERNS:
         if pattern.search(cleaned):
-            raise ValueError("ключ похож на секрет и не может использоваться для памяти")
+            raise ValueError(
+                "ключ похож на секрет и не может использоваться для памяти"
+            )
     return cleaned
 
 

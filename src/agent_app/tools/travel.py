@@ -9,10 +9,18 @@ from pydantic import BaseModel, Field
 class TravelBudgetInput(BaseModel):
     city: str = Field(default="Екатеринбург", description="Город поездки.")
     days: int = Field(default=1, ge=1, le=60, description="Количество дней поездки.")
-    hotel_per_night: float = Field(default=4200.0, ge=0.0, description="Стоимость проживания за ночь.")
-    meals_per_day: float = Field(default=1500.0, ge=0.0, description="Расходы на питание в день.")
-    transport_total: float = Field(default=3000.0, ge=0.0, description="Общие расходы на транспорт.")
-    extra_per_day: float = Field(default=800.0, ge=0.0, description="Дополнительные расходы в день.")
+    hotel_per_night: float = Field(
+        default=4200.0, ge=0.0, description="Стоимость проживания за ночь."
+    )
+    meals_per_day: float = Field(
+        default=1500.0, ge=0.0, description="Расходы на питание в день."
+    )
+    transport_total: float = Field(
+        default=3000.0, ge=0.0, description="Общие расходы на транспорт."
+    )
+    extra_per_day: float = Field(
+        default=800.0, ge=0.0, description="Дополнительные расходы в день."
+    )
     currency: str = Field(default="RUB", description="Валюта расчёта.")
 
 
@@ -20,8 +28,12 @@ class PackingAdvisorInput(BaseModel):
     city: str = Field(description="Город поездки.")
     trip_goal: str = Field(default="деловая поездка", description="Цель поездки.")
     days: int = Field(default=1, ge=1, le=60, description="Количество дней поездки.")
-    temperature: float | None = Field(default=None, description="Температура воздуха, если известна.")
-    weather_description: str | None = Field(default=None, description="Описание погоды, если известно.")
+    temperature: float | None = Field(
+        default=None, description="Температура воздуха, если известна."
+    )
+    weather_description: str | None = Field(
+        default=None, description="Описание погоды, если известно."
+    )
 
 
 def calculate_travel_budget(

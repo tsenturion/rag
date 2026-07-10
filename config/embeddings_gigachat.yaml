@@ -1,0 +1,34 @@
+run:
+  name: rag_embeddings_gigachat
+  seed: 42
+
+paths:
+  input_jsonl: data/chunks/chunks.jsonl
+  output_dir: data/embeddings_gigachat
+  json_filename: embeddings.json
+  jsonl_filename: embeddings.jsonl
+  manifest_filename: manifest.json
+
+embedding:
+  provider: gigachat
+  model: Embeddings-2
+  dimensions: 1024
+  api_key_env: GIGACHAT_AUTH_KEY
+  env_file: .env
+  batch_size: 32
+  max_batch_tokens: 4096
+  max_input_tokens: 512
+  max_retries: 5
+  timeout_seconds: 60
+  normalize: false
+  gigachat_scope: GIGACHAT_API_PERS
+  gigachat_verify_ssl_certs: false
+  gigachat_use_prefix_query: false
+  gigachat_chars_per_token: 3
+  fail_on_validation_error: true
+
+logging:
+  level: INFO
+  mlflow_enabled: true
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment: rag-embeddings

@@ -1,4 +1,5 @@
 from rag_prep.embedding_stages.embedding import (
+    GigaChatEmbeddingStage,
     LocalEmbeddingStage,
     OpenAIEmbeddingStage,
     build_embedding_stage,
@@ -18,6 +19,7 @@ __all__ = [
     "EmbeddingValidationStage",
     "OpenAIEmbeddingStage",
     "LocalEmbeddingStage",
+    "GigaChatEmbeddingStage",
     "build_embedding_stage",
     "ensure_embedding_runtime",
     "build_embedding_counts",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -23,6 +24,8 @@ JSON_TOOL_CALL_RE = re.compile(
 def build_llm(config: AgentConfig) -> Any:
     if config.provider == "openai":
         return _build_openai_llm(config)
+    if config.provider == "gigachat":
+        return _build_gigachat_llm(config)
     if config.provider == "local":
         return LocalTransformersChatModel(config)
     raise ValueError(f"Неизвестный provider LLM: {config.provider}")
@@ -37,6 +40,51 @@ def _build_openai_llm(config: AgentConfig) -> ChatOpenAI:
         timeout=config.timeout_seconds,
         max_retries=config.max_retries,
     )
+
+
+def _build_gigachat_llm(config: AgentConfig) -> Any:
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    credentials = _resolve_env_secret(
+        config.gigachat_auth_key_env,
+        provider_name="GigaChat",
+    )
+    try:
+        from langchain_gigachat.chat_models import GigaChat
+    except ImportError as exc:
+        raise RuntimeError(
+            "Пакет langchain-gigachat не установлен. Выполните: "
+            "python -m pip install langchain-gigachat gigachat"
+        ) from exc
+
+    return GigaChat(
+        credentials=credentials,
+        scope=config.gigachat_scope,
+        model=config.model,
+        temperature=config.temperature,
+        max_tokens=config.max_new_tokens,
+        timeout=config.timeout_seconds,
+        max_retries=config.max_retries,
+        verify_ssl_certs=config.gigachat_verify_ssl_certs,
+        profanity_check=config.gigachat_profanity_check,
+    )
+
+
+def _resolve_env_secret(env_name: str, *, provider_name: str) -> str:
+    value = os.getenv(env_name)
+    if value:
+        return _clean_env_secret(value, env_name)
+    raise RuntimeError(
+        f"{provider_name}: ключ авторизации не найден. Укажите {env_name} в .env "
+        "или переменных окружения."
+    )
+
+
+def _clean_env_secret(value: str, env_name: str) -> str:
+    cleaned = value.strip().strip("\"'")
+    if "=" in cleaned and cleaned.startswith(env_name):
+        cleaned = cleaned.split("=", 1)[1].strip().strip("\"'")
+    return cleaned
 
 
 class LocalTransformersChatModel:
@@ -56,7 +104,9 @@ class LocalTransformersChatModel:
         import torch
 
         prompt_text = self._format_prompt(messages)
-        encoded = self.tokenizer(prompt_text, return_tensors="pt", add_special_tokens=False)
+        encoded = self.tokenizer(
+            prompt_text, return_tensors="pt", add_special_tokens=False
+        )
         encoded = {key: value.to(self.device) for key, value in encoded.items()}
 
         generate_kwargs: dict[str, Any] = {
@@ -194,7 +244,9 @@ class LocalTransformersChatModel:
             return AIMessage(content=content, tool_calls=tool_calls)
         return AIMessage(content=cleaned)
 
-    def _parse_tool_call_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def _parse_tool_call_payload(
+        self, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
         known_tools = {tool.name for tool in self.bound_tools}
         name = payload.get("name")
         arguments = payload.get("arguments", {})
@@ -216,7 +268,9 @@ class LocalTransformersChatModel:
 
     @staticmethod
     def _tool_schema(tool: BaseTool) -> dict[str, Any]:
-        if isinstance(tool.args_schema, type) and hasattr(tool.args_schema, "model_json_schema"):
+        if isinstance(tool.args_schema, type) and hasattr(
+            tool.args_schema, "model_json_schema"
+        ):
             parameters = tool.args_schema.model_json_schema()
         elif isinstance(tool.args_schema, dict):
             parameters = tool.args_schema

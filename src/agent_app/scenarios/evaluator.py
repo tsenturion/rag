@@ -27,6 +27,7 @@ class ScenarioEvaluator:
         )
         memory_created_count = len(trace.memory_created_ids) if trace is not None else 0
         memory_updated_count = len(trace.memory_updated_ids) if trace is not None else 0
+        loop_guard_triggered = bool(trace and trace.loop_guard_triggered)
 
         for expected in criteria.answer_contains:
             checks.append(
@@ -83,6 +84,22 @@ class ScenarioEvaluator:
                     details=f"Ошибок tools: {tool_error_count}",
                 )
             )
+        if criteria.require_loop_guard:
+            checks.append(
+                ScenarioCheck(
+                    name="loop_guard_triggered",
+                    passed=loop_guard_triggered,
+                    details=f"loop_guard_triggered={loop_guard_triggered}",
+                )
+            )
+        if criteria.forbid_loop_guard:
+            checks.append(
+                ScenarioCheck(
+                    name="loop_guard_not_triggered",
+                    passed=not loop_guard_triggered,
+                    details=f"loop_guard_triggered={loop_guard_triggered}",
+                )
+            )
         if criteria.require_memory_created:
             checks.append(
                 ScenarioCheck(
@@ -123,9 +140,15 @@ class ScenarioEvaluator:
         expectation: MemoryExpectation,
     ) -> bool:
         for record in memory_records:
-            if expectation.memory_type and record.memory_type != expectation.memory_type:
+            if (
+                expectation.memory_type
+                and record.memory_type != expectation.memory_type
+            ):
                 continue
-            if expectation.key_contains and expectation.key_contains.lower() not in record.key.lower():
+            if (
+                expectation.key_contains
+                and expectation.key_contains.lower() not in record.key.lower()
+            ):
                 continue
             if (
                 expectation.value_contains

@@ -39,9 +39,13 @@ class FineTuningExample(BaseModel):
         values: list[ChatMessage],
     ) -> list[ChatMessage]:
         if len(values) < 2:
-            raise ValueError("пример должен содержать минимум user и assistant сообщения")
+            raise ValueError(
+                "пример должен содержать минимум user и assistant сообщения"
+            )
         if values[-1].role != "assistant":
-            raise ValueError("последнее сообщение в обучающем примере должно быть assistant")
+            raise ValueError(
+                "последнее сообщение в обучающем примере должно быть assistant"
+            )
         if not any(message.role == "user" for message in values):
             raise ValueError("пример должен содержать хотя бы одно user сообщение")
         return values

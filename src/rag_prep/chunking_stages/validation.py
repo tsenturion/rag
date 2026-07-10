@@ -28,12 +28,14 @@ class ChunkValidationStage:
                 if chunk.metadata.chunk_token_count > self.config.max_chunk_tokens
             ),
             estimated_offsets_count=sum(
-                1
-                for chunk in chunks
-                if "estimated" in chunk.metadata.offset_strategy
+                1 for chunk in chunks if "estimated" in chunk.metadata.offset_strategy
             ),
-            missing_parent_count=sum(1 for chunk in chunks if not chunk.metadata.parent_ids),
-            missing_lineage_count=sum(1 for chunk in chunks if not chunk.metadata.lineage),
+            missing_parent_count=sum(
+                1 for chunk in chunks if not chunk.metadata.parent_ids
+            ),
+            missing_lineage_count=sum(
+                1 for chunk in chunks if not chunk.metadata.lineage
+            ),
             low_quality_chunks_count=sum(
                 1
                 for chunk in chunks
@@ -56,5 +58,7 @@ class ChunkValidationStage:
             result.low_quality_chunks_count,
         )
         if self.config.fail_on_validation_error and result.has_errors:
-            raise ValueError(f"Валидация чанков завершилась ошибкой: {result.model_dump()}")
+            raise ValueError(
+                f"Валидация чанков завершилась ошибкой: {result.model_dump()}"
+            )
         return result

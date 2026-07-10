@@ -67,7 +67,7 @@ class FineTuningEvaluationStage:
         pass_rate = round(passed_count / len(answers), 6) if answers else 0.0
         report = EvaluationReport(
             run_id=run_id,
-            model_id=self.config.model.model_id,
+            model_id=self.model_loader.active_model_id,
             adapter_path=adapter_path,
             examples_count=len(answers),
             passed_count=passed_count,
@@ -87,7 +87,9 @@ class FineTuningEvaluationStage:
             report.eval_loss,
         )
         if self.config.evaluation.fail_on_failed_criteria and report.failed_count:
-            raise ValueError(f"Оценка {report_label} не прошла критерии: {report.failed_count}")
+            raise ValueError(
+                f"Оценка {report_label} не прошла критерии: {report.failed_count}"
+            )
         return report
 
     def _limited_examples(

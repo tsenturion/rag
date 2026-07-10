@@ -18,14 +18,19 @@ class TextCleaningStage:
 
     def __init__(self, config: CleaningConfig):
         self.config = config
-        self.drop_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in config.drop_patterns]
+        self.drop_patterns = [
+            re.compile(pattern, re.IGNORECASE) for pattern in config.drop_patterns
+        ]
         self.boilerplate_patterns = [
-            re.compile(pattern, re.IGNORECASE) for pattern in config.boilerplate_patterns
+            re.compile(pattern, re.IGNORECASE)
+            for pattern in config.boilerplate_patterns
         ]
 
     def run(self, elements: list[RawElement]) -> list[ProcessedElement]:
         cleaned: list[ProcessedElement] = []
-        normalized_text_counts = Counter(self._repeat_key(element.text) for element in elements)
+        normalized_text_counts = Counter(
+            self._repeat_key(element.text) for element in elements
+        )
         for element in elements:
             text = self._clean_text(element.text)
             if len(text) < self.config.min_chars:
@@ -68,16 +73,22 @@ class TextCleaningStage:
         printable_chars = sum(1 for char in text if char.isprintable())
         unique_tokens = {token.lower() for token in tokens}
         boilerplate_matches = [
-            pattern.pattern for pattern in self.boilerplate_patterns if pattern.search(text)
+            pattern.pattern
+            for pattern in self.boilerplate_patterns
+            if pattern.search(text)
         ]
-        garbage_score = self._garbage_score(text, alpha_chars, alnum_chars, printable_chars)
+        garbage_score = self._garbage_score(
+            text, alpha_chars, alnum_chars, printable_chars
+        )
         boilerplate_score = min(
             1.0,
             (0.35 if boilerplate_matches else 0.0)
             + (0.25 if repeated_count > 1 else 0.0)
             + (0.2 if len(tokens) <= 4 else 0.0),
         )
-        meaningful_score = max(0.0, min(1.0, 1.0 - max(garbage_score, boilerplate_score)))
+        meaningful_score = max(
+            0.0, min(1.0, 1.0 - max(garbage_score, boilerplate_score))
+        )
         return {
             "meaningful_score": round(meaningful_score, 3),
             "boilerplate_score": round(boilerplate_score, 3),

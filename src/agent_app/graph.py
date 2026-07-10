@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langgraph.graph import START, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langgraph.errors import GraphRecursionError
+from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 
 from agent_app.config import AgentAppConfig
 from agent_app.llm import build_llm
@@ -37,6 +46,7 @@ class AgentRunner:
         *,
         user_id: str | None = None,
         session_id: str | None = None,
+        llm: Any | None = None,
     ):
         self.config = config
         self.user_id = user_id or config.memory.default_user_id
@@ -49,7 +59,7 @@ class AgentRunner:
             session_id=self.session_id,
             max_chars=config.agent.max_summary_chars,
         )
-        self.llm = build_llm(config.agent)
+        self.llm = llm if llm is not None else build_llm(config.agent)
         self.tools = build_tools(
             config,
             self.store,
@@ -95,15 +105,21 @@ class AgentRunner:
             *self.short_term.snapshot(),
             HumanMessage(content=message),
         ]
-        result = self.graph.invoke(
-            {
-                "messages": input_messages,
-                "user_id": self.user_id,
-                "session_id": self.session_id,
-            },
-            config={"recursion_limit": self.config.agent.recursion_limit},
-        )
+        try:
+            result = self.graph.invoke(
+                {
+                    "messages": input_messages,
+                    "user_id": self.user_id,
+                    "session_id": self.session_id,
+                },
+                config={"recursion_limit": self.config.agent.recursion_limit},
+            )
+        except Exception as exc:
+            if self._is_recoverable_agent_error(exc):
+                return self._error_response(message, input_messages, memory_before, exc)
+            raise
         messages: list[BaseMessage] = result["messages"]
+        loop_guard_triggered = bool(result.get("loop_guard_triggered", False))
         missing_tools = self._missing_required_tools(message, messages)
         if missing_tools:
             retry_message = HumanMessage(
@@ -113,28 +129,49 @@ class AgentRunner:
                     "инструментов и не описывай результат обычным текстом до их выполнения."
                 )
             )
-            result = self.graph.invoke(
-                {
-                    "messages": [*messages, retry_message],
-                    "user_id": self.user_id,
-                    "session_id": self.session_id,
-                },
-                config={"recursion_limit": self.config.agent.recursion_limit},
-            )
+            try:
+                result = self.graph.invoke(
+                    {
+                        "messages": [*messages, retry_message],
+                        "user_id": self.user_id,
+                        "session_id": self.session_id,
+                    },
+                    config={"recursion_limit": self.config.agent.recursion_limit},
+                )
+            except Exception as exc:
+                if self._is_recoverable_agent_error(exc):
+                    return self._error_response(
+                        message, input_messages, memory_before, exc
+                    )
+                raise
             messages = result["messages"]
+            loop_guard_triggered = loop_guard_triggered or bool(
+                result.get("loop_guard_triggered", False)
+            )
         answer_message = self._last_ai_message(messages)
         answer = str(answer_message.content if answer_message else "")
         tool_calls = self._tool_call_names(messages)
         tool_results = self._tool_results(messages)
 
         self.short_term.add(HumanMessage(content=message), AIMessage(content=answer))
-        summarized_messages = self.summary.summarize_if_needed(
-            llm=self.llm,
-            messages=self.short_term.snapshot(),
-            max_history_messages=self.config.agent.max_history_messages,
-        )
-        if len(summarized_messages) != len(self.short_term.messages):
-            self.short_term.messages = summarized_messages
+        try:
+            summarized_messages = self.summary.summarize_if_needed(
+                llm=self.llm,
+                messages=self.short_term.snapshot(),
+                max_history_messages=self.config.agent.max_history_messages,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Не удалось обновить summary memory; возвращается готовый ответ, "
+                "а short-term history обрезается до последних полных ходов"
+            )
+            self.short_term.messages = self.summary.recent_messages(
+                self.short_term.snapshot(),
+                self.config.agent.max_history_messages,
+            )
+        else:
+            if len(summarized_messages) != len(self.short_term.messages):
+                self.short_term.messages = summarized_messages
 
         memory_after = self.store.list_memories(user_id=self.user_id, limit=200)
         trace = self._trace(
@@ -146,6 +183,7 @@ class AgentRunner:
             tool_results=tool_results,
             memory_before=memory_before,
             memory_after=memory_after,
+            loop_guard_triggered=loop_guard_triggered,
         )
         LOGGER.info("Агент ответил; tool calls: %d", len(tool_calls))
         return AgentResponse(
@@ -164,10 +202,13 @@ class AgentRunner:
 
     def clear_session_memory(self) -> int:
         self.short_term.clear()
-        return self.store.clear_session(user_id=self.user_id, session_id=self.session_id)
+        return self.store.clear_session(
+            user_id=self.user_id, session_id=self.session_id
+        )
 
     def _build_graph(self):
         if not getattr(self.llm, "supports_tool_calling", True):
+
             def local_agent_node(state: AgentState) -> dict[str, list[BaseMessage]]:
                 response = self.llm.invoke(state["messages"])
                 return {"messages": [response]}
@@ -183,18 +224,37 @@ class AgentRunner:
             response = llm_with_tools.invoke(state["messages"])
             return {"messages": [response]}
 
+        def finalize_node(state: AgentState) -> dict[str, object]:
+            return {
+                "messages": [
+                    *self._cancel_pending_tool_calls(state["messages"]),
+                    AIMessage(
+                        content=self._fallback_answer_from_tools(state["messages"])
+                    ),
+                ],
+                "loop_guard_triggered": True,
+            }
+
         workflow = StateGraph(AgentState)
         workflow.add_node("agent", agent_node)
         workflow.add_node("tools", ToolNode(self.tools))
+        workflow.add_node("finalize", finalize_node)
         workflow.add_edge(START, "agent")
-        workflow.add_conditional_edges("agent", tools_condition)
+        workflow.add_conditional_edges(
+            "agent",
+            self._route_after_agent,
+            {"tools": "tools", "finalize": "finalize", END: END},
+        )
         workflow.add_edge("tools", "agent")
+        workflow.add_edge("finalize", END)
         return workflow.compile()
 
     @staticmethod
     def _last_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
         for message in reversed(messages):
-            if isinstance(message, AIMessage) and not getattr(message, "tool_calls", None):
+            if isinstance(message, AIMessage) and not getattr(
+                message, "tool_calls", None
+            ):
                 return message
         return None
 
@@ -239,6 +299,197 @@ class AgentRunner:
                 deduplicated.append(name)
         return deduplicated
 
+    def _route_after_agent(self, state: AgentState) -> str:
+        messages = state["messages"]
+        if not messages:
+            return END
+        last_message = messages[-1]
+        tool_calls = getattr(last_message, "tool_calls", None) or []
+        if not tool_calls:
+            return END
+        if self._should_finalize_tool_loop(messages):
+            LOGGER.warning("Остановлен повторяющийся цикл tool-вызовов")
+            return "finalize"
+        return "tools"
+
+    def _should_finalize_tool_loop(self, messages: list[BaseMessage]) -> bool:
+        current = messages[-1]
+        for current_call in getattr(current, "tool_calls", []) or []:
+            signature = self._tool_call_signature(current_call)
+            previous_calls = [
+                call
+                for message in messages[:-1]
+                for call in getattr(message, "tool_calls", []) or []
+                if self._tool_call_signature(call) == signature
+            ]
+            if previous_calls and not self._can_retry_failed_tool_call(
+                messages,
+                previous_calls,
+            ):
+                return True
+
+        max_tool_calls = max(1, (self.config.agent.recursion_limit - 4) // 2)
+        return len(self._tool_call_names(messages)) > max_tool_calls
+
+    def _can_retry_failed_tool_call(
+        self,
+        messages: list[BaseMessage],
+        previous_calls: list[dict[str, object]],
+    ) -> bool:
+        if len(previous_calls) > self.config.agent.tool_error_retries:
+            return False
+        latest_call_id = previous_calls[-1].get("id")
+        if not latest_call_id:
+            return False
+        latest_result = next(
+            (
+                message
+                for message in reversed(messages[:-1])
+                if isinstance(message, ToolMessage)
+                and message.tool_call_id == str(latest_call_id)
+            ),
+            None,
+        )
+        return latest_result is not None and self._tool_message_is_error(latest_result)
+
+    @staticmethod
+    def _tool_call_signature(call: dict[str, object]) -> str:
+        payload = {
+            "name": call.get("name"),
+            "args": call.get("args", {}),
+        }
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+
+    def _fallback_answer_from_tools(self, messages: list[BaseMessage]) -> str:
+        tool_results = self._tool_results(messages)
+        if not tool_results:
+            return "Tool-вызовы остановлены: модель начала повторять цикл действий."
+
+        lines = ["Собрал результаты tools и остановил повторный цикл вызовов."]
+        for result in tool_results[-8:]:
+            lines.append(self._format_tool_result_for_answer(result))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _cancel_pending_tool_calls(messages: list[BaseMessage]) -> list[ToolMessage]:
+        if not messages:
+            return []
+        pending_calls = getattr(messages[-1], "tool_calls", None) or []
+        cancelled: list[ToolMessage] = []
+        for index, call in enumerate(pending_calls, start=1):
+            tool_name = str(call.get("name") or "tool")
+            tool_call_id = str(call.get("id") or f"loop_guard_{index}")
+            cancelled.append(
+                ToolMessage(
+                    content=json.dumps(
+                        {
+                            "status": "cancelled",
+                            "reason": "loop_guard",
+                            "message": "Повторный tool-вызов остановлен защитой от циклов.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                )
+            )
+        return cancelled
+
+    @staticmethod
+    def _format_tool_result_for_answer(result: AgentToolResult) -> str:
+        name = result.name or "tool"
+        try:
+            payload = json.loads(result.content)
+        except json.JSONDecodeError:
+            return f"- {name}: {result.content[:300]}"
+
+        if name == "get_weather":
+            if "error" in payload:
+                return f"- get_weather: ошибка для города {payload.get('city')}: {payload.get('message')}"
+            return (
+                "- get_weather: "
+                f"{payload.get('city')}, {payload.get('temperature')}°C, "
+                f"{payload.get('description')}"
+            )
+        if name == "calculate_travel_budget":
+            return (
+                "- calculate_travel_budget: "
+                f"{payload.get('city')}, бюджет {payload.get('total')} "
+                f"{payload.get('currency')}"
+            )
+        if name == "advise_packing":
+            items = payload.get("items", [])
+            if isinstance(items, list):
+                return f"- advise_packing: {', '.join(map(str, items[:8]))}"
+        if name == "save_memory":
+            record = payload.get("record", {})
+            if isinstance(record, dict):
+                return f"- save_memory: сохранено в память, ключ {record.get('key')}"
+        if name == "search_memory":
+            records = payload.get("records", [])
+            if isinstance(records, list):
+                values = []
+                for record in records[:3]:
+                    if isinstance(record, dict):
+                        values.append(f"{record.get('key')}: {record.get('value')}")
+                return f"- search_memory: {'; '.join(values)}"
+        if name == "summarize_project_state":
+            return f"- summarize_project_state: {json.dumps(payload, ensure_ascii=False)[:500]}"
+        return f"- {name}: {json.dumps(payload, ensure_ascii=False)[:300]}"
+
+    def _error_response(
+        self,
+        message: str,
+        input_messages: list[BaseMessage],
+        memory_before: list[MemoryRecord],
+        exc: Exception,
+    ) -> AgentResponse:
+        answer = f"Ошибка выполнения агента: {self._sanitize_agent_error(exc)}"
+        error_message = AIMessage(content=answer)
+        trace = self._trace(
+            message=message,
+            input_messages=input_messages,
+            result_messages=[error_message],
+            answer=answer,
+            tool_calls=[],
+            tool_results=[
+                AgentToolResult(
+                    name="agent_runtime",
+                    content=answer,
+                    is_error=True,
+                )
+            ],
+            memory_before=memory_before,
+            memory_after=memory_before,
+        )
+        return AgentResponse(
+            answer=answer,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            tool_calls=[],
+            trace=trace,
+        )
+
+    @staticmethod
+    def _is_recoverable_agent_error(exc: Exception) -> bool:
+        module = exc.__class__.__module__
+        return (
+            isinstance(exc, GraphRecursionError)
+            or module.startswith("gigachat")
+            or module.startswith("openai")
+        )
+
+    @staticmethod
+    def _sanitize_agent_error(exc: Exception) -> str:
+        text = str(exc)
+        text = re.sub(
+            r"Authorization':\s*'[^']+'", "Authorization': '<redacted>'", text
+        )
+        text = re.sub(r"Bearer\s+[A-Za-z0-9._-]+", "Bearer <redacted>", text)
+        if len(text) > 800:
+            return f"{text[:800]}..."
+        return text
+
     @staticmethod
     def _is_secret_storage_request(message: str) -> bool:
         return bool(SECRET_STORAGE_RE.search(message))
@@ -249,18 +500,26 @@ class AgentRunner:
         for message in messages:
             if isinstance(message, ToolMessage):
                 content = str(message.content)
-                lowered = content.lower()
                 results.append(
                     AgentToolResult(
                         name=getattr(message, "name", None),
                         content=content[:2000],
-                        is_error='"status": "error"' in lowered
-                        or '"error":' in lowered
-                        or "error invoking tool" in lowered
-                        or "ошибка" in lowered,
+                        is_error=AgentRunner._tool_message_is_error(message),
                     )
                 )
         return results
+
+    @staticmethod
+    def _tool_message_is_error(message: ToolMessage) -> bool:
+        if getattr(message, "status", None) == "error":
+            return True
+        lowered = str(message.content).lower()
+        return (
+            '"status": "error"' in lowered
+            or '"error":' in lowered
+            or "error invoking tool" in lowered
+            or "ошибка" in lowered
+        )
 
     def _trace(
         self,
@@ -273,11 +532,16 @@ class AgentRunner:
         tool_results: list[AgentToolResult],
         memory_before: list[MemoryRecord],
         memory_after: list[MemoryRecord],
+        loop_guard_triggered: bool = False,
     ) -> AgentTrace:
         before_by_id = {record.id: record for record in memory_before}
         after_by_id = {record.id: record for record in memory_after}
-        created_ids = [record_id for record_id in after_by_id if record_id not in before_by_id]
-        deleted_ids = [record_id for record_id in before_by_id if record_id not in after_by_id]
+        created_ids = [
+            record_id for record_id in after_by_id if record_id not in before_by_id
+        ]
+        deleted_ids = [
+            record_id for record_id in before_by_id if record_id not in after_by_id
+        ]
         updated_ids = [
             record_id
             for record_id, record in after_by_id.items()
@@ -302,6 +566,13 @@ class AgentRunner:
                         "is_error": result.is_error,
                         "content_preview": result.content[:400],
                     },
+                )
+            )
+        if loop_guard_triggered:
+            intermediate_states.append(
+                AgentTraceState(
+                    name="loop_guard",
+                    data={"reason": "модель начала повторять tool-вызовы"},
                 )
             )
         if not intermediate_states:
@@ -331,7 +602,10 @@ class AgentRunner:
                     "answer": answer,
                     "answer_chars": len(answer),
                     "tool_call_count": len(tool_calls),
-                    "tool_error_count": sum(1 for result in tool_results if result.is_error),
+                    "tool_error_count": sum(
+                        1 for result in tool_results if result.is_error
+                    ),
+                    "loop_guard_triggered": loop_guard_triggered,
                     "result_messages_count": len(result_messages),
                     "memory_count": len(memory_after),
                     "memory_keys": [record.key for record in memory_after],
@@ -340,13 +614,14 @@ class AgentRunner:
             transition_rules=[
                 "START -> agent: сбор system prompt, short-term memory и пользовательского сообщения",
                 "agent -> tools: если LLM вернула tool_calls",
+                "agent -> loop_guard: если LLM повторяет один и тот же tool-вызов",
                 "tools -> agent: после выполнения tools результат возвращается в LLM",
                 "agent -> final: если LLM вернула ответ без tool_calls",
                 "secret_guardrail -> final: если запрос просит сохранить секрет",
             ],
             decision_points=[
                 "LLM выбирает, нужен ли tool для текущего запроса",
-                "tools_condition маршрутизирует граф в tools или финальный ответ",
+                "route_after_agent маршрутизирует граф в tools, loop_guard или финальный ответ",
                 "memory diff показывает, созданы, обновлены или удалены записи",
                 f"recursion_limit={self.config.agent.recursion_limit} предотвращает зацикливание",
             ],
@@ -355,5 +630,6 @@ class AgentRunner:
             memory_created_ids=created_ids,
             memory_updated_ids=updated_ids,
             memory_deleted_ids=deleted_ids,
+            loop_guard_triggered=loop_guard_triggered,
             recursion_limit=self.config.agent.recursion_limit,
         )

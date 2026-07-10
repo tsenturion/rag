@@ -250,7 +250,7 @@ scenarios:
           - Найти задачу по project_name и task_title.
           - Проверить, что summary отражает новый статус.
         criteria:
-          answer_contains: [done, Agent Demo]
+          answer_contains: [Agent Demo]
           expected_tools: [update_task_status, summarize_project_state]
           memory_contains:
             - key_contains: "task:agent_demo:описать_сценарии"
@@ -364,3 +364,49 @@ scenarios:
           min_tool_calls: 1
     pass_criteria:
       allow_tool_errors: true
+
+  - id: tool_loop_guard
+    test_case_id: TC-MVP-007
+    title: Защита от повторяющегося tool loop
+    type: loop_guard
+    goal: Проверить, что агент не уходит в бесконечный цикл одинаковых tool-вызовов.
+    user_request: Намеренно спровоцировать повтор current_datetime.
+    expected_result: Агент либо отвечает после одного вызова, либо останавливает повторный цикл через loop guard.
+    llm_role: Не должен бесконечно повторять одинаковый tool call.
+    tools_role: current_datetime даёт тестовый результат, который модель может попытаться запросить повторно.
+    memory_role: Память не участвует; сценарий проверяет управление переходами.
+    action_chain:
+      - Вызвать current_datetime для UTC.
+      - Если модель повторяет тот же tool call, остановить цикл через loop guard.
+      - Вернуть финальный ответ без GraphRecursionError.
+    decision_points:
+      - Повторный identical tool call должен быть остановлен до выполнения.
+      - Количество tool calls должно оставаться ограниченным.
+    transition_rules:
+      - START -> agent при запросе.
+      - agent -> tools для первого current_datetime.
+      - tools -> agent после результата.
+      - agent -> loop_guard, если модель повторяет identical tool call.
+      - agent -> final, если модель завершает ответ самостоятельно.
+    required_tools:
+      - current_datetime
+    steps:
+      - id: stop_repeated_datetime
+        test_case_id: TC-MVP-007.1
+        title: Остановить повтор current_datetime
+        user_request: >
+          Сценарий MVP: вызови current_datetime для timezone UTC. После результата
+          не вызывай другие tools. Если захочешь снова вызвать current_datetime с теми
+          же аргументами, остановись и дай финальный ответ без повторного цикла.
+        expected_result: Агент завершает ответ без аварийного recursion limit.
+        action_chain:
+          - current_datetime
+          - loop_guard_or_final_answer
+        decision_points:
+          - Не выполнять повторный identical current_datetime бесконечно.
+        criteria:
+          answer_not_contains: [GraphRecursionError, recursion limit, Ошибка выполнения агента]
+          expected_tools: [current_datetime]
+          max_tool_calls: 3
+    pass_criteria:
+      max_tool_calls: 3

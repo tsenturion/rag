@@ -1,0 +1,31 @@
+agent:
+  provider: gigachat
+  model: GigaChat-2
+  temperature: 0
+  max_new_tokens: 512
+  max_history_messages: 3
+  max_summary_chars: 2500
+  timeout_seconds: 60
+  max_retries: 2
+  recursion_limit: 12
+  tool_error_retries: 1
+  gigachat_auth_key_env: GIGACHAT_AUTH_KEY
+  gigachat_scope: GIGACHAT_API_PERS
+  gigachat_verify_ssl_certs: false
+  gigachat_profanity_check: null
+
+memory:
+  sqlite_path: data/agent/memory.sqlite
+  default_user_id: gigachat
+  default_session_id: gigachat
+  search_limit: 5
+
+weather:
+  api_key_env: OPENWEATHER_API_KEY
+  default_city: Екатеринбург
+  default_units: metric
+  language: ru
+  timeout_seconds: 10
+
+logging:
+  level: INFO

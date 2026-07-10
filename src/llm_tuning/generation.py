@@ -52,7 +52,9 @@ class LocalGenerationStage:
             add_generation_prompt=True,
         )
         encoded = tokenizer(prompt_text, return_tensors="pt", add_special_tokens=False)
-        encoded = {key: value.to(device.selected_device) for key, value in encoded.items()}
+        encoded = {
+            key: value.to(device.selected_device) for key, value in encoded.items()
+        }
 
         generation = self.config.evaluation.generation
         generate_kwargs: dict[str, Any] = {
@@ -71,9 +73,11 @@ class LocalGenerationStage:
             output = model.generate(**encoded, **generate_kwargs)
 
         prompt_length = encoded["input_ids"].shape[-1]
-        answer = tokenizer.decode(output[0][prompt_length:], skip_special_tokens=True).strip()
+        answer = tokenizer.decode(
+            output[0][prompt_length:], skip_special_tokens=True
+        ).strip()
         return LocalGenerationResult(
-            model_id=self.config.model.model_id,
+            model_id=self.model_loader.active_model_id,
             adapter_path=adapter_path,
             prompt=prompt,
             answer=answer,

@@ -127,7 +127,7 @@ def memory_tools(
         return _json(payload)
 
     def get_memory(memory_id: str) -> str:
-        record = store.get(memory_id)
+        record = store.get(memory_id, user_id=user_id)
         if record is None:
             return _json({"status": "not_found", "memory_id": memory_id})
         return _json({"status": "found", "record": record.model_dump(mode="json")})
@@ -152,15 +152,20 @@ def memory_tools(
                 )
                 target_id = record.id if record else None
             if target_id is None:
-                return _json({"status": "not_found", "key": key, "memory_id": memory_id})
+                return _json(
+                    {"status": "not_found", "key": key, "memory_id": memory_id}
+                )
             updated = store.update(
                 target_id,
+                user_id=user_id,
                 value=value,
                 tags=tags,
                 importance=importance,
                 ttl_seconds=ttl_seconds,
             )
-            return _json({"status": "updated", "record": updated.model_dump(mode="json")})
+            return _json(
+                {"status": "updated", "record": updated.model_dump(mode="json")}
+            )
         except Exception as exc:
             return _json({"status": "error", "message": str(exc)})
 
@@ -170,15 +175,23 @@ def memory_tools(
         memory_type: MemoryType | None = None,
     ) -> str:
         if memory_id:
-            deleted = store.delete(memory_id)
-            return _json({"status": "deleted" if deleted else "not_found", "memory_id": memory_id})
+            deleted = store.delete(memory_id, user_id=user_id)
+            return _json(
+                {
+                    "status": "deleted" if deleted else "not_found",
+                    "memory_id": memory_id,
+                }
+            )
         if key:
             deleted_count = store.delete_by_key(
                 user_id=user_id,
                 key=key,
                 memory_type=memory_type,
+                session_id=session_id,
             )
-            return _json({"status": "deleted", "deleted_count": deleted_count, "key": key})
+            return _json(
+                {"status": "deleted", "deleted_count": deleted_count, "key": key}
+            )
         return _json({"status": "error", "message": "нужно указать memory_id или key"})
 
     def list_memories(memory_type: MemoryType | None = None, limit: int = 20) -> str:
@@ -258,7 +271,9 @@ def _json(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _normalize_memory_type(value: str | MemoryType | None) -> tuple[MemoryType, str | None]:
+def _normalize_memory_type(
+    value: str | MemoryType | None,
+) -> tuple[MemoryType, str | None]:
     if value in VALID_MEMORY_TYPES:
         return value, None  # type: ignore[return-value]
     return "note", f"memory_type={value!r} заменён на note"

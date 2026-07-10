@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from agent_app.config import AgentAppConfig
 from agent_app.graph import AgentRunner
@@ -34,15 +35,20 @@ class ScenarioRunner:
         self.config_path = config_path
         self.store = SQLiteMemoryStore(config.memory.sqlite_path)
         self.evaluator = ScenarioEvaluator()
+        self._shared_llm: Any | None = None
 
     def run_all(self) -> ScenarioRunReport:
         return self._report(self.suite.scenarios)
 
     def run_one(self, scenario_id: str) -> ScenarioRunReport:
-        scenarios = [scenario for scenario in self.suite.scenarios if scenario.id == scenario_id]
+        scenarios = [
+            scenario for scenario in self.suite.scenarios if scenario.id == scenario_id
+        ]
         if not scenarios:
             known = ", ".join(scenario.id for scenario in self.suite.scenarios)
-            raise ValueError(f"Сценарий не найден: {scenario_id}. Доступные сценарии: {known}")
+            raise ValueError(
+                f"Сценарий не найден: {scenario_id}. Доступные сценарии: {known}"
+            )
         return self._report(scenarios)
 
     def write_report(self, report: ScenarioRunReport, path: Path | None = None) -> Path:
@@ -60,7 +66,7 @@ class ScenarioRunner:
         return ScenarioRunReport(
             config_path=self.config_path,
             user_id=self.suite.default_user_id,
-            passed=all(result.passed for result in results),
+            passed=bool(results) and all(result.passed for result in results),
             results=results,
         )
 
@@ -72,7 +78,14 @@ class ScenarioRunner:
             self.store.clear_user(user_id=user_id)
         self._seed_memory(scenario, user_id=user_id, session_id=session_id)
 
-        runner = AgentRunner(self.config, user_id=user_id, session_id=session_id)
+        runner = AgentRunner(
+            self.config,
+            user_id=user_id,
+            session_id=session_id,
+            llm=self._shared_llm,
+        )
+        if self._shared_llm is None:
+            self._shared_llm = runner.llm
         step_results: list[ScenarioStepResult] = []
         scenario_checks: list[ScenarioCheck] = []
         all_tool_calls: list[str] = []

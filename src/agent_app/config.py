@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AgentConfig(BaseModel):
-    provider: Literal["openai", "local"] = "openai"
+    provider: Literal["openai", "local", "gigachat"] = "openai"
     model: str = "gpt-4.1-nano"
     adapter_path: Path | None = None
     temperature: float = 0.0
@@ -18,12 +18,17 @@ class AgentConfig(BaseModel):
     max_summary_chars: int = Field(default=2500, ge=200)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
-    recursion_limit: int = Field(default=12, ge=3)
+    recursion_limit: int = Field(default=12, ge=4)
+    tool_error_retries: int = Field(default=1, ge=0)
     local_device: Literal["auto", "xpu", "cuda", "cpu"] = "auto"
     local_dtype: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
     local_files_only: bool = True
     trust_remote_code: bool = True
     low_cpu_mem_usage: bool = True
+    gigachat_auth_key_env: str = "GIGACHAT_AUTH_KEY"
+    gigachat_scope: str = "GIGACHAT_API_PERS"
+    gigachat_verify_ssl_certs: bool = False
+    gigachat_profanity_check: bool | None = None
 
 
 class MemoryConfig(BaseModel):
@@ -90,7 +95,7 @@ def load_agent_config(path: str | Path = "config/agent.yaml") -> AgentAppConfig:
             "agent": agent.model_copy(update=agent_update),
             "memory": config.memory.model_copy(
                 update={"sqlite_path": sqlite_path.resolve()}
-            )
+            ),
         }
     )
 

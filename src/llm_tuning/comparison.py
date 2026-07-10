@@ -18,6 +18,8 @@ class FineTuningComparisonStage:
         baseline_by_id = {answer.example_id: answer for answer in baseline.answers}
         tuned_by_id = {answer.example_id: answer for answer in tuned.answers}
         common_ids = sorted(set(baseline_by_id) & set(tuned_by_id))
+        if not common_ids:
+            raise ValueError("В baseline и tuned отчётах нет общих example_id")
 
         improved = []
         regressed = []
@@ -32,14 +34,22 @@ class FineTuningComparisonStage:
             elif not before and not after:
                 unchanged_failed.append(example_id)
 
-        delta = round(tuned.pass_rate - baseline.pass_rate, 6)
+        baseline_passed = sum(
+            1 for example_id in common_ids if baseline_by_id[example_id].passed
+        )
+        tuned_passed = sum(
+            1 for example_id in common_ids if tuned_by_id[example_id].passed
+        )
+        baseline_pass_rate = round(baseline_passed / len(common_ids), 6)
+        tuned_pass_rate = round(tuned_passed / len(common_ids), 6)
+        delta = round(tuned_pass_rate - baseline_pass_rate, 6)
         return ComparisonResult(
             run_id=run_id,
             baseline_report_path=baseline_report_path,
             tuned_report_path=tuned_report_path,
             examples_count=len(common_ids),
-            baseline_pass_rate=baseline.pass_rate,
-            tuned_pass_rate=tuned.pass_rate,
+            baseline_pass_rate=baseline_pass_rate,
+            tuned_pass_rate=tuned_pass_rate,
             pass_rate_delta=delta,
             improved_examples=improved,
             regressed_examples=regressed,
