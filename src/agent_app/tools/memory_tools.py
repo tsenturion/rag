@@ -8,9 +8,17 @@ from pydantic import BaseModel, Field
 from agent_app.memory.store import SQLiteMemoryStore
 from agent_app.models import MemoryType
 
+VALID_MEMORY_TYPES: set[str] = {"fact", "preference", "task", "summary", "note"}
+
 
 class SaveMemoryInput(BaseModel):
-    memory_type: MemoryType = Field(default="fact")
+    memory_type: str = Field(
+        default="note",
+        description=(
+            "Тип записи памяти: fact, preference, task, summary или note. "
+            "Если не уверен, используй note. Не записывай сюда key."
+        ),
+    )
     key: str = Field(description="Стабильный короткий ключ, например project_name")
     value: str = Field(description="Значение, которое нужно сохранить в памяти")
     tags: list[str] = Field(default_factory=list)
@@ -20,7 +28,10 @@ class SaveMemoryInput(BaseModel):
 
 class SearchMemoryInput(BaseModel):
     query: str
-    memory_type: MemoryType | None = None
+    memory_type: MemoryType | None = Field(
+        default=None,
+        description="Фильтр типа памяти. Не указывай, если не уверен в типе записи.",
+    )
     limit: int | None = Field(default=None, ge=1)
 
 
@@ -61,18 +72,19 @@ def memory_tools(
     default_search_limit: int,
 ) -> list[StructuredTool]:
     def save_memory(
-        memory_type: MemoryType = "fact",
+        memory_type: str = "note",
         key: str = "",
         value: str = "",
         tags: list[str] | None = None,
         importance: int = 3,
         ttl_seconds: int | None = None,
     ) -> str:
+        normalized_memory_type, normalized_warning = _normalize_memory_type(memory_type)
         try:
             record = store.save(
                 user_id=user_id,
                 session_id=session_id,
-                memory_type=memory_type,
+                memory_type=normalized_memory_type,
                 key=key,
                 value=value,
                 tags=tags or [],
@@ -80,7 +92,10 @@ def memory_tools(
                 ttl_seconds=ttl_seconds,
                 source="user",
             )
-            return _json({"status": "saved", "record": record.model_dump(mode="json")})
+            payload = {"status": "saved", "record": record.model_dump(mode="json")}
+            if normalized_warning:
+                payload["warning"] = normalized_warning
+            return _json(payload)
         except Exception as exc:
             return _json({"status": "error", "message": str(exc)})
 
@@ -89,16 +104,48 @@ def memory_tools(
         memory_type: MemoryType | None = None,
         limit: int | None = None,
     ) -> str:
+        effective_limit = limit or default_search_limit
         result = store.search(
             user_id=user_id,
             query=query,
             memory_type=memory_type,
-            limit=limit or default_search_limit,
+            session_id=session_id,
+            limit=effective_limit,
         )
-        return _json(result.model_dump(mode="json"))
+        payload = result.model_dump(mode="json")
+        payload["requested_memory_type"] = memory_type
+        payload["fallback_to_all_types"] = False
+        payload["fallback_to_recent"] = False
+        if result.count == 0 and memory_type is not None:
+            fallback = store.search(
+                user_id=user_id,
+                query=query,
+                memory_type=None,
+                session_id=session_id,
+                limit=effective_limit,
+            )
+            payload = fallback.model_dump(mode="json")
+            payload["requested_memory_type"] = memory_type
+            payload["fallback_to_all_types"] = True
+            payload["fallback_to_recent"] = False
+            result = fallback
+        if result.count == 0:
+            recent = store.search(
+                user_id=user_id,
+                query="",
+                memory_type=None,
+                session_id=session_id,
+                limit=effective_limit,
+            )
+            payload = recent.model_dump(mode="json")
+            payload["query"] = query
+            payload["requested_memory_type"] = memory_type
+            payload["fallback_to_all_types"] = memory_type is not None
+            payload["fallback_to_recent"] = True
+        return _json(payload)
 
     def get_memory(memory_id: str) -> str:
-        record = store.get(memory_id)
+        record = store.get(memory_id, user_id=user_id)
         if record is None:
             return _json({"status": "not_found", "memory_id": memory_id})
         return _json({"status": "found", "record": record.model_dump(mode="json")})
@@ -123,15 +170,20 @@ def memory_tools(
                 )
                 target_id = record.id if record else None
             if target_id is None:
-                return _json({"status": "not_found", "key": key, "memory_id": memory_id})
+                return _json(
+                    {"status": "not_found", "key": key, "memory_id": memory_id}
+                )
             updated = store.update(
                 target_id,
+                user_id=user_id,
                 value=value,
                 tags=tags,
                 importance=importance,
                 ttl_seconds=ttl_seconds,
             )
-            return _json({"status": "updated", "record": updated.model_dump(mode="json")})
+            return _json(
+                {"status": "updated", "record": updated.model_dump(mode="json")}
+            )
         except Exception as exc:
             return _json({"status": "error", "message": str(exc)})
 
@@ -141,15 +193,23 @@ def memory_tools(
         memory_type: MemoryType | None = None,
     ) -> str:
         if memory_id:
-            deleted = store.delete(memory_id)
-            return _json({"status": "deleted" if deleted else "not_found", "memory_id": memory_id})
+            deleted = store.delete(memory_id, user_id=user_id)
+            return _json(
+                {
+                    "status": "deleted" if deleted else "not_found",
+                    "memory_id": memory_id,
+                }
+            )
         if key:
             deleted_count = store.delete_by_key(
                 user_id=user_id,
                 key=key,
                 memory_type=memory_type,
+                session_id=session_id,
             )
-            return _json({"status": "deleted", "deleted_count": deleted_count, "key": key})
+            return _json(
+                {"status": "deleted", "deleted_count": deleted_count, "key": key}
+            )
         return _json({"status": "error", "message": "нужно указать memory_id или key"})
 
     def list_memories(memory_type: MemoryType | None = None, limit: int = 20) -> str:
@@ -227,3 +287,11 @@ def memory_tools(
 
 def _json(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _normalize_memory_type(
+    value: str | MemoryType | None,
+) -> tuple[MemoryType, str | None]:
+    if value in VALID_MEMORY_TYPES:
+        return value, None  # type: ignore[return-value]
+    return "note", f"memory_type={value!r} заменён на note"

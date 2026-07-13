@@ -17,7 +17,9 @@ def build_vector_store_counts(
     search_results: list[VectorSearchResult],
 ) -> dict[str, int | float]:
     self_matches = sum(1 for result in search_results if result.self_match_at_1)
-    self_match_returned = sum(1 for result in search_results if result.self_match_returned)
+    self_match_returned = sum(
+        1 for result in search_results if result.self_match_returned
+    )
     unfiltered_results = [
         result
         for result in search_results

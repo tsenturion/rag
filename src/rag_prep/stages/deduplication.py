@@ -50,7 +50,9 @@ class DeduplicationStage:
             tokens = self._tokens(element.text)
             if len(tokens) < self.config.min_tokens:
                 normalized_short_text = self._normalized_short_text(tokens)
-                if self._is_near_short_duplicate(normalized_short_text, kept_short_texts):
+                if self._is_near_short_duplicate(
+                    normalized_short_text, kept_short_texts
+                ):
                     seen_hashes.add(digest)
                     near_duplicates += 1
                     continue
@@ -121,4 +123,7 @@ class DeduplicationStage:
         size = self.config.shingle_size
         if len(tokens) < size:
             return [tuple(tokens)]
-        return [tuple(tokens[index : index + size]) for index in range(len(tokens) - size + 1)]
+        return [
+            tuple(tokens[index : index + size])
+            for index in range(len(tokens) - size + 1)
+        ]

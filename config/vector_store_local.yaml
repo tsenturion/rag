@@ -1,0 +1,33 @@
+run:
+  name: rag_vector_store_local
+  seed: 42
+
+rag_profile: profiles/rag/local.yaml
+
+paths:
+  input_jsonl: data/embeddings_local/embeddings.jsonl
+  output_dir: data/vector_store_local
+  manifest_filename: manifest.json
+  validation_filename: validation.json
+  search_results_filename: search_results.json
+
+vector_store:
+  mode: local
+  recreate_collection: true
+  batch_size: 128
+  host: localhost
+  port: 6333
+  https: false
+  api_key_env: null
+  timeout_seconds: 30
+  search_limit: 5
+  test_queries_count: 3
+  score_threshold: null
+  validation_sample_size: 1000
+  fail_on_validation_error: true
+
+logging:
+  level: INFO
+  mlflow_enabled: true
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment: rag-vector-store-local

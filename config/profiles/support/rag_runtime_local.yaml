@@ -1,0 +1,6 @@
+rag:
+  embedding:
+    max_batch_tokens: 512
+    max_retries: 1
+  vector_store:
+    score_threshold: 0.70

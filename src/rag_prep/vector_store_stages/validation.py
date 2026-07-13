@@ -51,7 +51,9 @@ class QdrantValidationStage:
         sampled = self._sample_points(client)
         vector_lengths = [self._vector_length(point.vector) for point in sampled]
         count_delta = collection_count - len(embedded_chunks)
-        collection_vector_size_mismatch = int(collection_size != self.config.vector_size)
+        collection_vector_size_mismatch = int(
+            collection_size != self.config.vector_size
+        )
         point_vector_size_mismatch = sum(
             1
             for length in vector_lengths
@@ -113,7 +115,9 @@ class QdrantValidationStage:
             result.sampled_points_count,
         )
         if self.config.fail_on_validation_error and result.has_errors:
-            raise ValueError(f"Валидация vector store завершилась ошибкой: {result.model_dump()}")
+            raise ValueError(
+                f"Валидация vector store завершилась ошибкой: {result.model_dump()}"
+            )
         return result
 
     def _sample_points(self, client) -> list[qdrant_models.Record]:

@@ -1,0 +1,7 @@
+memory:
+  sqlite_path: data/agent/support_memory_gigachat_local.sqlite
+  default_user_id: support_engineer_gigachat_local
+  default_session_id: support_session_gigachat_local
+
+tools:
+  incident_sqlite_path: data/agent/incidents_gigachat_local.sqlite

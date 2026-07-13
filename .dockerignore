@@ -1,0 +1,13 @@
+.git
+.env
+.ruff_cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+data/agent
+data/models
+data/qdrant_storage*
+data/fine_tuning
+mlruns
+tests

@@ -19,9 +19,9 @@ from rag_prep.embedding_stages import (
     ChunkLoadingStage,
     EmbeddingExportStage,
     EmbeddingValidationStage,
-    OpenAIEmbeddingStage,
     build_embedding_counts,
     build_embedding_diagnostics,
+    build_embedding_stage,
 )
 from rag_prep.models import (
     ChunkingPipelineResult,
@@ -203,7 +203,7 @@ class RagEmbeddingPipeline:
     def __init__(self, config: EmbeddingPipelineConfig):
         self.config = config
         self.loader = ChunkLoadingStage()
-        self.embedder = OpenAIEmbeddingStage(config.embedding)
+        self.embedder = build_embedding_stage(config.embedding)
         self.validator = EmbeddingValidationStage(config.embedding)
         self.exporter = EmbeddingExportStage(config)
         self.tracker = MLflowTracker(config)

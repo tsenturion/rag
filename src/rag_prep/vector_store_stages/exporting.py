@@ -11,7 +11,7 @@ from rag_prep.models import (
     VectorStoreIndexResult,
     VectorStoreValidationResult,
 )
-from rag_prep.utils import json_dump
+from rag_prep.utils import artifact_set_transaction, json_dump
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,11 +39,6 @@ class VectorStoreExportStage:
         validation_path = output_dir / self.config.paths.validation_filename
         search_results_path = output_dir / self.config.paths.search_results_filename
 
-        json_dump(validation_path, validation.model_dump(mode="json"))
-        json_dump(
-            search_results_path,
-            [result.model_dump(mode="json") for result in search_results],
-        )
         manifest = {
             "run_id": run_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -56,7 +51,18 @@ class VectorStoreExportStage:
                 "search_results": str(search_results_path),
             },
         }
-        json_dump(manifest_path, manifest)
+        with artifact_set_transaction(
+            [validation_path, search_results_path, manifest_path]
+        ) as staged:
+            json_dump(
+                staged[validation_path.resolve()],
+                validation.model_dump(mode="json"),
+            )
+            json_dump(
+                staged[search_results_path.resolve()],
+                [result.model_dump(mode="json") for result in search_results],
+            )
+            json_dump(staged[manifest_path.resolve()], manifest)
 
         LOGGER.info(
             "Сохранены manifest vector store в %s и результаты поиска в %s",

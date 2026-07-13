@@ -8,7 +8,7 @@ from typing import Any
 
 from rag_prep.config import ChunkingPipelineConfig
 from rag_prep.models import ChunkingExportResult, PreparedChunk
-from rag_prep.utils import atomic_text_writer, json_dump
+from rag_prep.utils import artifact_set_transaction, atomic_text_writer, json_dump
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,9 +35,6 @@ class ChunkExportStage:
         manifest_path = output_dir / self.config.paths.manifest_filename
 
         payload = [chunk.model_dump(mode="json") for chunk in chunks]
-        json_dump(json_path, payload)
-        self._write_jsonl(jsonl_path, payload)
-
         manifest = {
             "run_id": run_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -49,7 +46,10 @@ class ChunkExportStage:
                 "jsonl": str(jsonl_path),
             },
         }
-        json_dump(manifest_path, manifest)
+        with artifact_set_transaction([json_path, jsonl_path, manifest_path]) as staged:
+            json_dump(staged[json_path.resolve()], payload)
+            self._write_jsonl(staged[jsonl_path.resolve()], payload)
+            json_dump(staged[manifest_path.resolve()], manifest)
 
         LOGGER.info("Сохранены chunks JSON в %s и JSONL в %s", json_path, jsonl_path)
         return ChunkingExportResult(
@@ -66,4 +66,3 @@ class ChunkExportStage:
             for item in payload:
                 file.write(json.dumps(item, ensure_ascii=False))
                 file.write("\n")
-

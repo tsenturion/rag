@@ -1,0 +1,83 @@
+run:
+  name: local_llm_fine_tuning_smoke
+  seed: 42
+
+paths:
+  train_jsonl: data/fine_tuning/train.jsonl
+  eval_jsonl: data/fine_tuning/eval.jsonl
+  output_dir: data/fine_tuning/runs
+  adapter_output_dir: data/models/lora-smoke
+  reports_dir: data/fine_tuning/reports
+  baseline_report_filename: baseline_report.json
+  tuned_report_filename: tuned_report.json
+  comparison_report_filename: comparison_report.json
+  manifest_filename: manifest.json
+
+model:
+  model_id: sshleifer/tiny-gpt2
+  fallback_model_id: Qwen/Qwen2.5-0.5B-Instruct
+  tokenizer_id: null
+  trust_remote_code: true
+  max_seq_length: 256
+  device: auto
+  dtype: auto
+  low_cpu_mem_usage: true
+  hub_disable_xet: true
+  hub_disable_symlink_warning: true
+
+peft:
+  method: lora
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  bias: none
+  target_modules:
+    - c_attn
+    - c_proj
+    - c_fc
+  use_rslora: false
+  qlora_load_in_4bit: true
+  qlora_quant_type: nf4
+  qlora_double_quant: true
+
+training:
+  learning_rate: 0.0002
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 4
+  num_train_epochs: 1
+  max_steps: 2
+  warmup_ratio: 0.0
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  logging_steps: 1
+  eval_steps: 1
+  save_steps: 1
+  save_total_limit: 1
+  gradient_checkpointing: true
+  dataloader_num_workers: 0
+  optim: adamw_torch
+  lr_scheduler_type: linear
+  eval_strategy: steps
+  save_strategy: steps
+  resume_from_checkpoint: null
+  report_to:
+    - none
+  run_baseline_before_train: true
+  run_evaluation_after_train: true
+
+evaluation:
+  max_examples: 2
+  generation:
+    max_new_tokens: 120
+    temperature: 0.0
+    top_p: 1.0
+    do_sample: false
+  required_keywords_case_sensitive: false
+  fail_on_failed_criteria: false
+
+logging:
+  level: INFO
+  mlflow_enabled: true
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment: local-llm-fine-tuning

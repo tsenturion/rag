@@ -58,8 +58,9 @@ class SummaryMemory:
         if len(messages) <= max_history_messages:
             return messages
 
-        overflow = messages[: -max_history_messages]
-        kept = messages[-max_history_messages:]
+        split_index = self._history_split_index(messages, max_history_messages)
+        overflow = messages[:split_index]
+        kept = messages[split_index:]
         previous_summary = self.get()
         transcript = "\n".join(
             f"{message.type}: {getattr(message, 'content', '')}" for message in overflow
@@ -85,3 +86,24 @@ class SummaryMemory:
             summary = " ".join(str(item) for item in summary)
         self.save(str(summary))
         return kept
+
+    @classmethod
+    def recent_messages(
+        cls,
+        messages: list[BaseMessage],
+        max_history_messages: int,
+    ) -> list[BaseMessage]:
+        if len(messages) <= max_history_messages:
+            return messages
+        return messages[cls._history_split_index(messages, max_history_messages) :]
+
+    @staticmethod
+    def _history_split_index(
+        messages: list[BaseMessage],
+        max_history_messages: int,
+    ) -> int:
+        target = max(0, len(messages) - max_history_messages)
+        for index in range(target, len(messages)):
+            if isinstance(messages[index], HumanMessage):
+                return index
+        return target

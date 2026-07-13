@@ -20,7 +20,9 @@ class MLflowTracker:
     def __init__(self, config: Any):
         self.config = config
 
-    def log_run(self, counts: dict[str, int | float], export: SupportsArtifactPaths) -> None:
+    def log_run(
+        self, counts: dict[str, int | float], export: SupportsArtifactPaths
+    ) -> None:
         if not self.config.logging.mlflow_enabled:
             LOGGER.info("Логирование MLflow отключено")
             return
@@ -34,7 +36,9 @@ class MLflowTracker:
             run_name=self.config.run.name,
             nested=mlflow.active_run() is not None,
         ):
-            mlflow.log_params({key: self._safe_param(value) for key, value in params.items()})
+            mlflow.log_params(
+                {key: self._safe_param(value) for key, value in params.items()}
+            )
             for key, value in counts.items():
                 mlflow.log_metric(key, value)
             for path in export.artifact_paths():
@@ -52,7 +56,8 @@ class MLflowTracker:
         if parsed.scheme:
             return uri
 
-        return (Path.cwd() / path).resolve().as_uri()
+        project_root = Path(__file__).resolve().parents[2]
+        return (project_root / path).resolve().as_uri()
 
     @staticmethod
     def _safe_param(value: Any) -> str | int | float | bool:

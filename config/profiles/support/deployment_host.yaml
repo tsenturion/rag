@@ -1,0 +1,10 @@
+rag:
+  vector_store:
+    mode: local
+    host: localhost
+
+service:
+  host: 127.0.0.1
+
+security:
+  require_api_key: false

@@ -8,7 +8,7 @@ from typing import Any
 
 from rag_prep.config import EmbeddingPipelineConfig
 from rag_prep.models import EmbeddedChunk, EmbeddingExportResult
-from rag_prep.utils import atomic_text_writer, json_dump
+from rag_prep.utils import artifact_set_transaction, atomic_text_writer, json_dump
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,9 +35,6 @@ class EmbeddingExportStage:
         manifest_path = output_dir / self.config.paths.manifest_filename
 
         payload = [chunk.model_dump(mode="json") for chunk in embedded_chunks]
-        json_dump(json_path, payload)
-        self._write_jsonl(jsonl_path, payload)
-
         manifest = {
             "run_id": run_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -49,9 +46,14 @@ class EmbeddingExportStage:
                 "jsonl": str(jsonl_path),
             },
         }
-        json_dump(manifest_path, manifest)
+        with artifact_set_transaction([json_path, jsonl_path, manifest_path]) as staged:
+            json_dump(staged[json_path.resolve()], payload)
+            self._write_jsonl(staged[jsonl_path.resolve()], payload)
+            json_dump(staged[manifest_path.resolve()], manifest)
 
-        LOGGER.info("Сохранены embeddings JSON в %s и JSONL в %s", json_path, jsonl_path)
+        LOGGER.info(
+            "Сохранены embeddings JSON в %s и JSONL в %s", json_path, jsonl_path
+        )
         return EmbeddingExportResult(
             json_path=json_path,
             jsonl_path=jsonl_path,

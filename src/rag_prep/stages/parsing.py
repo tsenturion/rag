@@ -165,7 +165,7 @@ class UnstructuredParsingStage:
 
     @staticmethod
     def _element_id(source: SourceFile, element_index: int) -> str:
-        return stable_id(source.source_hash, source.source, element_index)
+        return stable_id(source.source_hash, element_index)
 
     @staticmethod
     def _metadata_to_dict(metadata: Any) -> dict[str, Any]:

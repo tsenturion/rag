@@ -38,19 +38,26 @@ class LlamaIndexLoadingStage:
                 raise
             files = []
 
-        sources = [self._to_source_file(path) for path in sorted(files)]
+        sources = [
+            self._to_source_file(path, input_dir=input_dir) for path in sorted(files)
+        ]
         LOGGER.info("Загружено исходных файлов: %d из %s", len(sources), input_dir)
         return sources
 
-    def _to_source_file(self, path: Path) -> SourceFile:
+    def _to_source_file(self, path: Path, *, input_dir: Path) -> SourceFile:
         stat = path.stat()
+        resolved_path = path.resolve()
+        try:
+            source_key = resolved_path.relative_to(input_dir.resolve()).as_posix()
+        except ValueError:
+            source_key = path.name
         return SourceFile(
-            path=path.resolve(),
-            source=str(path.resolve()),
+            path=resolved_path,
+            source=str(resolved_path),
+            source_key=source_key,
             file_name=path.name,
             file_type=path.suffix.lower().lstrip("."),
             source_hash=file_sha256(path),
             size_bytes=stat.st_size,
             modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
         )
-

@@ -24,7 +24,9 @@ class ChunkLoadingStage:
                 try:
                     chunks.append(PreparedChunk.model_validate(json.loads(line)))
                 except Exception as exc:
-                    raise ValueError(f"Некорректный чанк в {input_jsonl}:{line_number}") from exc
+                    raise ValueError(
+                        f"Некорректный чанк в {input_jsonl}:{line_number}"
+                    ) from exc
 
         LOGGER.info("Загружено чанков: %d из %s", len(chunks), input_jsonl)
         return chunks

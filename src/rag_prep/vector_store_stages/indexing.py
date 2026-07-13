@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client import models as qdrant_models
@@ -46,7 +45,9 @@ class QdrantIndexingStage:
                 wait=True,
             )
             points_upserted += len(points)
-            LOGGER.info("Загружено Qdrant points: %d/%d", points_upserted, len(embedded_chunks))
+            LOGGER.info(
+                "Загружено Qdrant points: %d/%d", points_upserted, len(embedded_chunks)
+            )
 
         points_count = client.count(
             collection_name=self.config.collection_name,
@@ -91,7 +92,9 @@ class QdrantIndexingStage:
             )
             LOGGER.info("Создана коллекция Qdrant %s", self.config.collection_name)
             return
-        LOGGER.info("Используется существующая коллекция Qdrant %s", self.config.collection_name)
+        LOGGER.info(
+            "Используется существующая коллекция Qdrant %s", self.config.collection_name
+        )
 
     def _point(self, chunk: EmbeddedChunk) -> qdrant_models.PointStruct:
         metadata = chunk.metadata.model_dump(mode="json")
@@ -127,12 +130,16 @@ class QdrantIndexingStage:
                         f"embedding_dim={len(chunk.embedding)} "
                         f"vector_size={self.config.vector_size}"
                     )
-            )
+                )
             if chunk.metadata.id in chunk_ids:
-                raise ValueError(f"Дублирующийся chunk id нельзя загрузить: {chunk.metadata.id}")
+                raise ValueError(
+                    f"Дублирующийся chunk id нельзя загрузить: {chunk.metadata.id}"
+                )
             chunk_ids.add(chunk.metadata.id)
 
-            point_id = point_id_for_chunk(self.config.collection_name, chunk.metadata.id)
+            point_id = point_id_for_chunk(
+                self.config.collection_name, chunk.metadata.id
+            )
             if point_id in point_ids:
                 raise ValueError(
                     (

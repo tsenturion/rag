@@ -1,0 +1,26 @@
+run:
+  name: rag_embeddings
+  seed: 42
+
+rag_profile: profiles/rag/openai.yaml
+
+paths:
+  input_jsonl: data/chunks_openai/chunks.jsonl
+  output_dir: data/embeddings_openai
+  json_filename: embeddings.json
+  jsonl_filename: embeddings.jsonl
+  manifest_filename: manifest.json
+
+embedding:
+  env_file: .env
+  batch_size: 64
+  max_batch_tokens: 20000
+  max_retries: 5
+  timeout_seconds: 60
+  fail_on_validation_error: true
+
+logging:
+  level: INFO
+  mlflow_enabled: true
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment: rag-embeddings

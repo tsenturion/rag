@@ -33,7 +33,9 @@ class QdrantSearchStage:
 
         queries = embedded_chunks[: self.config.test_queries_count]
         results = [self._search_one(client, query) for query in queries]
-        LOGGER.info("Выполнено тестовых Qdrant similarity search запросов: %d", len(results))
+        LOGGER.info(
+            "Выполнено тестовых Qdrant similarity search запросов: %d", len(results)
+        )
         return results
 
     def _search_one(self, client, query: EmbeddedChunk) -> VectorSearchResult:
@@ -75,7 +77,9 @@ class QdrantSearchStage:
     @staticmethod
     def _hit(point: Any) -> VectorSearchHit:
         payload = point.payload or {}
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        metadata = (
+            payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        )
         return VectorSearchHit(
             point_id=str(point.id),
             chunk_id=payload.get("chunk_id") or metadata.get("id"),

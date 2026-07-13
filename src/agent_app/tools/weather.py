@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 from datetime import datetime, timezone
 
 import httpx2
@@ -11,6 +13,8 @@ from pydantic import BaseModel, Field
 from agent_app.config import WeatherConfig
 
 OPENWEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
+APPID_RE = re.compile(r"([?&]appid=)[^&\\s']+")
+logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 
 class WeatherInput(BaseModel):
@@ -51,7 +55,7 @@ def weather_tool(config: WeatherConfig) -> StructuredTool:
                 {
                     "error": "weather_request_failed",
                     "city": target_city,
-                    "message": str(exc),
+                    "message": _redact_weather_error(str(exc)),
                 },
                 ensure_ascii=False,
             )
@@ -82,3 +86,7 @@ def weather_tool(config: WeatherConfig) -> StructuredTool:
         func=get_weather,
         args_schema=WeatherInput,
     )
+
+
+def _redact_weather_error(message: str) -> str:
+    return APPID_RE.sub(r"\1<redacted>", message)

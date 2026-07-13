@@ -1,27 +1,22 @@
 run:
-  name: rag_embeddings
+  name: rag_embeddings_gigachat
   seed: 42
 
+rag_profile: profiles/rag/gigachat.yaml
+
 paths:
-  input_jsonl: data/chunks/chunks.jsonl
-  output_dir: data/embeddings
+  input_jsonl: data/chunks_gigachat/chunks.jsonl
+  output_dir: data/embeddings_gigachat
   json_filename: embeddings.json
   jsonl_filename: embeddings.jsonl
   manifest_filename: manifest.json
 
 embedding:
-  provider: openai
-  model: text-embedding-3-small
-  dimensions: 1536
-  api_key_env: OPENAI_API_KEY
   env_file: .env
-  batch_size: 64
-  max_batch_tokens: 20000
-  max_input_tokens: 8191
+  batch_size: 32
+  max_batch_tokens: 4096
   max_retries: 5
   timeout_seconds: 60
-  normalize: false
-  clear_no_proxy_for_openai: true
   fail_on_validation_error: true
 
 logging:

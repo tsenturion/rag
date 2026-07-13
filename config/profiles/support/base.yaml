@@ -1,0 +1,74 @@
+agent:
+  temperature: 0
+  max_history_messages: 12
+  max_summary_chars: 3000
+  recursion_limit: 16
+  tool_error_retries: 1
+
+memory:
+  search_limit: 8
+
+weather:
+  api_key_env: OPENWEATHER_API_KEY
+  default_city: Екатеринбург
+  default_units: metric
+  language: ru
+  timeout_seconds: 10
+
+rag:
+  enabled: true
+  top_k: 5
+  max_context_tokens: 1800
+  excerpt_chars: 600
+  require_citations: true
+  embedding:
+    env_file: .env
+    batch_size: 1
+    timeout_seconds: 60
+  vector_store:
+    recreate_collection: false
+    batch_size: 128
+    port: 6333
+    https: false
+    api_key_env: null
+    timeout_seconds: 30
+    search_limit: 5
+    test_queries_count: 0
+    validation_sample_size: 100
+    fail_on_validation_error: true
+
+tools:
+  enabled:
+    - search_knowledge_base
+    - find_runbook
+    - analyze_log_fragment
+    - create_incident
+    - get_incident
+    - update_incident_status
+    - list_incidents
+    - build_diagnostic_checklist
+    - calculator
+    - current_datetime
+    - get_weather
+    - save_memory
+    - search_memory
+    - get_memory
+    - update_memory
+    - delete_memory
+    - list_memories
+    - clear_session_memory
+  disabled: []
+  max_log_chars: 12000
+
+service:
+  port: 8000
+  workers: 1
+  request_max_chars: 20000
+  session_cache_size: 256
+  cors_origins: []
+
+security:
+  api_key_env: SUPPORT_SERVICE_API_KEY
+
+logging:
+  level: INFO

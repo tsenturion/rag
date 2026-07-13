@@ -1,0 +1,29 @@
+run:
+  name: rag_chunking_gigachat
+  seed: 42
+
+rag_profile: profiles/rag/gigachat.yaml
+
+paths:
+  input_jsonl: data/prepared/documents.jsonl
+  output_dir: data/chunks_gigachat
+  json_filename: chunks.json
+  jsonl_filename: chunks.jsonl
+  manifest_filename: manifest.json
+
+chunking:
+  strategy: sentence
+  chunk_size: 220
+  chunk_overlap: 40
+  preserve_section_boundaries: true
+  preserve_block_boundaries: true
+  min_chunk_tokens: 20
+  max_chunk_tokens: 280
+  min_quality_score: 0.2
+  fail_on_validation_error: false
+
+logging:
+  level: INFO
+  mlflow_enabled: true
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment: rag-chunking-gigachat

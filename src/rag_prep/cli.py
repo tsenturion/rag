@@ -22,7 +22,11 @@ from rag_prep.utils import setup_logging
 
 class RussianHelpFormatter(argparse.HelpFormatter):
     def _format_usage(self, *args, **kwargs) -> str:
-        return super()._format_usage(*args, **kwargs).replace("usage:", "использование:", 1)
+        return (
+            super()
+            ._format_usage(*args, **kwargs)
+            .replace("usage:", "использование:", 1)
+        )
 
 
 def _add_russian_help(parser: argparse.ArgumentParser) -> None:
@@ -83,8 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_russian_help(chunk)
     chunk.add_argument(
         "--config",
-        default="config/chunking.yaml",
-        help="Путь к YAML-конфигу чанкинга.",
+        required=True,
+        help="Путь к явному конфигу чанкинга для выбранной embedding-модели.",
     )
     chunk.add_argument(
         "--no-prefect",
@@ -101,8 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_russian_help(embed)
     embed.add_argument(
         "--config",
-        default="config/embeddings.yaml",
-        help="Путь к YAML-конфигу embeddings.",
+        required=True,
+        help="Путь к явному provider-конфигу embeddings.",
     )
     embed.add_argument(
         "--no-prefect",
@@ -119,8 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_russian_help(vector_store)
     vector_store.add_argument(
         "--config",
-        default="config/vector_store.yaml",
-        help="Путь к YAML-конфигу vector store.",
+        required=True,
+        help="Путь к явному конфигу vector store для выбранных embeddings.",
     )
     vector_store.add_argument(
         "--no-prefect",
@@ -135,7 +139,7 @@ def main() -> None:
     command = args.command or "prepare"
 
     if command == "chunk":
-        config_path = args.config or "config/chunking.yaml"
+        config_path = args.config
         if args.no_prefect:
             config = load_chunking_config(Path(config_path))
             setup_logging(config.logging.level)
@@ -146,7 +150,7 @@ def main() -> None:
 
             result = rag_chunking_flow(config_path=config_path)
     elif command == "embed":
-        config_path = args.config or "config/embeddings.yaml"
+        config_path = args.config
         if args.no_prefect:
             config = load_embedding_config(Path(config_path))
             setup_logging(config.logging.level)
@@ -157,7 +161,7 @@ def main() -> None:
 
             result = rag_embeddings_flow(config_path=config_path)
     elif command == "vector-store":
-        config_path = args.config or "config/vector_store.yaml"
+        config_path = args.config
         if args.no_prefect:
             config = load_vector_store_config(Path(config_path))
             setup_logging(config.logging.level)

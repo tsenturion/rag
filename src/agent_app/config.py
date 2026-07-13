@@ -3,18 +3,34 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from rag_prep.config import EmbeddingConfig, VectorStoreConfig
+from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
 
 
 class AgentConfig(BaseModel):
-    model: str = "gpt-4.1-nano"
+    provider: Literal["openai", "local", "gigachat"]
+    model: str
+    adapter_path: Path | None = None
     temperature: float = 0.0
+    max_new_tokens: int = Field(default=220, ge=1)
     max_history_messages: int = Field(default=12, ge=2)
     max_summary_chars: int = Field(default=2500, ge=200)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
+    recursion_limit: int = Field(default=12, ge=4)
+    tool_error_retries: int = Field(default=1, ge=0)
+    local_device: Literal["auto", "xpu", "cuda", "cpu"] = "auto"
+    local_dtype: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
+    local_files_only: bool = True
+    trust_remote_code: bool = True
+    low_cpu_mem_usage: bool = True
+    gigachat_auth_key_env: str = "GIGACHAT_AUTH_KEY"
+    gigachat_scope: str = "GIGACHAT_API_PERS"
+    gigachat_verify_ssl_certs: bool = False
+    gigachat_profanity_check: bool | None = None
 
 
 class MemoryConfig(BaseModel):
@@ -36,12 +52,65 @@ class AgentLoggingConfig(BaseModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
+class AgentRagConfig(BaseModel):
+    enabled: bool = False
+    top_k: int = Field(default=5, ge=1, le=50)
+    max_context_tokens: int = Field(default=1800, ge=128)
+    excerpt_chars: int = Field(default=600, ge=80, le=4000)
+    tokenizer_model: str | None = None
+    require_citations: bool = True
+    embedding: EmbeddingConfig | None = None
+    vector_store: VectorStoreConfig | None = None
+
+    @model_validator(mode="after")
+    def require_runtime_config_when_enabled(self) -> AgentRagConfig:
+        if not self.enabled:
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("tokenizer_model", self.tokenizer_model),
+                ("embedding", self.embedding),
+                ("vector_store", self.vector_store),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError("Для включённого RAG явно задайте: " + ", ".join(missing))
+        return self
+
+
+class AgentToolsConfig(BaseModel):
+    enabled: list[str] = Field(default_factory=list)
+    disabled: list[str] = Field(default_factory=list)
+    incident_sqlite_path: Path = Path("data/agent/incidents.sqlite")
+    max_log_chars: int = Field(default=12000, ge=500, le=100000)
+
+
+class AgentServiceConfig(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = Field(default=8000, ge=1, le=65535)
+    workers: int = Field(default=1, ge=1, le=16)
+    request_max_chars: int = Field(default=20000, ge=100, le=1000000)
+    session_cache_size: int = Field(default=256, ge=1, le=10000)
+    cors_origins: list[str] = Field(default_factory=list)
+
+
+class AgentSecurityConfig(BaseModel):
+    require_api_key: bool = False
+    api_key_env: str = "SUPPORT_SERVICE_API_KEY"
+
+
 class AgentAppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    agent: AgentConfig = Field(default_factory=AgentConfig)
+    agent: AgentConfig
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
+    rag: AgentRagConfig = Field(default_factory=AgentRagConfig)
+    tools: AgentToolsConfig = Field(default_factory=AgentToolsConfig)
+    service: AgentServiceConfig = Field(default_factory=AgentServiceConfig)
+    security: AgentSecurityConfig = Field(default_factory=AgentSecurityConfig)
     logging: AgentLoggingConfig = Field(default_factory=AgentLoggingConfig)
 
     @field_validator("memory")
@@ -54,23 +123,44 @@ class AgentAppConfig(BaseModel):
         return value
 
 
-def load_agent_config(path: str | Path = "config/agent.yaml") -> AgentAppConfig:
+def load_agent_config(path: str | Path) -> AgentAppConfig:
     config_path = _resolve_config_path(path)
     base_dir = _config_base_dir(config_path)
     load_dotenv(base_dir / ".env")
 
-    with config_path.open("r", encoding="utf-8") as file:
-        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    raw = apply_rag_profile(
+        load_composed_yaml(config_path),
+        config_path=config_path,
+        target="agent",
+    )
 
     config = AgentAppConfig.model_validate(raw)
     sqlite_path = config.memory.sqlite_path
     if not sqlite_path.is_absolute():
         sqlite_path = base_dir / sqlite_path
+    incident_sqlite_path = config.tools.incident_sqlite_path
+    if not incident_sqlite_path.is_absolute():
+        incident_sqlite_path = base_dir / incident_sqlite_path
+    agent = config.agent
+    agent_update: dict[str, Any] = {}
+    if agent.provider == "local":
+        agent_update["model"] = _resolve_local_reference(agent.model, base_dir=base_dir)
+        if agent.adapter_path is not None:
+            adapter_path = agent.adapter_path
+            if not adapter_path.is_absolute():
+                adapter_path = base_dir / adapter_path
+            agent_update["adapter_path"] = adapter_path.resolve()
+
     return config.model_copy(
         update={
+            "agent": agent.model_copy(update=agent_update),
             "memory": config.memory.model_copy(
                 update={"sqlite_path": sqlite_path.resolve()}
-            )
+            ),
+            "tools": config.tools.model_copy(
+                update={"incident_sqlite_path": incident_sqlite_path.resolve()}
+            ),
+            "rag": _resolve_rag_config(config.rag, base_dir=base_dir),
         }
     )
 
@@ -92,3 +182,45 @@ def _config_base_dir(config_path: Path) -> Path:
     if config_path.parent.name == "config":
         return config_path.parent.parent
     return config_path.parent
+
+
+def _resolve_local_reference(value: str, *, base_dir: Path) -> str:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return str(path.resolve()) if path.exists() else value
+    candidate = base_dir / path
+    if candidate.exists():
+        return str(candidate.resolve())
+    if value.startswith(".") or value.startswith("data/") or value.startswith("data\\"):
+        return str(candidate.resolve())
+    return value
+
+
+def _resolve_rag_config(config: AgentRagConfig, *, base_dir: Path) -> AgentRagConfig:
+    if config.embedding is None or config.vector_store is None:
+        return config
+    embedding = config.embedding
+    embedding_update: dict[str, Any] = {}
+    if embedding.env_file is not None:
+        env_file = embedding.env_file
+        if not env_file.is_absolute():
+            env_file = base_dir / env_file
+        embedding_update["env_file"] = env_file.resolve()
+    if embedding.provider == "local":
+        embedding_update["model"] = _resolve_local_reference(
+            embedding.model,
+            base_dir=base_dir,
+        )
+
+    vector_store = config.vector_store
+    local_storage_path = vector_store.local_storage_path
+    if not local_storage_path.is_absolute():
+        local_storage_path = base_dir / local_storage_path
+    return config.model_copy(
+        update={
+            "embedding": embedding.model_copy(update=embedding_update),
+            "vector_store": vector_store.model_copy(
+                update={"local_storage_path": local_storage_path.resolve()}
+            ),
+        }
+    )

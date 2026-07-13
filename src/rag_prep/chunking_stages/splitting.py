@@ -46,18 +46,23 @@ class ChunkSplittingStage:
         try:
             self.encoding = tiktoken.encoding_for_model(config.tokenizer_model)
         except KeyError:
-            LOGGER.warning(
-                "Неизвестная модель токенизатора %s; используется cl100k_base",
-                config.tokenizer_model,
-            )
-            self.encoding = tiktoken.get_encoding("cl100k_base")
+            try:
+                self.encoding = tiktoken.get_encoding(config.tokenizer_model)
+            except ValueError:
+                LOGGER.warning(
+                    "Неизвестная модель токенизатора %s; используется cl100k_base",
+                    config.tokenizer_model,
+                )
+                self.encoding = tiktoken.get_encoding("cl100k_base")
         self.splitter = self._build_splitter()
 
     def run(self, documents: list[PreparedDocument]) -> list[PreparedChunk]:
         chunks: list[PreparedChunk] = []
         for document in documents:
             chunks.extend(self._split_document(document))
-        LOGGER.info("Разделено документов: %d; получено чанков: %d", len(documents), len(chunks))
+        LOGGER.info(
+            "Разделено документов: %d; получено чанков: %d", len(documents), len(chunks)
+        )
         return chunks
 
     def _build_splitter(self):
@@ -75,7 +80,10 @@ class ChunkSplittingStage:
             return []
 
         blocks = self._semantic_blocks(document)
-        if self.config.preserve_section_boundaries and self.config.preserve_block_boundaries:
+        if (
+            self.config.preserve_section_boundaries
+            and self.config.preserve_block_boundaries
+        ):
             return self._split_semantic_blocks(document, blocks)
         return self._split_whole_document(document, blocks)
 
@@ -88,7 +96,9 @@ class ChunkSplittingStage:
         for block in blocks:
             if block.token_count > self.config.chunk_size:
                 if current:
-                    chunks.append(self._chunk_from_blocks(document, current, len(chunks)))
+                    chunks.append(
+                        self._chunk_from_blocks(document, current, len(chunks))
+                    )
                     current = []
                 chunks.extend(self._split_oversized_block(document, block, len(chunks)))
                 continue
@@ -272,7 +282,9 @@ class ChunkSplittingStage:
             tokenizer_model=self.config.tokenizer_model,
             embedding_model=self.config.embedding_model,
             semantic_block_ids=semantic_block_ids,
-            semantic_block_start=min(semantic_positions) if semantic_positions else None,
+            semantic_block_start=min(semantic_positions)
+            if semantic_positions
+            else None,
             semantic_block_end=max(semantic_positions) if semantic_positions else None,
             offset_strategy=offset_strategy,
             parent_ids=[doc_meta.id],
@@ -284,7 +296,9 @@ class ChunkSplittingStage:
             text_hash=text_hash,
             file_name=doc_meta.file_name,
             file_type=doc_meta.file_type,
-            quality=self._quality(chunk_text, token_count, doc_meta.extra.get("quality"), blocks),
+            quality=self._quality(
+                chunk_text, token_count, doc_meta.extra.get("quality"), blocks
+            ),
         )
 
     def _semantic_blocks(self, document: PreparedDocument) -> list[SemanticBlock]:
@@ -296,7 +310,9 @@ class ChunkSplittingStage:
         one_origin_per_block = len(origin_ids) == len(spans)
         blocks: list[SemanticBlock] = []
         for position, (text, start_char, end_char) in enumerate(spans):
-            block_origin_ids = [origin_ids[position]] if one_origin_per_block else origin_ids
+            block_origin_ids = (
+                [origin_ids[position]] if one_origin_per_block else origin_ids
+            )
             block_id = stable_id(
                 document.metadata.id,
                 "semantic_block",
@@ -367,8 +383,6 @@ class ChunkSplittingStage:
             if candidate_tokens <= self.config.chunk_overlap:
                 overlap = candidate
                 continue
-            if not overlap:
-                overlap = [block]
             break
         if not overlap:
             return []
@@ -448,7 +462,9 @@ class ChunkSplittingStage:
         words = [word.lower() for word in _WORD_RE.findall(chunk_text)]
         char_count = len(chunk_text)
         alpha_count = sum(1 for char in chunk_text if char.isalpha())
-        known_script_count = sum(1 for char in chunk_text if self._is_supported_letter(char))
+        known_script_count = sum(
+            1 for char in chunk_text if self._is_supported_letter(char)
+        )
         noisy_chars = sum(1 for char in chunk_text if self._is_noise_char(char))
         sentence_count = len(_SENTENCE_END_RE.findall(chunk_text))
         unique_token_ratio = len(set(words)) / len(words) if words else 0.0
@@ -495,7 +511,11 @@ class ChunkSplittingStage:
     def _is_noise_char(char: str) -> bool:
         if char == "\ufffd" or (ord(char) < 32 and char not in "\n\r\t"):
             return True
-        return not char.isalnum() and not char.isspace() and char not in _COMMON_PUNCTUATION
+        return (
+            not char.isalnum()
+            and not char.isspace()
+            and char not in _COMMON_PUNCTUATION
+        )
 
     @staticmethod
     def _ordered_unique(values: Iterable[str]) -> list[str]:

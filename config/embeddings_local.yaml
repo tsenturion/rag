@@ -1,0 +1,27 @@
+run:
+  name: rag_embeddings_local
+  seed: 42
+
+rag_profile: profiles/rag/local.yaml
+
+paths:
+  input_jsonl: data/chunks_local/chunks.jsonl
+  output_dir: data/embeddings_local
+  json_filename: embeddings.json
+  jsonl_filename: embeddings.jsonl
+  manifest_filename: manifest.json
+
+embedding:
+  env_file: .env
+  batch_size: 16
+  max_batch_tokens: 6000
+  max_retries: 5
+  timeout_seconds: 60
+  clear_no_proxy_for_openai: true
+  fail_on_validation_error: true
+
+logging:
+  level: INFO
+  mlflow_enabled: true
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment: rag-embeddings-local

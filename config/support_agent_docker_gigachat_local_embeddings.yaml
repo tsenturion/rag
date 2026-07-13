@@ -1,0 +1,8 @@
+extends:
+  - profiles/support/base.yaml
+  - profiles/support/agent_gigachat.yaml
+  - profiles/support/rag_runtime_local.yaml
+  - profiles/support/state_gigachat_local.yaml
+  - profiles/support/deployment_docker_local_embeddings.yaml
+
+rag_profile: profiles/rag/local.yaml

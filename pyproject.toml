@@ -13,15 +13,20 @@ dependencies = [
   "llama-index>=0.14.21",
   "llama-index-readers-file>=0.6.0",
   "langchain-core>=1.4.0",
+  "langchain-gigachat>=0.5.1",
   "langchain-openai>=1.2.2",
   "langgraph>=1.2.2",
+  "gigachat>=0.2.1",
   "lxml>=6.1.0",
   "mlflow>=3.12.0",
   "numpy>=2.3.0",
   "httpx2>=2.2.0",
+  "fastapi>=0.115.12",
+  "huggingface-hub>=1.1.0",
   "openai>=2.26.0",
   "pandas>=2.3.3",
   "portalocker>=2.7.0,<4.0",
+  "prometheus-client>=0.25.0",
   "prefect>=3.7.0",
   "pydantic==2.12.5",
   "python-dotenv>=1.2.2",
@@ -31,13 +36,23 @@ dependencies = [
   "spacy>=3.8.14",
   "tiktoken>=0.12.0",
   "tenacity>=9.1.2",
+  "torch>=2.11.0",
+  "transformers>=5.3.0",
+  "peft>=0.18.1",
+  "datasets>=4.7.0",
+  "accelerate>=1.13.0",
+  "trl>=0.29.0",
   "unstructured[pdf]>=0.22.27",
   "unstructured-inference>=1.6.11",
+  "uvicorn>=0.34.0",
 ]
 
 [project.scripts]
 rag-prep = "rag_prep.cli:main"
 rag-agent = "agent_app.cli:main"
+llm-tune = "llm_tuning.cli:main"
+rag-support = "agent_app.service.cli:main"
+rag-index = "rag_prep.vector_store_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

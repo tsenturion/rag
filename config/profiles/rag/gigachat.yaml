@@ -1,0 +1,20 @@
+tokenizer_model: cl100k_base
+
+embedding:
+  provider: gigachat
+  model: Embeddings-2
+  dimensions: 1024
+  api_key_env: GIGACHAT_AUTH_KEY
+  max_input_tokens: 512
+  normalize: false
+  gigachat_scope: GIGACHAT_API_PERS
+  gigachat_verify_ssl_certs: false
+  gigachat_use_prefix_query: false
+  gigachat_chars_per_token: 3
+
+vector_store:
+  provider: qdrant
+  collection_name: rag_chunks_gigachat
+  vector_size: 1024
+  distance: Cosine
+  local_storage_path: data/qdrant_storage_gigachat

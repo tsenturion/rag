@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
+
+from agent_app.rag.models import RagCitation
 
 
 def utc_now() -> datetime:
@@ -40,14 +42,56 @@ class MemorySearchResult(BaseModel):
     count: int = 0
 
 
+class AgentTraceState(BaseModel):
+    name: str
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentToolResult(BaseModel):
+    name: str | None = None
+    content: str
+    is_error: bool = False
+
+
+class AgentTrace(BaseModel):
+    user_request: str
+    start_state: AgentTraceState
+    intermediate_states: list[AgentTraceState] = Field(default_factory=list)
+    final_state: AgentTraceState
+    transition_rules: list[str] = Field(default_factory=list)
+    decision_points: list[str] = Field(default_factory=list)
+    tool_calls: list[str] = Field(default_factory=list)
+    tool_results: list[AgentToolResult] = Field(default_factory=list)
+    memory_created_ids: list[str] = Field(default_factory=list)
+    memory_updated_ids: list[str] = Field(default_factory=list)
+    memory_deleted_ids: list[str] = Field(default_factory=list)
+    loop_guard_triggered: bool = False
+    recursion_limit: int
+
+
+class AgentRetrievalInfo(BaseModel):
+    status: str
+    retrieved_count: int = 0
+    used_count: int = 0
+    context_tokens: int = 0
+    provider: str | None = None
+    model: str | None = None
+    collection_name: str | None = None
+    error: str | None = None
+
+
 class AgentResponse(BaseModel):
     answer: str
     user_id: str
     session_id: str
     tool_calls: list[str] = Field(default_factory=list)
+    citations: list[RagCitation] = Field(default_factory=list)
+    retrieval: AgentRetrievalInfo | None = None
+    trace: AgentTrace | None = None
 
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     user_id: str
     session_id: str
+    loop_guard_triggered: NotRequired[bool]

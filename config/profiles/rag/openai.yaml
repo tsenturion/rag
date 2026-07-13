@@ -1,0 +1,17 @@
+tokenizer_model: text-embedding-3-small
+
+embedding:
+  provider: openai
+  model: text-embedding-3-small
+  dimensions: 1536
+  api_key_env: OPENAI_API_KEY
+  max_input_tokens: 8191
+  normalize: false
+  clear_no_proxy_for_openai: true
+
+vector_store:
+  provider: qdrant
+  collection_name: rag_chunks_openai
+  vector_size: 1536
+  distance: Cosine
+  local_storage_path: data/qdrant_storage_openai

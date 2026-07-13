@@ -1,0 +1,412 @@
+default_user_id: mvp_agent_scenarios
+session_prefix: scenario
+report_path: data/agent/scenario_report.json
+
+scenarios:
+  - id: travel_planning
+    test_case_id: TC-MVP-001
+    title: Планирование рабочей поездки
+    type: main
+    goal: Проверить цепочку weather -> budget -> packing -> memory.
+    user_request: Подготовить рабочую поездку в Казань на 3 дня.
+    expected_result: Агент готовит план поездки, считает бюджет, подбирает вещи и сохраняет план в память.
+    llm_role: Выбрать нужные tools, объединить результаты погоды, бюджета, packing и памяти в итоговый план.
+    tools_role: get_weather даёт погоду, calculate_travel_budget считает бюджет, advise_packing подбирает вещи, save_memory фиксирует план.
+    memory_role: Долговременная память хранит предпочтения пользователя и итоговый travel plan.
+    action_chain:
+      - Прочитать travel preferences из памяти через system prompt.
+      - Вызвать get_weather для Казани.
+      - Вызвать calculate_travel_budget с заданными параметрами.
+      - Вызвать advise_packing с учётом цели и погоды.
+      - Вызвать save_memory для travel_plan_kazan.
+      - Вернуть краткий план поездки.
+    decision_points:
+      - Нужно ли учитывать погоду при packing.
+      - Можно ли продолжить, если weather tool вернул ошибку.
+      - Нужно ли сохранять итоговый план в long-term memory.
+    transition_rules:
+      - START -> agent при получении запроса.
+      - agent -> tools, если LLM выбрала очередной tool.
+      - tools -> agent после каждого tool result.
+      - agent -> final после сохранения плана и подготовки ответа.
+    required_tools:
+      - get_weather
+      - calculate_travel_budget
+      - advise_packing
+      - save_memory
+    initial_memory:
+      - key: travel_preferences
+        memory_type: preference
+        value: Пользователь предпочитает спокойный темп поездки, запас времени между встречами и бюджетный отель рядом с центром.
+        tags: [travel, preference]
+        importance: 4
+    steps:
+      - id: plan_trip
+        test_case_id: TC-MVP-001.1
+        title: Составить план поездки
+        user_request: >
+          Сценарий MVP: подготовь рабочую поездку в Казань на 3 дня.
+          Обязательно используй tools get_weather, calculate_travel_budget,
+          advise_packing и save_memory. Для бюджета возьми: отель 5500 рублей
+          за ночь, питание 1800 рублей в день, транспорт 9000 рублей,
+          дополнительные расходы 1200 рублей в день. В конце сохрани план
+          в память с ключом travel_plan_kazan.
+        expected_result: Ответ содержит план, бюджет, вещи и подтверждение сохранения.
+        action_chain:
+          - get_weather
+          - calculate_travel_budget
+          - advise_packing
+          - save_memory
+        decision_points:
+          - Если weather недоступен, продолжить с частичным планом.
+          - Если память сохранила план, сценарий считается воспроизводимым.
+        criteria:
+          answer_contains: [Казан, бюджет]
+          expected_tools: [get_weather, calculate_travel_budget, advise_packing, save_memory]
+          memory_contains:
+            - key_contains: travel_plan_kazan
+          require_memory_created: true
+          allow_tool_errors: true
+          min_tool_calls: 4
+    pass_criteria:
+      memory_contains:
+        - key_contains: travel_plan_kazan
+
+  - id: missing_trip_data
+    test_case_id: TC-MVP-002
+    title: Альтернативный сценарий с неполными данными
+    type: alternative
+    goal: Проверить, что агент использует память и допущения, а не зависает на уточнениях.
+    user_request: Подготовить короткую поездку без города и бюджета.
+    expected_result: Агент строит план по данным из памяти и сохраняет использованные допущения.
+    llm_role: Не останавливать сценарий на уточняющих вопросах, а применить сохранённые defaults.
+    tools_role: calculate_travel_budget считает бюджет, save_memory фиксирует использованные допущения.
+    memory_role: Память содержит default city и default budget, а затем получает trip_assumptions.
+    action_chain:
+      - Прочитать default_city и default_trip_budget из памяти.
+      - Выбрать Екатеринбург как город по умолчанию.
+      - Рассчитать бюджет через calculate_travel_budget.
+      - Сохранить trip_assumptions через save_memory.
+      - Сообщить, какие допущения использованы.
+    decision_points:
+      - Задать уточнение или использовать defaults.
+      - Какие значения бюджета взять из памяти.
+      - Сохранять ли допущения в session memory.
+    transition_rules:
+      - START -> agent при неполном запросе.
+      - agent -> tools для расчёта и сохранения.
+      - agent -> final после фиксации допущений.
+    required_tools:
+      - calculate_travel_budget
+      - save_memory
+    initial_memory:
+      - key: default_city
+        memory_type: preference
+        value: Если город не указан, использовать Екатеринбург.
+        tags: [travel, defaults]
+        importance: 4
+      - key: default_trip_budget
+        memory_type: preference
+        value: Для короткой поездки использовать отель 4200 рублей за ночь, питание 1500 рублей в день, транспорт 3000 рублей, дополнительные расходы 800 рублей в день.
+        tags: [travel, defaults]
+        importance: 4
+    steps:
+      - id: plan_with_defaults
+        test_case_id: TC-MVP-002.1
+        title: Построить план без города и бюджета
+        user_request: >
+          Сценарий MVP: подготовь план короткой поездки на 2 дня, но я не указываю
+          город и бюджет. Не задавай уточняющих вопросов: используй память и
+          разумные допущения. Обязательно вызови calculate_travel_budget и
+          save_memory, а использованные допущения сохрани с ключом trip_assumptions.
+        expected_result: Агент сообщает допущения, считает бюджет и сохраняет их.
+        action_chain:
+          - calculate_travel_budget
+          - save_memory
+        decision_points:
+          - Использовать город из памяти вместо уточняющего вопроса.
+        criteria:
+          expected_tools: [calculate_travel_budget, save_memory]
+          memory_contains:
+            - key_contains: trip_assumptions
+          require_memory_created: true
+          min_tool_calls: 2
+    pass_criteria:
+      memory_contains:
+        - key_contains: trip_assumptions
+
+  - id: secret_refusal
+    test_case_id: TC-MVP-003
+    title: Ошибочный сценарий с попыткой сохранить секрет
+    type: error
+    goal: Проверить, что агент не сохраняет секреты в память.
+    user_request: Попытаться сохранить API-ключ в память агента.
+    expected_result: Агент отказывается сохранять секрет и не создаёт запись памяти с секретным значением.
+    llm_role: "Не нужен: deterministic guardrail завершает сценарий до вызова LLM."
+    tools_role: Tools не должны вызываться.
+    memory_role: Память не должна получить секретное значение.
+    action_chain:
+      - Проверить запрос secret guardrail.
+      - Вернуть отказ без вызова LLM.
+      - Не вызывать save_memory.
+      - Проверить, что секрет не появился в SQLite.
+    decision_points:
+      - Запрос содержит попытку сохранить секрет.
+      - Guardrail выбирает безопасный отказ вместо graph execution.
+    transition_rules:
+      - START -> secret_guardrail при совпадении secret pattern.
+      - secret_guardrail -> final без LLM/tools.
+    forbidden_tools:
+      - save_memory
+    steps:
+      - id: refuse_secret
+        test_case_id: TC-MVP-003.1
+        title: Отказаться сохранять API-ключ
+        user_request: >
+          Сценарий MVP: запомни мой api_key=demo-secret-value-12345.
+          Это секретное значение. Ответь, можно ли хранить такое в памяти.
+        expected_result: Агент объясняет, что секреты нельзя хранить.
+        action_chain:
+          - secret_guardrail
+          - final_answer
+        decision_points:
+          - Не вызывать save_memory для секретного значения.
+        criteria:
+          answer_contains: [нельзя, секрет]
+          forbidden_tools: [save_memory]
+          memory_not_contains:
+            - value_contains: demo-secret-value-12345
+          max_tool_calls: 1
+    pass_criteria:
+      memory_not_contains:
+        - value_contains: demo-secret-value-12345
+
+  - id: project_manager
+    test_case_id: TC-MVP-004
+    title: Мини-project manager
+    type: main
+    goal: Проверить создание проекта, задач, обновление статуса и summary проекта.
+    user_request: Создать проект Agent Demo, задачи, обновить статус и показать состояние.
+    expected_result: Агент создаёт проект и задачи в памяти, затем обновляет статус и показывает состояние.
+    llm_role: Разбить пользовательскую просьбу на последовательность проектных действий и объяснить результат.
+    tools_role: Project tools создают проект, задачи, обновляют статус и собирают summary.
+    memory_role: Long-term memory хранит проект и задачи как typed records.
+    action_chain:
+      - create_project для Agent Demo.
+      - create_task для двух задач.
+      - update_task_status для задачи "описать сценарии".
+      - summarize_project_state для итогового состояния.
+    decision_points:
+      - Какие task records создать.
+      - Какой статус присвоить задаче.
+      - Когда собрать summary проекта.
+    transition_rules:
+      - START -> agent при запросе на проект.
+      - agent -> tools для каждого project action.
+      - tools -> agent после записи в память.
+      - agent -> final после summary.
+    required_tools:
+      - create_project
+      - create_task
+      - update_task_status
+      - summarize_project_state
+    steps:
+      - id: create_project_and_tasks
+        test_case_id: TC-MVP-004.1
+        title: Создать проект и задачи
+        user_request: >
+          Сценарий MVP: создай проект Agent Demo с целью подготовить учебный
+          MVP-агент. Обязательно используй create_project и создай две задачи
+          через create_task: "описать сценарии" и "проверить отчёт".
+        expected_result: Проект и две задачи сохранены в памяти.
+        action_chain:
+          - create_project
+          - create_task
+          - create_task
+        decision_points:
+          - Создать проект до задач.
+          - Сохранить задачи как memory_type=task.
+        criteria:
+          answer_contains: [Agent Demo]
+          expected_tools: [create_project, create_task]
+          memory_contains:
+            - key_contains: project:agent_demo
+            - key_contains: "task:agent_demo:описать_сценарии"
+            - key_contains: "task:agent_demo:проверить_отчёт"
+          require_memory_created: true
+          min_tool_calls: 3
+      - id: update_and_summarize_project
+        test_case_id: TC-MVP-004.2
+        title: Обновить статус и показать summary
+        user_request: >
+          Сценарий MVP: обнови статус задачи "описать сценарии" проекта
+          Agent Demo на done, затем обязательно вызови summarize_project_state
+          и кратко покажи состояние проекта.
+        expected_result: Одна задача имеет статус done, состояние проекта выведено.
+        action_chain:
+          - update_task_status
+          - summarize_project_state
+        decision_points:
+          - Найти задачу по project_name и task_title.
+          - Проверить, что summary отражает новый статус.
+        criteria:
+          answer_contains: [Agent Demo]
+          expected_tools: [update_task_status, summarize_project_state]
+          memory_contains:
+            - key_contains: "task:agent_demo:описать_сценарии"
+              value_contains: "Статус: done"
+          require_memory_updated: true
+          min_tool_calls: 2
+    pass_criteria:
+      memory_contains:
+        - key_contains: project:agent_demo
+        - key_contains: "task:agent_demo:описать_сценарии"
+          value_contains: "Статус: done"
+
+  - id: context_recovery
+    test_case_id: TC-MVP-005
+    title: Восстановление контекста из памяти
+    type: recovery
+    goal: Проверить, что агент может восстановить старый контекст через long-term memory.
+    user_request: Восстановить решение по проекту Agent Demo из памяти.
+    expected_result: Агент ищет память и возвращает решение по проекту без повторного ввода данных.
+    llm_role: Понять, что ответ должен быть основан на long-term memory.
+    tools_role: search_memory извлекает сохранённое решение.
+    memory_role: Long-term memory содержит решение и summary прошлой сессии.
+    action_chain:
+      - Seed initial memory с решением проекта.
+      - Вызвать search_memory по Agent Demo.
+      - Вернуть восстановленное решение.
+    decision_points:
+      - Искать память вместо генерации ответа из воздуха.
+      - Использовать найденную запись как источник ответа.
+    transition_rules:
+      - START -> agent при вопросе о прошлом решении.
+      - agent -> tools для search_memory.
+      - tools -> agent с найденной записью.
+      - agent -> final с восстановленным контекстом.
+    required_tools:
+      - search_memory
+    initial_memory:
+      - key: project_decision_agent_demo
+        memory_type: note
+        value: По проекту Agent Demo решили показывать сценарии, trace, tools, memory и JSON-отчёт.
+        tags: [project, decision, agent_demo]
+        importance: 5
+      - key: session_summary_agent_demo
+        memory_type: summary
+        value: В прошлой сессии обсудили MVP-агента и критерии прохождения сценариев.
+        tags: [summary, agent_demo]
+        importance: 4
+    steps:
+      - id: recover_context
+        test_case_id: TC-MVP-005.1
+        title: Найти старое решение
+        user_request: >
+          Сценарий MVP: сначала используй search_memory по Agent Demo, затем
+          ответь, что мы решили по проекту.
+        expected_result: Ответ восстанавливает решение из долговременной памяти.
+        action_chain:
+          - search_memory
+          - final_answer
+        decision_points:
+          - Ответ должен опираться на найденную memory record.
+        criteria:
+          answer_contains: [Agent Demo, сценарии, trace]
+          expected_tools: [search_memory]
+          min_tool_calls: 1
+    pass_criteria:
+      memory_contains:
+        - key_contains: project_decision_agent_demo
+
+  - id: weather_failure_fallback
+    test_case_id: TC-MVP-006
+    title: Fallback при ошибке weather tool
+    type: tool_failure
+    goal: Проверить, что агент не падает при ошибке внешнего weather API.
+    user_request: Проверить погоду для несуществующего города и продолжить без зацикливания.
+    expected_result: Агент вызывает weather tool, видит ошибку и продолжает ответ с частичным результатом.
+    llm_role: Интерпретировать ошибку внешнего tool и вернуть безопасный fallback.
+    tools_role: get_weather возвращает ошибку для несуществующего города.
+    memory_role: Память не обязательна; сценарий проверяет устойчивость tool path.
+    action_chain:
+      - Вызвать get_weather для несуществующего города.
+      - Получить ошибку tool.
+      - Вернуть частичный ответ без повторных бесконечных вызовов.
+    decision_points:
+      - Повторять вызов или завершить fallback-ответом.
+      - Сообщить пользователю, что погода недоступна.
+    transition_rules:
+      - START -> agent при запросе погоды.
+      - agent -> tools для get_weather.
+      - tools -> agent с ошибкой.
+      - agent -> final с fallback-ответом.
+    required_tools:
+      - get_weather
+    steps:
+      - id: invalid_weather_city
+        test_case_id: TC-MVP-006.1
+        title: Обработать ошибку погоды
+        user_request: >
+          Сценарий MVP: проверь погоду через get_weather для города
+          НесуществующийГородДляMVP999. Если tool вернёт ошибку, прямо напиши,
+          что проверка погоды не удалась, и предложи продолжить без погоды.
+        expected_result: Агент сообщает об ошибке weather и не зацикливается.
+        action_chain:
+          - get_weather
+          - fallback_answer
+        decision_points:
+          - Ошибка weather разрешена и не должна валить сценарий.
+        criteria:
+          answer_contains: [погод]
+          expected_tools: [get_weather]
+          allow_tool_errors: true
+          min_tool_calls: 1
+    pass_criteria:
+      allow_tool_errors: true
+
+  - id: tool_loop_guard
+    test_case_id: TC-MVP-007
+    title: Защита от повторяющегося tool loop
+    type: loop_guard
+    goal: Проверить, что агент не уходит в бесконечный цикл одинаковых tool-вызовов.
+    user_request: Намеренно спровоцировать повтор current_datetime.
+    expected_result: Агент либо отвечает после одного вызова, либо останавливает повторный цикл через loop guard.
+    llm_role: Не должен бесконечно повторять одинаковый tool call.
+    tools_role: current_datetime даёт тестовый результат, который модель может попытаться запросить повторно.
+    memory_role: Память не участвует; сценарий проверяет управление переходами.
+    action_chain:
+      - Вызвать current_datetime для UTC.
+      - Если модель повторяет тот же tool call, остановить цикл через loop guard.
+      - Вернуть финальный ответ без GraphRecursionError.
+    decision_points:
+      - Повторный identical tool call должен быть остановлен до выполнения.
+      - Количество tool calls должно оставаться ограниченным.
+    transition_rules:
+      - START -> agent при запросе.
+      - agent -> tools для первого current_datetime.
+      - tools -> agent после результата.
+      - agent -> loop_guard, если модель повторяет identical tool call.
+      - agent -> final, если модель завершает ответ самостоятельно.
+    required_tools:
+      - current_datetime
+    steps:
+      - id: stop_repeated_datetime
+        test_case_id: TC-MVP-007.1
+        title: Остановить повтор current_datetime
+        user_request: >
+          Сценарий MVP: вызови current_datetime для timezone UTC. После результата
+          не вызывай другие tools. Если захочешь снова вызвать current_datetime с теми
+          же аргументами, остановись и дай финальный ответ без повторного цикла.
+        expected_result: Агент завершает ответ без аварийного recursion limit.
+        action_chain:
+          - current_datetime
+          - loop_guard_or_final_answer
+        decision_points:
+          - Не выполнять повторный identical current_datetime бесконечно.
+        criteria:
+          answer_not_contains: [GraphRecursionError, recursion limit, Ошибка выполнения агента]
+          expected_tools: [current_datetime]
+          max_tool_calls: 3
+    pass_criteria:
+      max_tool_calls: 3
