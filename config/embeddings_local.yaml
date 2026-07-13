@@ -2,35 +2,22 @@ run:
   name: rag_embeddings_local
   seed: 42
 
+rag_profile: profiles/rag/local.yaml
+
 paths:
-  input_jsonl: data/chunks/chunks.jsonl
+  input_jsonl: data/chunks_local/chunks.jsonl
   output_dir: data/embeddings_local
   json_filename: embeddings.json
   jsonl_filename: embeddings.jsonl
   manifest_filename: manifest.json
 
 embedding:
-  provider: local
-  model: data/models/hf/multilingual-e5-small
-  dimensions: 384
-  api_key_env: OPENAI_API_KEY
   env_file: .env
   batch_size: 16
   max_batch_tokens: 6000
-  max_input_tokens: 512
   max_retries: 5
   timeout_seconds: 60
-  normalize: true
   clear_no_proxy_for_openai: true
-  local_device: auto
-  local_dtype: auto
-  local_files_only: true
-  trust_remote_code: false
-  pooling: mean
-  passage_prefix: "passage: "
-  query_prefix: "query: "
-  hub_disable_xet: true
-  hub_disable_symlink_warning: true
   fail_on_validation_error: true
 
 logging:

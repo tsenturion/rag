@@ -1,0 +1,60 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.18.0@sha256:b3063c673f3973877c038eeecc392bad5011f072ee7892b56c9a8e204a3bdea9
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf \"GET /readyz HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q \"200 OK\" <&3'"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  support-agent:
+    image: rag-support-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SUPPORT_AGENT_CONFIG: ${SUPPORT_AGENT_CONFIG:?Задайте явный provider-конфиг в .env}
+    ports:
+      - "8000:8000"
+    volumes:
+      - agent_data:/app/data/agent
+      - ./data/models:/app/data/models:ro
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+  indexer:
+    image: rag-support-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["indexing"]
+    env_file:
+      - .env
+    command:
+      - rag-index
+      - --config
+      - ${VECTOR_STORE_CONFIG:?Задайте явный vector-store-конфиг в .env}
+    volumes:
+      - ./data/embeddings_openai:/app/data/embeddings_openai:ro
+      - ./data/embeddings_local:/app/data/embeddings_local:ro
+      - ./data/vector_store_docker_openai:/app/data/vector_store_docker_openai
+      - ./data/vector_store_docker_local:/app/data/vector_store_docker_local
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+volumes:
+  qdrant_data:
+  agent_data:

@@ -12,7 +12,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agent_app.config import AgentAppConfig, MemoryConfig  # noqa: E402
+from agent_app.config import AgentAppConfig, AgentConfig, MemoryConfig  # noqa: E402
 from agent_app.scenarios.models import ScenarioRunReport, ScenarioSuite  # noqa: E402
 from agent_app.scenarios.runner import ScenarioRunner  # noqa: E402
 
@@ -40,7 +40,8 @@ class EmptyScenariosTest(unittest.TestCase):
                 scenarios=[],
             )
             config = AgentAppConfig(
-                memory=MemoryConfig(sqlite_path=Path(temporary_dir) / "memory.sqlite")
+                agent=AgentConfig(provider="local", model="test-model"),
+                memory=MemoryConfig(sqlite_path=Path(temporary_dir) / "memory.sqlite"),
             )
 
             report = ScenarioRunner(

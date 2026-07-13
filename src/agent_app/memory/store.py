@@ -234,6 +234,7 @@ class SQLiteMemoryStore:
         user_id: str,
         query: str,
         memory_type: MemoryType | None = None,
+        session_id: str | None = None,
         limit: int = 5,
     ) -> MemorySearchResult:
         like = f"%{query.strip()}%"
@@ -243,6 +244,9 @@ class SQLiteMemoryStore:
               AND (key LIKE ? OR value LIKE ? OR tags LIKE ?)
         """
         params: list[Any] = [user_id, like, like, like]
+        if session_id is not None:
+            sql += " AND (session_id IS NULL OR session_id = ?)"
+            params.append(session_id)
         if memory_type is not None:
             sql += " AND memory_type = ?"
             params.append(memory_type)

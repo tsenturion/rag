@@ -46,6 +46,11 @@ class ScenarioCriteria(BaseModel):
     allow_tool_errors: bool = False
     require_loop_guard: bool = False
     forbid_loop_guard: bool = False
+    require_citations: bool = False
+    forbid_citations: bool = False
+    require_retrieval: bool = False
+    require_retrieval_success: bool = False
+    expected_retrieval_status: Literal["ok", "empty", "unavailable"] | None = None
     min_tool_calls: int = 0
     max_tool_calls: int | None = None
 

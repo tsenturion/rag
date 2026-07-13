@@ -1,0 +1,20 @@
+extends:
+  - profiles/support/base.yaml
+  - profiles/support/agent_local.yaml
+  - profiles/support/rag_runtime_local.yaml
+  - profiles/support/state_local.yaml
+  - profiles/support/deployment_docker_local_embeddings.yaml
+
+rag_profile: profiles/rag/local.yaml
+
+agent:
+  timeout_seconds: 300
+  local_device: cpu
+  local_dtype: fp32
+
+rag:
+  embedding:
+    timeout_seconds: 120
+
+service:
+  session_cache_size: 16

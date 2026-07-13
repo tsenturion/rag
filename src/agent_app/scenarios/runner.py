@@ -9,6 +9,7 @@ from agent_app.config import AgentAppConfig
 from agent_app.graph import AgentRunner
 from agent_app.memory import SQLiteMemoryStore
 from agent_app.models import AgentResponse, utc_now
+from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.scenarios.evaluator import ScenarioEvaluator
 from agent_app.scenarios.models import (
     AgentScenario,
@@ -18,6 +19,7 @@ from agent_app.scenarios.models import (
     ScenarioStepResult,
     ScenarioSuite,
 )
+from agent_app.support.incidents import IncidentStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +38,8 @@ class ScenarioRunner:
         self.store = SQLiteMemoryStore(config.memory.sqlite_path)
         self.evaluator = ScenarioEvaluator()
         self._shared_llm: Any | None = None
+        self._shared_rag = OnlineRagRuntime(config.rag) if config.rag.enabled else None
+        self._incident_store = IncidentStore(config.tools.incident_sqlite_path)
 
     def run_all(self) -> ScenarioRunReport:
         return self._report(self.suite.scenarios)
@@ -61,6 +65,10 @@ class ScenarioRunner:
         LOGGER.info("Сохранён отчёт сценариев: %s", report_path)
         return report_path
 
+    def close(self) -> None:
+        if self._shared_rag is not None:
+            self._shared_rag.close()
+
     def _report(self, scenarios: list[AgentScenario]) -> ScenarioRunReport:
         results = [self._run_scenario(scenario) for scenario in scenarios]
         return ScenarioRunReport(
@@ -83,6 +91,8 @@ class ScenarioRunner:
             user_id=user_id,
             session_id=session_id,
             llm=self._shared_llm,
+            rag_runtime=self._shared_rag,
+            incident_store=self._incident_store,
         )
         if self._shared_llm is None:
             self._shared_llm = runner.llm

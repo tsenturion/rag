@@ -21,6 +21,7 @@ from agent_app.llm import build_llm
 from agent_app.memory import SQLiteMemoryStore, ShortTermMemory, SummaryMemory
 from agent_app.models import (
     AgentResponse,
+    AgentRetrievalInfo,
     AgentState,
     AgentToolResult,
     AgentTrace,
@@ -28,6 +29,9 @@ from agent_app.models import (
     MemoryRecord,
 )
 from agent_app.prompts import system_prompt
+from agent_app.rag.models import RagCitation, RagRetrievalResult
+from agent_app.rag.runtime import OnlineRagRuntime
+from agent_app.support.incidents import IncidentStore
 from agent_app.tools import build_tools
 
 LOGGER = logging.getLogger(__name__)
@@ -47,6 +51,8 @@ class AgentRunner:
         user_id: str | None = None,
         session_id: str | None = None,
         llm: Any | None = None,
+        rag_runtime: OnlineRagRuntime | None = None,
+        incident_store: IncidentStore | None = None,
     ):
         self.config = config
         self.user_id = user_id or config.memory.default_user_id
@@ -60,11 +66,41 @@ class AgentRunner:
             max_chars=config.agent.max_summary_chars,
         )
         self.llm = llm if llm is not None else build_llm(config.agent)
+        self._owns_rag_runtime = rag_runtime is None and config.rag.enabled
+        self.rag_runtime = (
+            rag_runtime
+            if rag_runtime is not None
+            else OnlineRagRuntime(config.rag)
+            if config.rag.enabled
+            else None
+        )
+        support_tool_names = {
+            "search_knowledge_base",
+            "find_runbook",
+            "analyze_log_fragment",
+            "create_incident",
+            "get_incident",
+            "update_incident_status",
+            "list_incidents",
+            "build_diagnostic_checklist",
+        }
+        needs_support_tools = config.rag.enabled or bool(
+            set(config.tools.enabled).intersection(support_tool_names)
+        )
+        self.incident_store = (
+            incident_store
+            if incident_store is not None
+            else IncidentStore(config.tools.incident_sqlite_path)
+            if needs_support_tools
+            else None
+        )
         self.tools = build_tools(
             config,
             self.store,
             user_id=self.user_id,
             session_id=self.session_id,
+            rag_runtime=self.rag_runtime,
+            incident_store=self.incident_store,
         )
         self.graph = self._build_graph()
 
@@ -98,7 +134,11 @@ class AgentRunner:
             limit=self.config.memory.search_limit,
         )
         system = SystemMessage(
-            content=system_prompt(summary=self.summary.get(), memories=memories)
+            content=system_prompt(
+                summary=self.summary.get(),
+                memories=memories,
+                rag_enabled=self.config.rag.enabled,
+            )
         )
         input_messages: list[BaseMessage] = [
             system,
@@ -152,6 +192,33 @@ class AgentRunner:
         answer = str(answer_message.content if answer_message else "")
         tool_calls = self._tool_call_names(messages)
         tool_results = self._tool_results(messages)
+        citations, retrieval = self._retrieval_from_messages(messages)
+        if self._looks_like_serialized_tool_call(answer):
+            answer = self._repair_serialized_tool_answer(message, messages)
+        if citations:
+            answer = self._append_citations(answer, citations)
+        elif (
+            self.config.rag.enabled
+            and self.config.rag.require_citations
+            and self._requires_rag(message)
+        ):
+            reason = (
+                retrieval.error
+                if retrieval is not None and retrieval.error
+                else "релевантные источники не найдены"
+            )
+            if self._has_deterministic_support_evidence(messages):
+                answer = (
+                    f"{answer.rstrip()}\n\n"
+                    "Дополнительные подтверждённые сведения в базе знаний не "
+                    f"найдены: {reason}."
+                ).strip()
+            else:
+                answer = (
+                    "Не удалось получить подтверждённые данные из базы знаний, "
+                    "поэтому я не формирую технический ответ без источников. "
+                    f"Причина: {reason}."
+                )
 
         self.short_term.add(HumanMessage(content=message), AIMessage(content=answer))
         try:
@@ -191,6 +258,8 @@ class AgentRunner:
             user_id=self.user_id,
             session_id=self.session_id,
             tool_calls=tool_calls,
+            citations=citations,
+            retrieval=retrieval,
             trace=trace,
         )
 
@@ -205,6 +274,10 @@ class AgentRunner:
         return self.store.clear_session(
             user_id=self.user_id, session_id=self.session_id
         )
+
+    def close(self) -> None:
+        if self._owns_rag_runtime and self.rag_runtime is not None:
+            self.rag_runtime.close()
 
     def _build_graph(self):
         if not getattr(self.llm, "supports_tool_calling", True):
@@ -291,6 +364,12 @@ class AgentRunner:
             requested.append("create_task")
         if "сохрани" in lower and "памят" in lower:
             requested.append("save_memory")
+        if (
+            self.config.rag.enabled
+            and self._requires_rag(user_message)
+            and not {"search_knowledge_base", "find_runbook"}.intersection(requested)
+        ):
+            requested.append("search_knowledge_base")
 
         deduplicated: list[str] = []
         known = set(tool_names)
@@ -298,6 +377,32 @@ class AgentRunner:
             if name in known and name not in deduplicated:
                 deduplicated.append(name)
         return deduplicated
+
+    @staticmethod
+    def _requires_rag(user_message: str) -> bool:
+        lower = user_message.lower()
+        markers = (
+            "ошиб",
+            "сбой",
+            "проблем",
+            "диагност",
+            "инструк",
+            "документ",
+            "настро",
+            "runbook",
+            "лог",
+            "парол",
+            "архив",
+            "service desk",
+            "как ",
+            "какие ",
+            "что делать",
+            "обязательн",
+            "заявк",
+            "процедур",
+            "регламент",
+        )
+        return any(marker in lower for marker in markers)
 
     def _route_after_agent(self, state: AgentState) -> str:
         messages = state["messages"]
@@ -370,6 +475,88 @@ class AgentRunner:
             lines.append(self._format_tool_result_for_answer(result))
         return "\n".join(lines)
 
+    def _repair_serialized_tool_answer(
+        self,
+        user_message: str,
+        messages: list[BaseMessage],
+    ) -> str:
+        evidence = self._tool_evidence(messages)
+        try:
+            response = self.llm.invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "Сформируй окончательный ответ пользователю на русском "
+                            "языке. Tools уже выполнены: не вызывай их повторно, не "
+                            "возвращай JSON, XML или описание function call. Используй "
+                            "только приведённые результаты и явно сообщи, если данных "
+                            "недостаточно."
+                        )
+                    ),
+                    HumanMessage(
+                        content=(
+                            f"Исходный запрос:\n{user_message}\n\n"
+                            f"Результаты tools:\n{evidence}"
+                        )
+                    ),
+                ]
+            )
+            repaired = str(response.content).strip()
+            if (
+                repaired
+                and not getattr(response, "tool_calls", None)
+                and not self._looks_like_serialized_tool_call(repaired)
+            ):
+                return repaired
+        except Exception:
+            LOGGER.exception(
+                "Не удалось восстановить финальный ответ после protocol leakage"
+            )
+        return self._fallback_answer_from_tools(messages)
+
+    @staticmethod
+    def _tool_evidence(messages: list[BaseMessage]) -> str:
+        evidence: list[str] = []
+        for message in messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            content = str(message.content)
+            try:
+                payload = json.loads(content)
+            except (json.JSONDecodeError, TypeError):
+                evidence.append(content)
+                continue
+            if payload.get("status") == "cancelled":
+                continue
+            if getattr(message, "name", None) in {
+                "search_knowledge_base",
+                "find_runbook",
+            }:
+                evidence.append(str(payload.get("context") or payload))
+            else:
+                evidence.append(json.dumps(payload, ensure_ascii=False))
+        return "\n\n".join(evidence)[:16000]
+
+    @staticmethod
+    def _looks_like_serialized_tool_call(answer: str) -> bool:
+        lowered = answer.lower()
+        return (
+            ("recipient_name" in lowered and "parameters" in lowered)
+            or "functions." in lowered
+            or "<tool_call" in lowered
+            or '"tool_calls"' in lowered
+        )
+
+    @staticmethod
+    def _has_deterministic_support_evidence(messages: list[BaseMessage]) -> bool:
+        grounded_tools = {"analyze_log_fragment", "build_diagnostic_checklist"}
+        return any(
+            isinstance(message, ToolMessage)
+            and getattr(message, "name", None) in grounded_tools
+            and not AgentRunner._tool_message_is_error(message)
+            for message in messages
+        )
+
     @staticmethod
     def _cancel_pending_tool_calls(messages: list[BaseMessage]) -> list[ToolMessage]:
         if not messages:
@@ -435,6 +622,14 @@ class AgentRunner:
                 return f"- search_memory: {'; '.join(values)}"
         if name == "summarize_project_state":
             return f"- summarize_project_state: {json.dumps(payload, ensure_ascii=False)[:500]}"
+        if name in {"search_knowledge_base", "find_runbook"}:
+            if payload.get("status") != "ok":
+                return f"- {name}: база знаний недоступна: {payload.get('error')}"
+            citations = payload.get("citations", [])
+            return (
+                f"- {name}: найдено {payload.get('retrieved_count', 0)} фрагментов, "
+                f"использовано источников: {len(citations) if isinstance(citations, list) else 0}"
+            )
         return f"- {name}: {json.dumps(payload, ensure_ascii=False)[:300]}"
 
     def _error_response(
@@ -469,6 +664,74 @@ class AgentRunner:
             tool_calls=[],
             trace=trace,
         )
+
+    def _retrieval_from_messages(
+        self,
+        messages: list[BaseMessage],
+    ) -> tuple[list[RagCitation], AgentRetrievalInfo | None]:
+        results: list[RagRetrievalResult] = []
+        for message in messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            if getattr(message, "name", None) not in {
+                "search_knowledge_base",
+                "find_runbook",
+            }:
+                continue
+            try:
+                payload = json.loads(str(message.content))
+                if payload.get("status") == "cancelled":
+                    continue
+                results.append(RagRetrievalResult.model_validate(payload))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                LOGGER.warning("Не удалось разобрать результат RAG tool")
+        if not results:
+            return [], None
+
+        citations: list[RagCitation] = []
+        seen_chunks: set[str] = set()
+        for result in results:
+            for citation in result.citations:
+                if citation.chunk_id in seen_chunks:
+                    continue
+                seen_chunks.add(citation.chunk_id)
+                citations.append(
+                    citation.model_copy(
+                        update={"reference": f"[Источник {len(citations) + 1}]"}
+                    )
+                )
+        latest = results[-1]
+        status = "ok" if citations else latest.status
+        error = next(
+            (result.error for result in reversed(results) if result.error),
+            None,
+        )
+        return citations, AgentRetrievalInfo(
+            status=status,
+            retrieved_count=sum(result.retrieved_count for result in results),
+            used_count=len(citations),
+            context_tokens=sum(result.context_tokens for result in results),
+            provider=latest.provider,
+            model=latest.model,
+            collection_name=latest.collection_name,
+            error=error,
+        )
+
+    @staticmethod
+    def _append_citations(answer: str, citations: list[RagCitation]) -> str:
+        lines = []
+        for citation in citations:
+            location = citation.source or "неизвестный источник"
+            if citation.section:
+                location = f"{location}, раздел: {citation.section}"
+            lines.append(
+                f"- {citation.reference} {location}; chunk_id={citation.chunk_id}; "
+                f"score={citation.score:.4f}"
+            )
+        footer = "Источники:\n" + "\n".join(lines)
+        if "Источники:" in answer:
+            return answer
+        return f"{answer.rstrip()}\n\n{footer}".strip()
 
     @staticmethod
     def _is_recoverable_agent_error(exc: Exception) -> bool:
@@ -513,10 +776,22 @@ class AgentRunner:
     def _tool_message_is_error(message: ToolMessage) -> bool:
         if getattr(message, "status", None) == "error":
             return True
-        lowered = str(message.content).lower()
+        content = str(message.content)
+        try:
+            payload = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            status = str(payload.get("status") or "").lower()
+            if status in {"error", "failed", "unavailable"}:
+                return True
+            error = payload.get("error")
+            if error not in {None, "", False}:
+                return True
+            return False
+        lowered = content.lower()
         return (
             '"status": "error"' in lowered
-            or '"error":' in lowered
             or "error invoking tool" in lowered
             or "ошибка" in lowered
         )

@@ -1,0 +1,8 @@
+extends:
+  - profiles/support/base.yaml
+  - profiles/support/agent_openai.yaml
+  - profiles/support/rag_runtime_openai.yaml
+  - profiles/support/state_openai.yaml
+  - profiles/support/deployment_docker.yaml
+
+rag_profile: profiles/rag/openai.yaml

@@ -109,21 +109,39 @@ def memory_tools(
             user_id=user_id,
             query=query,
             memory_type=memory_type,
+            session_id=session_id,
             limit=effective_limit,
         )
         payload = result.model_dump(mode="json")
         payload["requested_memory_type"] = memory_type
         payload["fallback_to_all_types"] = False
+        payload["fallback_to_recent"] = False
         if result.count == 0 and memory_type is not None:
             fallback = store.search(
                 user_id=user_id,
                 query=query,
                 memory_type=None,
+                session_id=session_id,
                 limit=effective_limit,
             )
             payload = fallback.model_dump(mode="json")
             payload["requested_memory_type"] = memory_type
             payload["fallback_to_all_types"] = True
+            payload["fallback_to_recent"] = False
+            result = fallback
+        if result.count == 0:
+            recent = store.search(
+                user_id=user_id,
+                query="",
+                memory_type=None,
+                session_id=session_id,
+                limit=effective_limit,
+            )
+            payload = recent.model_dump(mode="json")
+            payload["query"] = query
+            payload["requested_memory_type"] = memory_type
+            payload["fallback_to_all_types"] = memory_type is not None
+            payload["fallback_to_recent"] = True
         return _json(payload)
 
     def get_memory(memory_id: str) -> str:

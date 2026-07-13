@@ -1,6 +1,6 @@
+extends: profiles/agent/gigachat.yaml
+
 agent:
-  provider: gigachat
-  model: GigaChat-2
   temperature: 0
   max_new_tokens: 512
   max_history_messages: 3
@@ -9,10 +9,6 @@ agent:
   max_retries: 2
   recursion_limit: 12
   tool_error_retries: 1
-  gigachat_auth_key_env: GIGACHAT_AUTH_KEY
-  gigachat_scope: GIGACHAT_API_PERS
-  gigachat_verify_ssl_certs: false
-  gigachat_profanity_check: null
 
 memory:
   sqlite_path: data/agent/memory.sqlite

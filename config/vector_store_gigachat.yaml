@@ -2,6 +2,8 @@ run:
   name: rag_vector_store_gigachat
   seed: 42
 
+rag_profile: profiles/rag/gigachat.yaml
+
 paths:
   input_jsonl: data/embeddings_gigachat/embeddings.jsonl
   output_dir: data/vector_store_gigachat
@@ -10,14 +12,9 @@ paths:
   search_results_filename: search_results.json
 
 vector_store:
-  provider: qdrant
   mode: local
-  collection_name: rag_chunks_gigachat
-  vector_size: 1024
-  distance: Cosine
   recreate_collection: true
   batch_size: 128
-  local_storage_path: data/qdrant_storage_gigachat
   host: localhost
   port: 6333
   https: false

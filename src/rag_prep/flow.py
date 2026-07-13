@@ -301,7 +301,7 @@ def log_chunking_mlflow_task(
 
 @flow(name="rag-chunking")
 def rag_chunking_flow(
-    config_path: str = "config/chunking.yaml",
+    config_path: str,
 ) -> ChunkingPipelineResult:
     import random
 
@@ -443,7 +443,7 @@ def log_embedding_mlflow_task(
 
 @flow(name="rag-embeddings")
 def rag_embeddings_flow(
-    config_path: str = "config/embeddings.yaml",
+    config_path: str,
 ) -> EmbeddingPipelineResult:
     import random
 
@@ -610,7 +610,7 @@ def log_vector_store_mlflow_task(
 
 @flow(name="rag-vector-store")
 def rag_vector_store_flow(
-    config_path: str = "config/vector_store.yaml",
+    config_path: str,
 ) -> VectorStorePipelineResult:
     import random
 

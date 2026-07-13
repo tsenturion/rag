@@ -1,0 +1,6 @@
+extends: ../agent/openai.yaml
+
+agent:
+  max_new_tokens: 350
+  timeout_seconds: 60
+  max_retries: 2

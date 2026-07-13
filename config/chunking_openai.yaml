@@ -1,10 +1,12 @@
 run:
-  name: rag_chunking
+  name: rag_chunking_openai
   seed: 42
+
+rag_profile: profiles/rag/openai.yaml
 
 paths:
   input_jsonl: data/prepared/documents.jsonl
-  output_dir: data/chunks
+  output_dir: data/chunks_openai
   json_filename: chunks.json
   jsonl_filename: chunks.jsonl
   manifest_filename: manifest.json
@@ -13,8 +15,6 @@ chunking:
   strategy: sentence
   chunk_size: 220
   chunk_overlap: 40
-  tokenizer_model: text-embedding-3-small
-  embedding_model: text-embedding-3-small
   preserve_section_boundaries: true
   preserve_block_boundaries: true
   min_chunk_tokens: 20
@@ -26,4 +26,4 @@ logging:
   level: INFO
   mlflow_enabled: true
   mlflow_tracking_uri: mlruns
-  mlflow_experiment: rag-chunking
+  mlflow_experiment: rag-chunking-openai

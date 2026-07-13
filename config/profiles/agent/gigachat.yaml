@@ -1,0 +1,7 @@
+agent:
+  provider: gigachat
+  model: GigaChat-2
+  gigachat_auth_key_env: GIGACHAT_AUTH_KEY
+  gigachat_scope: GIGACHAT_API_PERS
+  gigachat_verify_ssl_certs: false
+  gigachat_profanity_check: null

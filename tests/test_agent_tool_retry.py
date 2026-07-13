@@ -65,7 +65,7 @@ class AgentToolRetryTest(unittest.TestCase):
             args_schema=FlakyInput,
         )
         with tempfile.TemporaryDirectory() as temp_dir:
-            config = load_agent_config(PROJECT_ROOT / "config" / "agent.yaml")
+            config = load_agent_config(PROJECT_ROOT / "config" / "agent_openai.yaml")
             config = config.model_copy(
                 update={
                     "memory": config.memory.model_copy(

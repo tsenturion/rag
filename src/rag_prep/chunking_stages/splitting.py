@@ -46,11 +46,14 @@ class ChunkSplittingStage:
         try:
             self.encoding = tiktoken.encoding_for_model(config.tokenizer_model)
         except KeyError:
-            LOGGER.warning(
-                "Неизвестная модель токенизатора %s; используется cl100k_base",
-                config.tokenizer_model,
-            )
-            self.encoding = tiktoken.get_encoding("cl100k_base")
+            try:
+                self.encoding = tiktoken.get_encoding(config.tokenizer_model)
+            except ValueError:
+                LOGGER.warning(
+                    "Неизвестная модель токенизатора %s; используется cl100k_base",
+                    config.tokenizer_model,
+                )
+                self.encoding = tiktoken.get_encoding("cl100k_base")
         self.splitter = self._build_splitter()
 
     def run(self, documents: list[PreparedDocument]) -> list[PreparedChunk]:

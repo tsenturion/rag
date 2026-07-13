@@ -4,9 +4,10 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
 
 
 class RunConfig(BaseModel):
@@ -101,8 +102,8 @@ class PipelineConfig(BaseModel):
 
 
 class ChunkingPathConfig(BaseModel):
-    input_jsonl: Path = Path("data/prepared/documents.jsonl")
-    output_dir: Path = Path("data/chunks")
+    input_jsonl: Path
+    output_dir: Path
     json_filename: str = "chunks.json"
     jsonl_filename: str = "chunks.jsonl"
     manifest_filename: str = "manifest.json"
@@ -112,8 +113,8 @@ class ChunkingConfig(BaseModel):
     strategy: Literal["sentence", "token"] = "sentence"
     chunk_size: int = Field(default=220, ge=32)
     chunk_overlap: int = Field(default=40, ge=0)
-    tokenizer_model: str = "text-embedding-3-small"
-    embedding_model: str = "text-embedding-3-small"
+    tokenizer_model: str
+    embedding_model: str
     preserve_section_boundaries: bool = True
     preserve_block_boundaries: bool = True
     min_chunk_tokens: int = Field(default=20, ge=1)
@@ -134,26 +135,26 @@ class ChunkingPipelineConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run: RunConfig = Field(default_factory=lambda: RunConfig(name="rag_chunking"))
-    paths: ChunkingPathConfig = Field(default_factory=ChunkingPathConfig)
-    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+    paths: ChunkingPathConfig
+    chunking: ChunkingConfig
     logging: LoggingConfig = Field(
         default_factory=lambda: LoggingConfig(mlflow_experiment="rag-chunking")
     )
 
 
 class EmbeddingPathConfig(BaseModel):
-    input_jsonl: Path = Path("data/chunks/chunks.jsonl")
-    output_dir: Path = Path("data/embeddings")
+    input_jsonl: Path
+    output_dir: Path
     json_filename: str = "embeddings.json"
     jsonl_filename: str = "embeddings.jsonl"
     manifest_filename: str = "manifest.json"
 
 
 class EmbeddingConfig(BaseModel):
-    provider: Literal["openai", "local", "gigachat"] = "openai"
-    model: str = "text-embedding-3-small"
-    dimensions: int | None = Field(default=1536, ge=1)
-    api_key_env: str = "OPENAI_API_KEY"
+    provider: Literal["openai", "local", "gigachat"]
+    model: str
+    dimensions: int | None = Field(ge=1)
+    api_key_env: str
     env_file: Path | None = None
     batch_size: int = Field(default=64, ge=1)
     max_batch_tokens: int = Field(default=20000, ge=1)
@@ -185,8 +186,8 @@ class EmbeddingPipelineConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run: RunConfig = Field(default_factory=lambda: RunConfig(name="rag_embeddings"))
-    paths: EmbeddingPathConfig = Field(default_factory=EmbeddingPathConfig)
-    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    paths: EmbeddingPathConfig
+    embedding: EmbeddingConfig
     logging: LoggingConfig = Field(
         default_factory=lambda: LoggingConfig(mlflow_experiment="rag-embeddings")
     )
@@ -202,8 +203,8 @@ GIGACHAT_EMBEDDING_DIMENSIONS: dict[str, int] = {
 
 
 class VectorStorePathConfig(BaseModel):
-    input_jsonl: Path = Path("data/embeddings/embeddings.jsonl")
-    output_dir: Path = Path("data/vector_store")
+    input_jsonl: Path
+    output_dir: Path
     manifest_filename: str = "manifest.json"
     validation_filename: str = "validation.json"
     search_results_filename: str = "search_results.json"
@@ -212,12 +213,12 @@ class VectorStorePathConfig(BaseModel):
 class VectorStoreConfig(BaseModel):
     provider: Literal["qdrant"] = "qdrant"
     mode: Literal["local", "http"] = "local"
-    collection_name: str = "rag_chunks"
-    vector_size: int = Field(default=1536, ge=1)
+    collection_name: str
+    vector_size: int = Field(ge=1)
     distance: Literal["Cosine", "Dot", "Euclid", "Manhattan"] = "Cosine"
     recreate_collection: bool = False
     batch_size: int = Field(default=128, ge=1)
-    local_storage_path: Path = Path("data/qdrant_storage")
+    local_storage_path: Path
     host: str = "localhost"
     port: int = Field(default=6333, ge=1, le=65535)
     https: bool = False
@@ -241,8 +242,8 @@ class VectorStorePipelineConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run: RunConfig = Field(default_factory=lambda: RunConfig(name="rag_vector_store"))
-    paths: VectorStorePathConfig = Field(default_factory=VectorStorePathConfig)
-    vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)
+    paths: VectorStorePathConfig
+    vector_store: VectorStoreConfig
     logging: LoggingConfig = Field(
         default_factory=lambda: LoggingConfig(mlflow_experiment="rag-vector-store")
     )
@@ -253,8 +254,7 @@ def load_config(path: str | Path) -> PipelineConfig:
     base_dir = _config_base_dir(config_path)
     load_dotenv(base_dir / ".env")
 
-    with config_path.open("r", encoding="utf-8") as file:
-        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    raw = load_composed_yaml(config_path)
     config = PipelineConfig.model_validate(raw)
     return _resolve_logging_tracking_uri(
         _resolve_paths(config, base_dir=base_dir),
@@ -267,8 +267,11 @@ def load_chunking_config(path: str | Path) -> ChunkingPipelineConfig:
     base_dir = _config_base_dir(config_path)
     load_dotenv(base_dir / ".env")
 
-    with config_path.open("r", encoding="utf-8") as file:
-        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    raw = apply_rag_profile(
+        load_composed_yaml(config_path),
+        config_path=config_path,
+        target="chunking",
+    )
     config = ChunkingPipelineConfig.model_validate(raw)
     return _resolve_logging_tracking_uri(
         _resolve_chunking_paths(config, base_dir=base_dir),
@@ -281,8 +284,11 @@ def load_embedding_config(path: str | Path) -> EmbeddingPipelineConfig:
     base_dir = _config_base_dir(config_path)
     load_dotenv(base_dir / ".env")
 
-    with config_path.open("r", encoding="utf-8") as file:
-        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    raw = apply_rag_profile(
+        load_composed_yaml(config_path),
+        config_path=config_path,
+        target="embedding",
+    )
     config = EmbeddingPipelineConfig.model_validate(raw)
     env_file = config.embedding.env_file or base_dir / ".env"
     if not env_file.is_absolute():
@@ -323,8 +329,11 @@ def load_vector_store_config(path: str | Path) -> VectorStorePipelineConfig:
     base_dir = _config_base_dir(config_path)
     load_dotenv(base_dir / ".env")
 
-    with config_path.open("r", encoding="utf-8") as file:
-        raw: dict[str, Any] = yaml.safe_load(file) or {}
+    raw = apply_rag_profile(
+        load_composed_yaml(config_path),
+        config_path=config_path,
+        target="vector_store",
+    )
     config = VectorStorePipelineConfig.model_validate(raw)
     return _resolve_logging_tracking_uri(
         _resolve_vector_store_paths(config, base_dir=base_dir),

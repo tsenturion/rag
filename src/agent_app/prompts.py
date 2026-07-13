@@ -3,11 +3,30 @@ from __future__ import annotations
 from agent_app.models import MemoryRecord
 
 
-def system_prompt(*, summary: str, memories: list[MemoryRecord]) -> str:
+def system_prompt(
+    *,
+    summary: str,
+    memories: list[MemoryRecord],
+    rag_enabled: bool = False,
+) -> str:
     memory_block = "\n".join(
         f"- [{record.memory_type}] {record.key}: {record.value}"
         for record in memories[:8]
     )
+    rag_block = ""
+    if rag_enabled:
+        rag_block = (
+            "\nПравила инженерной поддержки и RAG:\n"
+            "- Для вопросов по документации, процедурам, настройке и диагностике сначала "
+            "используй search_knowledge_base или find_runbook.\n"
+            "- Не придумывай сведения, которых нет в результатах retrieval.\n"
+            "- Технические утверждения из базы сопровождай ссылками [Источник N].\n"
+            "- Если база недоступна или релевантных фрагментов нет, прямо сообщи, что "
+            "подтверждённых данных недостаточно.\n"
+            "- Для логов используй analyze_log_fragment, для инцидентов — create_incident, "
+            "get_incident, update_incident_status и list_incidents.\n"
+            "- Не выполняй произвольные shell-команды и не сохраняй секреты.\n"
+        )
     return (
         "Ты учебный агент для демонстрации tools и памяти. Отвечай по-русски, "
         "кратко и по делу.\n\n"
@@ -36,6 +55,7 @@ def system_prompt(*, summary: str, memories: list[MemoryRecord]) -> str:
         "- Если пользователь просит обновить или забыть факт, используй update_memory "
         "или delete_memory.\n"
         "- Не сохраняй API-ключи, пароли, токены и другие секреты.\n\n"
+        f"{rag_block}\n"
         f"Summary memory текущей сессии:\n{summary or 'Пока нет.'}\n\n"
         f"Долговременная память пользователя:\n{memory_block or 'Пока нет.'}"
     )

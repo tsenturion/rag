@@ -8,10 +8,6 @@ from dotenv import load_dotenv
 from huggingface_hub import snapshot_download
 
 
-DEFAULT_MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
-DEFAULT_LOCAL_DIR = Path("data/models/hf/Qwen2.5-1.5B-Instruct")
-
-
 def main() -> None:
     project_root = Path(__file__).resolve().parents[1]
     load_dotenv(project_root / ".env")
@@ -29,7 +25,7 @@ def main() -> None:
             f"{args.token_env}=hf_..."
         )
 
-    local_dir = Path(args.local_dir)
+    local_dir = args.local_dir.expanduser()
     if not local_dir.is_absolute():
         local_dir = project_root / local_dir
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -57,17 +53,21 @@ def main() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Скачивание Hugging Face модели для локального fine-tuning.",
+        description=(
+            "Скачивание произвольной Hugging Face модели в локальную папку проекта."
+        ),
     )
     parser.add_argument(
         "--model-id",
-        default=DEFAULT_MODEL_ID,
-        help=f"ID модели Hugging Face. По умолчанию: {DEFAULT_MODEL_ID}.",
+        required=True,
+        type=_non_empty,
+        help="ID репозитория модели на Hugging Face, например Qwen/Qwen2.5-1.5B-Instruct.",
     )
     parser.add_argument(
         "--local-dir",
-        default=str(DEFAULT_LOCAL_DIR),
-        help=f"Локальная папка. По умолчанию: {DEFAULT_LOCAL_DIR}.",
+        required=True,
+        type=Path,
+        help="Папка назначения относительно корня проекта или абсолютный путь.",
     )
     parser.add_argument(
         "--token-env",
@@ -103,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Отключить предупреждение Hugging Face о symlink-кеше на Windows.",
     )
     return parser
+
+
+def _non_empty(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise argparse.ArgumentTypeError("значение не может быть пустым")
+    return normalized
 
 
 if __name__ == "__main__":

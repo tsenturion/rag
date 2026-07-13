@@ -69,6 +69,7 @@ class EmbeddingValidationTest(unittest.TestCase):
             provider="openai",
             model="test-embedding",
             dimensions=3,
+            api_key_env="TEST_OPENAI_API_KEY",
             fail_on_validation_error=False,
         )
         self.stage = EmbeddingValidationStage(config)

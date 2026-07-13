@@ -28,6 +28,32 @@ class ScenarioEvaluator:
         memory_created_count = len(trace.memory_created_ids) if trace is not None else 0
         memory_updated_count = len(trace.memory_updated_ids) if trace is not None else 0
         loop_guard_triggered = bool(trace and trace.loop_guard_triggered)
+        retrieval_used = response.retrieval is not None
+        retrieval_succeeded = bool(
+            response.retrieval
+            and response.retrieval.status == "ok"
+            and response.citations
+        )
+        protocol_markers = (
+            "recipient_name",
+            "functions.",
+            "<tool_call",
+            '"tool_calls"',
+        )
+        checks.extend(
+            [
+                ScenarioCheck(
+                    name="answer_present",
+                    passed=bool(response.answer.strip()),
+                    details=f"Длина ответа: {len(response.answer.strip())}",
+                ),
+                ScenarioCheck(
+                    name="answer_protocol_clean",
+                    passed=not any(marker in answer for marker in protocol_markers),
+                    details="Финальный ответ не должен содержать разметку tool call.",
+                ),
+            ]
+        )
 
         for expected in criteria.answer_contains:
             checks.append(
@@ -98,6 +124,50 @@ class ScenarioEvaluator:
                     name="loop_guard_not_triggered",
                     passed=not loop_guard_triggered,
                     details=f"loop_guard_triggered={loop_guard_triggered}",
+                )
+            )
+        if criteria.require_citations:
+            checks.append(
+                ScenarioCheck(
+                    name="citations_present",
+                    passed=bool(response.citations),
+                    details=f"Количество citations: {len(response.citations)}",
+                )
+            )
+        if criteria.forbid_citations:
+            checks.append(
+                ScenarioCheck(
+                    name="citations_absent",
+                    passed=not response.citations,
+                    details=f"Количество citations: {len(response.citations)}",
+                )
+            )
+        if criteria.require_retrieval:
+            checks.append(
+                ScenarioCheck(
+                    name="retrieval_used",
+                    passed=retrieval_used,
+                    details=f"retrieval={response.retrieval}",
+                )
+            )
+        if criteria.require_retrieval_success:
+            checks.append(
+                ScenarioCheck(
+                    name="retrieval_succeeded",
+                    passed=retrieval_succeeded,
+                    details=f"retrieval={response.retrieval}",
+                )
+            )
+        if criteria.expected_retrieval_status is not None:
+            actual_status = response.retrieval.status if response.retrieval else None
+            checks.append(
+                ScenarioCheck(
+                    name="retrieval_status",
+                    passed=actual_status == criteria.expected_retrieval_status,
+                    details=(
+                        f"retrieval status: {actual_status}, ожидается: "
+                        f"{criteria.expected_retrieval_status}"
+                    ),
                 )
             )
         if criteria.require_memory_created:

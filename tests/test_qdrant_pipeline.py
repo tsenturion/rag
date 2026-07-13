@@ -23,6 +23,7 @@ class QdrantPipelineTest(unittest.TestCase):
         config = VectorStoreConfig(
             collection_name="test_chunks",
             vector_size=3,
+            local_storage_path=Path("unused-qdrant-storage"),
             recreate_collection=True,
             batch_size=1,
             search_limit=2,

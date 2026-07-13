@@ -175,6 +175,12 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
         )
         return retryer(self._request_embeddings, request)
 
+    def embed_query(self, text: str) -> list[float]:
+        result = self._embed_texts([text])
+        if len(result.vectors) != 1:
+            raise ValueError("OpenAI должен вернуть ровно один query embedding")
+        return result.vectors[0]
+
     def _request_embeddings(self, request: dict[str, object]) -> EmbeddingBatchResult:
         response = self.client.embeddings.create(**request)
         embedded_at = utc_now()
@@ -344,6 +350,17 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
             embedded_at=utc_now(),
         )
 
+    def embed_query(self, text: str) -> list[float]:
+        query_text = (
+            f"{self.config.query_prefix}{text}" if self.config.query_prefix else text
+        )
+        result = self._embed_texts([query_text])
+        if len(result.vectors) != 1:
+            raise ValueError(
+                "Локальная модель должна вернуть ровно один query embedding"
+            )
+        return result.vectors[0]
+
     def _pool(self, outputs: Any, attention_mask: Any) -> Any:
         if self.config.pooling == "cls":
             return outputs.last_hidden_state[:, 0]
@@ -507,6 +524,10 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
             vectors=[[float(value) for value in vector] for vector in vectors],
             embedded_at=utc_now(),
         )
+
+    def embed_query(self, text: str) -> list[float]:
+        vector = self.client.embed_query(text)
+        return [float(value) for value in vector]
 
     def _batches(self, chunks: list[PreparedChunk]) -> Iterable[list[PreparedChunk]]:
         batch: list[PreparedChunk] = []

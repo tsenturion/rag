@@ -61,7 +61,7 @@ class ChangingToolModel(RepeatingToolModel):
 class AgentLoopGuardTest(unittest.TestCase):
     def test_loop_guard_works_for_all_agent_provider_configs(self) -> None:
         config_paths = [
-            PROJECT_ROOT / "config" / "agent.yaml",
+            PROJECT_ROOT / "config" / "agent_openai.yaml",
             PROJECT_ROOT / "config" / "agent_local.yaml",
             PROJECT_ROOT / "config" / "agent_gigachat.yaml",
         ]
@@ -104,7 +104,7 @@ class AgentLoopGuardTest(unittest.TestCase):
 
     def test_changing_tool_loop_stops_before_graph_recursion_limit(self) -> None:
         config_paths = [
-            PROJECT_ROOT / "config" / "agent.yaml",
+            PROJECT_ROOT / "config" / "agent_openai.yaml",
             PROJECT_ROOT / "config" / "agent_local.yaml",
             PROJECT_ROOT / "config" / "agent_gigachat.yaml",
         ]

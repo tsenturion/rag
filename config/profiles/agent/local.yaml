@@ -1,0 +1,9 @@
+agent:
+  provider: local
+  model: data/models/hf/Qwen2.5-1.5B-Instruct
+  adapter_path: null
+  local_device: auto
+  local_dtype: auto
+  local_files_only: true
+  trust_remote_code: true
+  low_cpu_mem_usage: true

@@ -31,7 +31,12 @@ class AgentCliTest(unittest.TestCase):
             patch.object(
                 sys,
                 "argv",
-                ["rag-agent", "--config", "config/agent.yaml", "--run-scenarios"],
+                [
+                    "rag-agent",
+                    "--config",
+                    "config/agent_openai.yaml",
+                    "--run-scenarios",
+                ],
             ),
             patch("builtins.print"),
         ):

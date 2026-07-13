@@ -1,24 +1,21 @@
 run:
-  name: rag_vector_store
+  name: rag_vector_store_docker_local
   seed: 42
 
+rag_profile: profiles/rag/local.yaml
+
 paths:
-  input_jsonl: data/embeddings/embeddings.jsonl
-  output_dir: data/vector_store
+  input_jsonl: data/embeddings_local/embeddings.jsonl
+  output_dir: data/vector_store_docker_local
   manifest_filename: manifest.json
   validation_filename: validation.json
   search_results_filename: search_results.json
 
 vector_store:
-  provider: qdrant
-  mode: local
-  collection_name: rag_chunks
-  vector_size: 1536
-  distance: Cosine
-  recreate_collection: true
+  mode: http
+  recreate_collection: false
   batch_size: 128
-  local_storage_path: data/qdrant_storage
-  host: localhost
+  host: qdrant
   port: 6333
   https: false
   api_key_env: null
@@ -31,6 +28,6 @@ vector_store:
 
 logging:
   level: INFO
-  mlflow_enabled: true
+  mlflow_enabled: false
   mlflow_tracking_uri: mlruns
-  mlflow_experiment: rag-vector-store
+  mlflow_experiment: rag-vector-store-docker-local

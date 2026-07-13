@@ -16,6 +16,39 @@ from agent_app.tools.memory_tools import memory_tools  # noqa: E402
 
 
 class MemoryIsolationTest(unittest.TestCase):
+    def test_search_falls_back_to_recent_accessible_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite")
+            store.save(
+                user_id="user",
+                session_id="session-1",
+                key="current_component",
+                value="billing-api",
+            )
+            store.save(
+                user_id="user",
+                session_id="session-2",
+                key="other_component",
+                value="private-worker",
+            )
+            tools = {
+                tool.name: tool
+                for tool in memory_tools(
+                    store,
+                    user_id="user",
+                    session_id="session-1",
+                    default_search_limit=5,
+                )
+            }
+
+            result = json.loads(
+                tools["search_memory"].invoke({"query": "текущий компонент"})
+            )
+
+            self.assertTrue(result["fallback_to_recent"])
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["records"][0]["value"], "billing-api")
+
     def test_memory_id_operations_are_scoped_to_current_user(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite")

@@ -58,7 +58,7 @@ class SummaryMemoryTest(unittest.TestCase):
 
     def test_summary_failure_does_not_discard_ready_answer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config = load_agent_config(PROJECT_ROOT / "config" / "agent.yaml")
+            config = load_agent_config(PROJECT_ROOT / "config" / "agent_openai.yaml")
             config = config.model_copy(
                 update={
                     "agent": config.agent.model_copy(

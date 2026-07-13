@@ -7,6 +7,8 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
+from agent_app.rag.models import RagCitation
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -67,11 +69,24 @@ class AgentTrace(BaseModel):
     recursion_limit: int
 
 
+class AgentRetrievalInfo(BaseModel):
+    status: str
+    retrieved_count: int = 0
+    used_count: int = 0
+    context_tokens: int = 0
+    provider: str | None = None
+    model: str | None = None
+    collection_name: str | None = None
+    error: str | None = None
+
+
 class AgentResponse(BaseModel):
     answer: str
     user_id: str
     session_id: str
     tool_calls: list[str] = Field(default_factory=list)
+    citations: list[RagCitation] = Field(default_factory=list)
+    retrieval: AgentRetrievalInfo | None = None
     trace: AgentTrace | None = None
 
 

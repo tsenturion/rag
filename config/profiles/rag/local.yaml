@@ -1,0 +1,25 @@
+tokenizer_model: cl100k_base
+
+embedding:
+  provider: local
+  model: data/models/hf/multilingual-e5-small
+  dimensions: 384
+  api_key_env: HF_TOKEN
+  max_input_tokens: 512
+  normalize: true
+  local_device: auto
+  local_dtype: auto
+  local_files_only: true
+  trust_remote_code: false
+  pooling: mean
+  passage_prefix: "passage: "
+  query_prefix: "query: "
+  hub_disable_xet: true
+  hub_disable_symlink_warning: true
+
+vector_store:
+  provider: qdrant
+  collection_name: rag_chunks_local
+  vector_size: 384
+  distance: Cosine
+  local_storage_path: data/qdrant_storage_local

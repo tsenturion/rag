@@ -1,0 +1,6 @@
+extends: ../agent/local.yaml
+
+agent:
+  max_new_tokens: 512
+  timeout_seconds: 120
+  max_retries: 0

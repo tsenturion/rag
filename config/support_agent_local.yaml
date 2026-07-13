@@ -1,0 +1,11 @@
+extends:
+  - profiles/support/base.yaml
+  - profiles/support/agent_local.yaml
+  - profiles/support/rag_runtime_local.yaml
+  - profiles/support/state_local.yaml
+  - profiles/support/deployment_host.yaml
+
+rag_profile: profiles/rag/local.yaml
+
+service:
+  session_cache_size: 64

@@ -1,7 +1,6 @@
+extends: profiles/agent/local.yaml
+
 agent:
-  provider: local
-  model: data/models/hf/Qwen2.5-1.5B-Instruct
-  adapter_path: null
   temperature: 0
   max_new_tokens: 512
   max_history_messages: 3
@@ -10,11 +9,6 @@ agent:
   max_retries: 0
   recursion_limit: 14
   tool_error_retries: 1
-  local_device: auto
-  local_dtype: auto
-  local_files_only: true
-  trust_remote_code: true
-  low_cpu_mem_usage: true
 
 memory:
   sqlite_path: data/agent/memory.sqlite

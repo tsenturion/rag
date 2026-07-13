@@ -1,0 +1,6 @@
+extends: deployment_docker.yaml
+
+rag:
+  embedding:
+    local_device: cpu
+    local_dtype: fp32

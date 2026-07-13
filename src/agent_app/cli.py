@@ -41,8 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_russian_help(parser)
     parser.add_argument(
         "--config",
-        default="config/agent.yaml",
-        help="Путь к YAML-конфигу агента.",
+        required=True,
+        help="Путь к явному provider-конфигу агента.",
     )
     parser.add_argument(
         "--message", default=None, help="Одно сообщение для отправки агенту."
@@ -139,6 +139,7 @@ def main() -> int:
         payload = report.model_dump(mode="json")
         payload["report_path"] = str(report_path)
         _print_scenario_report(payload, as_json=args.json)
+        scenario_runner.close()
         return 0 if report.passed else 1
 
     runner = AgentRunner(
@@ -148,9 +149,12 @@ def main() -> int:
     )
 
     if args.message:
-        response = runner.ask(args.message)
-        _print_response(response.model_dump(mode="json"), as_json=args.json)
-        return 0
+        try:
+            response = runner.ask(args.message)
+            _print_response(response.model_dump(mode="json"), as_json=args.json)
+            return 0
+        finally:
+            runner.close()
 
     print("Интерактивный режим. Введите exit, quit или выход для завершения.")
     while True:
@@ -165,6 +169,7 @@ def main() -> int:
             continue
         response = runner.ask(message)
         _print_response(response.model_dump(mode="json"), as_json=args.json)
+    runner.close()
     return 0
 
 

@@ -18,7 +18,14 @@ from rag_prep.config import ChunkingConfig  # noqa: E402
 
 class ChunkOverlapTest(unittest.TestCase):
     def test_large_semantic_block_is_not_used_as_oversized_overlap(self) -> None:
-        stage = ChunkSplittingStage(ChunkingConfig(chunk_size=100, chunk_overlap=10))
+        stage = ChunkSplittingStage(
+            ChunkingConfig(
+                chunk_size=100,
+                chunk_overlap=10,
+                tokenizer_model="cl100k_base",
+                embedding_model="test-embedding",
+            )
+        )
         previous = self._block(stage, "данные " * 30, position=0)
         next_block = self._block(stage, "результат " * 20, position=1)
         self.assertGreater(previous.token_count, stage.config.chunk_overlap)

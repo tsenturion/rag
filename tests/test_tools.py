@@ -13,7 +13,12 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agent_app.config import AgentAppConfig, MemoryConfig, WeatherConfig  # noqa: E402
+from agent_app.config import (  # noqa: E402
+    AgentAppConfig,
+    AgentConfig,
+    MemoryConfig,
+    WeatherConfig,
+)
 from agent_app.memory.store import SQLiteMemoryStore  # noqa: E402
 from agent_app.tools.calculator import calculate, calculator_tool  # noqa: E402
 from agent_app.tools.registry import build_tools  # noqa: E402
@@ -53,7 +58,8 @@ class ToolsTest(unittest.TestCase):
     def test_registry_contains_operational_and_memory_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             config = AgentAppConfig(
-                memory=MemoryConfig(sqlite_path=Path(temporary_dir) / "memory.sqlite")
+                agent=AgentConfig(provider="local", model="test-model"),
+                memory=MemoryConfig(sqlite_path=Path(temporary_dir) / "memory.sqlite"),
             )
             store = SQLiteMemoryStore(config.memory.sqlite_path)
             names = {
