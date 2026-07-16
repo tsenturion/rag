@@ -39,6 +39,14 @@ MLflow tracking по умолчанию пишется в `mlruns/` относи
 В `manifest.json` сохраняются параметры запуска, числовые счётчики и диагностический блок `parse_failures` для файлов, которые не удалось разобрать при `parser.fail_on_error: false`.
 JSON, JSONL и manifest сначала полностью формируются во временной директории, а затем заменяются как согласованный набор. При ошибке записи или замены предыдущая версия всех артефактов восстанавливается, поэтому новый JSON не смешивается со старым JSONL или manifest.
 
+Посмотреть запуски, параметры, метрики и артефакты в MLflow UI можно из корня проекта:
+
+```powershell
+mlflow ui --backend-store-uri ./mlruns --host 127.0.0.1 --port 5000
+```
+
+Интерфейс будет доступен на `http://127.0.0.1:5000`. Команда запускает долгоживущий локальный сервер MLflow и работает до `Ctrl+C`; открывать интерфейс нужно в браузере, а следующие команды выполнять во втором терминале.
+
 ## Установка
 
 Проект рассчитан на установку в текущий глобальный Python, без создания отдельного окружения. Команды нужно выполнять из корня проекта.
@@ -57,6 +65,14 @@ python -m pip install -e . --no-deps
 
 Флаг `--no-deps` уместен, если зависимости уже установлены через `requirements.txt`. Если проект переносится на новую машину, сначала ставится `requirements.txt`, затем локальный пакет.
 
+При первой установке создать рабочий `.env` из примера:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Команда нужна только пока `.env` ещё не существует. После копирования замените placeholders ключами выбранных providers и задайте `SUPPORT_AGENT_CONFIG` и `VECTOR_STORE_CONFIG` для Docker-сценария. Рабочий `.env` содержит секреты, уже исключён из Git и не должен публиковаться; `.env.example` хранит только безопасный шаблон.
+
 Проверить целостность глобального окружения:
 
 ```powershell
@@ -66,11 +82,12 @@ python -m pip check
 На Windows для Unstructured дополнительно установлен `python-magic-bin`, чтобы `unstructured.partition.auto` корректно определял типы файлов. Для OCR-режимов PDF могут понадобиться системные Tesseract и Poppler, но для текстовых PDF достаточно `parser.strategy: fast`.
 Команда `rag-prep` перед запуском Prefect добавляет `localhost`, `127.0.0.1` и `::1` в `NO_PROXY`, чтобы локальный временный сервер Prefect не ломался из-за системных proxy-настроек. Для локальных CLI-запусков также отключается Prefect EventsWorker: это не мешает оркестрации, но не даёт процессу зависать на websocket-событиях временного сервера. Внешние API, включая OpenAI, при этом не отключаются от системного proxy. Импорт `rag_prep.flow` сам по себе переменные окружения не меняет.
 
-## Команды rag-prep и rag-support
+## Команды rag-prep, rag-index и rag-support
 
-`rag-prep` и `rag-support` решают разные задачи:
+Три консольные команды решают разные задачи:
 
 - `rag-prep` запускает конечный batch-пайплайн, сохраняет артефакты и завершает процесс;
+- `rag-index` загружает уже готовые embeddings в Qdrant без запуска остальных offline-пайплайнов;
 - `rag-support` запускает долгоживущий HTTP API поверх уже подготовленной Qdrant collection;
 - Docker Compose запускает тот же `rag-support` внутри контейнера, поэтому после deploy сервисом можно пользоваться через порт `8000`.
 
@@ -120,6 +137,35 @@ rag-prep --help
 rag-prep embed --help
 ```
 
+### rag-index
+
+Форма команды:
+
+```powershell
+rag-index --config <vector-store.yaml>
+```
+
+`rag-index` читает готовый `embeddings.jsonl`, создаёт или обновляет выбранную Qdrant collection, валидирует количество и размерность vectors, выполняет smoke similarity search и сохраняет те же отчёты vector-store stage. Он не запускает подготовку, чанкинг, расчёт embeddings, Prefect или MLflow.
+
+Для embedded Qdrant на Windows host:
+
+```powershell
+rag-index --config config/vector_store_openai.yaml
+rag-index --config config/vector_store_local.yaml
+```
+
+Это лёгкая альтернатива `rag-prep vector-store --config ... --no-prefect` для уже подготовленных embeddings. Docker-конфиги содержат hostname `qdrant`, доступный только внутри Compose-сети, поэтому `config/vector_store_docker_*.yaml` запускаются через сервис `indexer`, а не командой `rag-index` непосредственно на Windows host:
+
+```powershell
+docker compose --profile indexing run --rm indexer
+```
+
+Справка:
+
+```powershell
+rag-index --help
+```
+
 ### rag-support
 
 Форма команды:
@@ -128,7 +174,7 @@ rag-prep embed --help
 rag-support --config <support-agent.yaml> [--host HOST] [--port PORT]
 ```
 
-Команда запускает Uvicorn/FastAPI в текущем терминале и работает до `Ctrl+C`. Она подключает LLM, tools, memory и online RAG, но не запускает `prepare`, `chunk`, `embed` или индексацию. Поэтому перед стартом должна существовать Qdrant collection, соответствующая `rag_profile` выбранного support-конфига.
+Команда запускает Uvicorn/FastAPI в текущем терминале и работает до `Ctrl+C`. После сообщения `Uvicorn running on ...` терминал занят сервером ожидаемо: это HTTP-сервис, а не интерактивный консольный чат. Swagger или Postman открываются отдельно, а `Invoke-RestMethod` и другие команды выполняются во втором окне PowerShell. Сервис подключает LLM, tools, memory и online RAG, но не запускает `prepare`, `chunk`, `embed` или индексацию. Поэтому перед стартом должна существовать Qdrant collection, соответствующая `rag_profile` выбранного support-конфига.
 
 Пример host-запуска с OpenAI:
 
@@ -162,6 +208,14 @@ rag-support
 ```powershell
 rag-support --config config/support_agent_openai.yaml --host 0.0.0.0 --port 8080
 ```
+
+Host-сервис и Docker-контейнер нельзя одновременно привязать к одному host-порту. Если Docker уже публикует `8000`, используйте только контейнер, остановите его через `docker compose down` либо запустите локальный сервер на другом порту:
+
+```powershell
+rag-support --config config/support_agent_openai.yaml --port 8001
+```
+
+В последнем случае base URL, Swagger и API меняются на `http://127.0.0.1:8001`, `http://127.0.0.1:8001/docs` и `http://127.0.0.1:8001/v1/chat` соответственно.
 
 После запуска доступны `/health`, `/ready`, `/docs`, `/redoc`, `/openapi.json`, `/metrics` и API `/v1/*`. Host-presets не требуют `X-API-Key`; Docker-presets требуют его через `SUPPORT_SERVICE_API_KEY`.
 
@@ -1501,6 +1555,8 @@ rag-prep vector-store --config config/vector_store_openai.yaml --no-prefect
 rag-support --config config/support_agent_openai.yaml
 ```
 
+Оставьте это окно PowerShell работающим. После строки `Uvicorn running on http://127.0.0.1:8000` откройте второе окно PowerShell для проверочных HTTP-запросов либо браузер со Swagger `http://127.0.0.1:8000/docs`. Вводить пользовательские сообщения в терминал Uvicorn не нужно.
+
 Запуск с GigaChat и существующими OpenAI embeddings:
 
 ```powershell
@@ -1536,6 +1592,17 @@ Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
 `/health` проверяет процесс, `/ready` дополнительно проверяет LLM, security configuration, Qdrant collection и размерность vectors. Readiness не отправляет платный запрос в LLM.
+
+Типовые ситуации при запуске:
+
+| Симптом | Причина и действие |
+|---|---|
+| Сервер запустился, но в текущем терминале нельзя вводить команды | Это штатная работа Uvicorn. Оставьте сервер запущенным и используйте второй терминал, Swagger или Postman |
+| `WinError 10048` при bind на `127.0.0.1:8000` | Порт уже занят, часто Docker-контейнером. Остановите один из сервисов или передайте `--port 8001` |
+| HTTP 401 | Docker preset требует правильный `X-API-Key`, равный `SUPPORT_SERVICE_API_KEY` из `.env` |
+| HTTP 503 от `/ready` | Проверьте блок `details`: обычно отсутствует provider key или Qdrant collection либо не совпадает embedding model/vector size |
+| Ошибка lock embedded Qdrant | Другой процесс уже открыл тот же `data/qdrant_storage_*`; завершите его и повторите запуск |
+| Local Qwen/E5 перешёл на CPU или получил XPU OOM | Проверьте `torch.xpu.is_available()`, закройте другие процессы с моделью; CPU остаётся функциональным fallback |
 
 ## API
 
@@ -1693,6 +1760,8 @@ docker compose build
 docker compose up -d qdrant
 ```
 
+Host- и Docker-хранилища Qdrant независимы. Каталоги `data/qdrant_storage_openai`, `data/qdrant_storage_local` и `data/qdrant_storage_gigachat` относятся к embedded host-режиму и автоматически не попадают в Docker volume `qdrant_data`. Даже если host-индекс уже существует, при первом Docker-запуске соответствующие готовые `data/embeddings_*/embeddings.jsonl` нужно один раз загрузить через Compose-сервис `indexer`.
+
 Image содержит CPU-сборку PyTorch и Transformers, а `data/models` монтируется read-only. Поэтому один image поддерживает все четыре Docker-сценария. Локальный Qwen в базовом Docker Compose работает на CPU; для Intel XPU используйте host-конфиг `support_agent_local.yaml`.
 
 ### Docker: OpenAI LLM и OpenAI embeddings
@@ -1823,6 +1892,47 @@ Qdrant одновременно хранит `rag_chunks_openai` и `rag_chunks_
 
 Qdrant и SQLite используют persistent volumes `qdrant_data` и `agent_data`. После `docker compose restart` индекс, память и incidents сохраняются.
 
+Перед обновлением или переносом deployment volumes можно сохранить в архивы. Команды выполняются из корня проекта при уже созданных контейнерах:
+
+```powershell
+$backupDir = Join-Path $HOME "rag-backups"
+New-Item -ItemType Directory -Force $backupDir | Out-Null
+
+docker compose stop support-agent qdrant
+$qdrantContainer = docker compose ps -aq qdrant
+$agentContainer = docker compose ps -aq support-agent
+
+docker run --rm --volumes-from $qdrantContainer `
+  --mount "type=bind,source=$backupDir,target=/backup" `
+  alpine:3.21 tar -czf /backup/qdrant_data.tar.gz -C /qdrant/storage .
+
+docker run --rm --volumes-from $agentContainer `
+  --mount "type=bind,source=$backupDir,target=/backup" `
+  alpine:3.21 tar -czf /backup/agent_data.tar.gz -C /app/data/agent .
+
+docker compose start qdrant support-agent
+```
+
+Архивы `$HOME/rag-backups/qdrant_data.tar.gz` и `$HOME/rag-backups/agent_data.tar.gz` содержат соответственно индекс и память/инциденты. Каталог выбран вне репозитория: backup может содержать пользовательские и служебные данные, поэтому его нельзя добавлять в Git. Для восстановления сначала остановите сервисы и убедитесь, что архивы относятся к совместимой версии приложения и Qdrant. Восстановление заменяет текущее содержимое volumes, поэтому перед ним сохраните отдельную резервную копию:
+
+```powershell
+docker compose stop support-agent qdrant
+$qdrantContainer = docker compose ps -aq qdrant
+$agentContainer = docker compose ps -aq support-agent
+$backupDir = Join-Path $HOME "rag-backups"
+
+docker run --rm --volumes-from $qdrantContainer `
+  --mount "type=bind,source=$backupDir,target=/backup,readonly" `
+  alpine:3.21 sh -c 'rm -rf /qdrant/storage/* /qdrant/storage/.[!.]* /qdrant/storage/..?*; tar -xzf /backup/qdrant_data.tar.gz -C /qdrant/storage'
+
+docker run --rm --volumes-from $agentContainer `
+  --mount "type=bind,source=$backupDir,target=/backup,readonly" `
+  alpine:3.21 sh -c 'rm -rf /app/data/agent/* /app/data/agent/.[!.]* /app/data/agent/..?*; tar -xzf /backup/agent_data.tar.gz -C /app/data/agent'
+
+docker compose start qdrant support-agent
+Invoke-RestMethod http://127.0.0.1:8000/ready
+```
+
 Остановить сервисы:
 
 ```powershell
@@ -1851,8 +1961,8 @@ rag-agent `
 
 ```powershell
 python -m unittest discover -s tests -v
-python -m ruff check src tests
-python -m ruff format --check src tests
+python -m ruff check src tests scripts
+python -m ruff format --check src tests scripts
 ```
 
 Покрыты:
