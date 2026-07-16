@@ -9,6 +9,19 @@ multi_agent:
   message_ttl_seconds: 60
   token_budget: 12000
   output_dir: data/multi_agent/runs
+  checkpoint_path: data/agent/multi_agent_checkpoints.sqlite
+  max_history_messages: 12
+  summary_enabled: true
+  tool_max_iterations: 4
+  tool_output_max_chars: 12000
+  role_tool_allowlists:
+    tool_agent:
+      - calculator
+      - current_datetime
+      - get_weather
+      - list_workspace_files
+      - read_workspace_file
+      - execute_python
   cost:
     input_cost_per_million: 0.0
     output_cost_per_million: 0.0
@@ -22,6 +35,31 @@ multi_agent:
   mlflow_enabled: true
   mlflow_tracking_uri: mlruns
   mlflow_experiment: rag-multi-agent
+
+file_tools:
+  enabled: true
+  workspace_path: data/agent/workspace
+  allow_write: false
+  allow_hidden_files: false
+  max_file_bytes: 1000000
+  max_list_entries: 200
+  allowed_extensions:
+    - .txt
+    - .md
+    - .json
+    - .yaml
+    - .yml
+    - .csv
+    - .log
+    - .py
+
+code_runner:
+  enabled: true
+  base_url: http://127.0.0.1:8010
+  api_key_env: CODE_RUNNER_API_KEY
+  timeout_seconds: 8
+  max_code_chars: 12000
+  max_output_chars: 12000
 
 tools:
   mcp_servers: []

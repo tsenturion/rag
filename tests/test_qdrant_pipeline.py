@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from qdrant_client import QdrantClient
 
@@ -48,6 +49,16 @@ class QdrantPipelineTest(unittest.TestCase):
         self.assertEqual(validation.sampled_points_count, 2)
         self.assertEqual(len(search), 2)
         self.assertTrue(all(result.self_match_at_1 for result in search))
+
+    def test_search_hit_tolerates_missing_payload(self) -> None:
+        hit = QdrantSearchStage._hit(
+            SimpleNamespace(id="point-without-payload", score=0.5, payload=None)
+        )
+
+        self.assertEqual(hit.point_id, "point-without-payload")
+        self.assertEqual(hit.score, 0.5)
+        self.assertIsNone(hit.chunk_id)
+        self.assertEqual(hit.metadata, {})
 
     @staticmethod
     def _embedded_chunk(

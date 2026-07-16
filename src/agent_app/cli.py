@@ -10,6 +10,7 @@ from agent_app.config import load_agent_config
 from agent_app.graph import AgentRunner
 from agent_app.memory import SQLiteMemoryStore
 from agent_app.multi_agent.exporting import MultiAgentExporter
+from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
 from agent_app.multi_agent.protocols.simulation import run_protocol_simulation
 from agent_app.multi_agent.runtime import (
     MultiAgentRuntime,
@@ -74,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--clear-session-memory",
         action="store_true",
         help="Очистить память текущей сессии и выйти.",
+    )
+    parser.add_argument(
+        "--list-multi-agent-history",
+        action="store_true",
+        help="Показать persistent историю multi-agent сессии и выйти.",
     )
     parser.add_argument(
         "--scenarios-config",
@@ -202,6 +208,25 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
+    if args.list_multi_agent_history:
+        checkpoints = MultiAgentCheckpointStore(config.multi_agent.checkpoint_path)
+        try:
+            history = [
+                {
+                    "id": message.id,
+                    "type": message.type,
+                    "content": str(message.content),
+                }
+                for message in checkpoints.history(
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+            ]
+        finally:
+            checkpoints.close()
+        print(json.dumps(history, ensure_ascii=False, indent=2))
+        return 0
+
     if args.multi_agent or args.compare_agents:
         if not config.multi_agent.enabled:
             raise ValueError(
@@ -252,8 +277,25 @@ def main() -> int:
     if args.clear_session_memory:
         store = SQLiteMemoryStore(config.memory.sqlite_path)
         deleted_count = store.clear_session(user_id=user_id, session_id=session_id)
+        checkpoint_deleted = False
+        if config.multi_agent.enabled:
+            checkpoints = MultiAgentCheckpointStore(config.multi_agent.checkpoint_path)
+            try:
+                checkpoint_deleted = checkpoints.clear(
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+            finally:
+                checkpoints.close()
         print(
-            json.dumps({"deleted_count": deleted_count}, ensure_ascii=False, indent=2)
+            json.dumps(
+                {
+                    "deleted_count": deleted_count,
+                    "multi_agent_checkpoint_deleted": checkpoint_deleted,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
         )
         return 0
 
@@ -333,8 +375,9 @@ def _print_scenario_report(payload: dict[str, object], *, as_json: bool) -> None
 
 def _configure_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 if __name__ == "__main__":

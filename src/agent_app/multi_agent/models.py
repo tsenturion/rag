@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 from agent_app.models import AgentResponse, utc_now
 from agent_app.rag.models import RagCitation
@@ -70,6 +72,7 @@ class AgentTask(BaseModel):
     capability: str
     title: str
     instruction: str
+    required_tools: list[str] = Field(default_factory=list)
     assigned_to: str | None = None
     state: TaskExecutionState = TaskExecutionState.PENDING
     position: int = Field(default=0, ge=0)
@@ -165,6 +168,8 @@ class MultiAgentResponse(BaseModel):
     task_results: list[AgentTaskResult] = Field(default_factory=list)
     citations: list[RagCitation] = Field(default_factory=list)
     review: str = ""
+    history_messages_used: int = 0
+    summary_used: bool = False
     llm_routes: list[LLMRouteInfo] = Field(default_factory=list)
     lifecycle: list[LifecycleEvent] = Field(default_factory=list)
     usage: UsageMetrics = Field(default_factory=UsageMetrics)
@@ -224,6 +229,7 @@ class ComparisonScenario(BaseModel):
     title: str
     request: str
     expected_terms: list[str] = Field(default_factory=list)
+    expected_tools: list[str] = Field(default_factory=list)
     require_citations: bool = False
     max_agents: int | None = Field(default=None, ge=1)
 
@@ -237,6 +243,7 @@ class MultiAgentGraphState(TypedDict):
     user_id: str
     session_id: str
     request: str
+    history: Annotated[list[BaseMessage], add_messages]
     tasks: list[AgentTask]
     task_results: list[AgentTaskResult]
     review: str

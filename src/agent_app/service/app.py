@@ -7,6 +7,7 @@ import os
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security, status
@@ -70,13 +71,13 @@ API_KEY_HEADER = APIKeyHeader(
     auto_error=False,
 )
 
-REQUEST_ID_HEADER = {
+REQUEST_ID_HEADER: dict[str, Any] = {
     "description": "Корреляционный идентификатор запроса.",
     "schema": {"type": "string", "format": "uuid"},
 }
 
 
-def _error_responses(*status_codes: int) -> dict[int, dict[str, object]]:
+def _error_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
     descriptions = {
         401: "API key отсутствует или некорректен.",
         413: "Размер запроса или сообщения превышает установленный предел.",
@@ -84,14 +85,14 @@ def _error_responses(*status_codes: int) -> dict[int, dict[str, object]]:
         500: "Непредвиденная ошибка выполнения агента.",
         503: "Сервис, LLM или RAG временно не готов к обработке запроса.",
     }
-    return {
-        code: {
+    responses: dict[int | str, dict[str, Any]] = {}
+    for code in status_codes:
+        responses[code] = {
             "model": ApiError,
             "description": descriptions[code],
             "headers": {"X-Request-ID": REQUEST_ID_HEADER},
         }
-        for code in status_codes
-    }
+    return responses
 
 
 def create_app(
@@ -375,6 +376,7 @@ def create_app(
             session_id=payload.session_id,
             message=payload.message,
             expected_terms=payload.expected_terms,
+            expected_tools=payload.expected_tools,
             require_citations=payload.require_citations,
         )
         return MultiAgentCompareResponse(

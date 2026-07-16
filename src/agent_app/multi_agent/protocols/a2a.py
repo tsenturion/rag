@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
@@ -40,8 +41,8 @@ from a2a.types import (
     UnsupportedOperationError,
 )
 from fastapi import FastAPI
-from google.protobuf.json_format import MessageToDict
-from google.protobuf.struct_pb2 import Struct
+from google.protobuf.json_format import MessageToDict, Parse
+from google.protobuf.struct_pb2 import Struct, Value
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from agent_app.config import AgentAppConfig
@@ -194,7 +195,8 @@ class MultiAgentA2AHandler(RequestHandler):
     ) -> AsyncGenerator[Any]:
         del params, context
         raise UnsupportedOperationError("Streaming A2A в этом модуле отключён")
-        yield
+        # Недостижимый yield сохраняет контракт AsyncGenerator официального SDK.
+        yield  # noqa
 
     async def on_create_task_push_notification_config(
         self,
@@ -219,7 +221,8 @@ class MultiAgentA2AHandler(RequestHandler):
     ) -> AsyncGenerator[Any]:
         del params, context
         raise UnsupportedOperationError("Task subscription не поддерживается")
-        yield
+        # Недостижимый yield сохраняет контракт AsyncGenerator официального SDK.
+        yield  # noqa
 
     async def on_list_task_push_notification_configs(
         self,
@@ -327,13 +330,11 @@ def _timestamp() -> Timestamp:
 
 def _struct(payload: dict[str, object]) -> Struct:
     value = Struct()
-    value.update(payload)
+    Parse(json.dumps(payload, ensure_ascii=False), value)
     return value
 
 
-def _value(payload: object):
-    from google.protobuf.struct_pb2 import Value
-
+def _value(payload: object) -> Value:
     value = Value()
-    value.struct_value.update(payload)
+    Parse(json.dumps(payload, ensure_ascii=False), value)
     return value

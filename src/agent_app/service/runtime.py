@@ -24,6 +24,7 @@ from agent_app.service.schemas import DeleteSessionResponse, SessionResponse
 from agent_app.support.incidents import IncidentStore
 from agent_app.support.security import redact_secrets
 from agent_app.tools.mcp_external import ExternalMCPToolManager
+from agent_app.tools.code_runner import code_runner_status
 
 LOGGER = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class SupportApplicationRuntime:
         session_id: str,
         message: str,
         expected_terms: list[str],
+        expected_tools: list[str],
         require_citations: bool,
     ) -> tuple[MultiAgentComparisonReport, float]:
         started = perf_counter()
@@ -93,6 +95,7 @@ class SupportApplicationRuntime:
                     title="Сравнение по API-запросу",
                     request=message,
                     expected_terms=expected_terms,
+                    expected_tools=expected_tools,
                     require_citations=require_citations,
                 )
             ]
@@ -120,6 +123,14 @@ class SupportApplicationRuntime:
             session_id=session_id,
             memory=[record.model_dump(mode="json") for record in memory],
             incidents=[record.model_dump(mode="json") for record in incidents],
+            multi_agent_history=(
+                self.multi_agent_runtime.session_history(
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                if self.multi_agent_runtime is not None
+                else []
+            ),
         )
 
     def delete_session(self, *, user_id: str, session_id: str) -> DeleteSessionResponse:
@@ -132,11 +143,20 @@ class SupportApplicationRuntime:
         if runner is not None:
             runner.short_term.clear()
             runner.close()
+        checkpoint_deleted = (
+            self.multi_agent_runtime.clear_session(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if self.multi_agent_runtime is not None
+            else False
+        )
         return DeleteSessionResponse(
             user_id=user_id,
             session_id=session_id,
             deleted_memory_count=deleted,
             runner_removed=runner is not None,
+            multi_agent_checkpoint_deleted=checkpoint_deleted,
         )
 
     def readiness(self) -> dict[str, Any]:
@@ -149,7 +169,14 @@ class SupportApplicationRuntime:
         multi_agent_ready = (
             not self.config.multi_agent.enabled or self.multi_agent_runtime is not None
         )
-        ready = llm_ready and bool(rag["ready"]) and api_key_ready and multi_agent_ready
+        runner = code_runner_status(self.config.code_runner)
+        ready = (
+            llm_ready
+            and bool(rag["ready"])
+            and api_key_ready
+            and multi_agent_ready
+            and bool(runner["ready"])
+        )
         return {
             "ready": ready,
             "llm": {
@@ -181,6 +208,7 @@ class SupportApplicationRuntime:
                 ),
             },
             "external_mcp": self.external_mcp_manager.status(),
+            "code_runner": runner,
         }
 
     def close(self) -> None:

@@ -23,6 +23,12 @@ class MultiAgentConfigTest(unittest.TestCase):
                 self.assertTrue(config.multi_agent.enabled)
                 self.assertEqual(config.agent.provider, provider)
                 self.assertEqual(config.multi_agent.execution_mode, execution_mode)
+                self.assertTrue(config.multi_agent.checkpoint_path.is_absolute())
+                self.assertTrue(config.file_tools.workspace_path.is_absolute())
+                self.assertEqual(
+                    config.code_runner.base_url,
+                    "http://127.0.0.1:8010",
+                )
                 self.assertIsNotNone(config.rag.embedding)
                 self.assertIsNotNone(config.rag.vector_store)
                 self.assertEqual(
@@ -45,6 +51,10 @@ class MultiAgentConfigTest(unittest.TestCase):
                 self.assertTrue(config.multi_agent.enabled)
                 self.assertTrue(config.security.require_api_key)
                 self.assertEqual(config.service.host, "0.0.0.0")
+                self.assertEqual(
+                    config.code_runner.base_url,
+                    "http://code-runner:8010",
+                )
                 self.assertIsNotNone(config.rag.vector_store)
                 self.assertEqual(config.rag.vector_store.mode, "http")
 

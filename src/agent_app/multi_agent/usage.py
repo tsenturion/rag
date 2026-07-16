@@ -39,6 +39,16 @@ class LLMCallTracker:
         self._inflight_reserved_tokens = 0
 
     def invoke(self, messages: list[Any], role: str) -> str:
+        response = self.invoke_response(messages, role)
+        return self._content(response)
+
+    def invoke_response(
+        self,
+        messages: list[Any],
+        role: str,
+        *,
+        tools: list[Any] | None = None,
+    ) -> Any:
         route = self.route_resolver(role) if self.route_resolver is not None else None
         llm = route.llm if route is not None else self.llm
         model = route.model if route is not None else self.model
@@ -78,11 +88,27 @@ class LLMCallTracker:
             self._inflight_reserved_tokens += reserved_tokens
         started = perf_counter()
         try:
+            target: Any = llm
+            if tools:
+                bind_tools = getattr(llm, "bind_tools", None)
+                if not callable(bind_tools):
+                    raise RuntimeError(
+                        f"LLM роли {role} не поддерживает function calling"
+                    )
+                if not serialize:
+                    target = bind_tools(tools)
             if serialize:
                 with self._invoke_lock(llm):
-                    response = llm.invoke(messages)
+                    previous_tools = getattr(llm, "bound_tools", None)
+                    try:
+                        if tools:
+                            target = llm.bind_tools(tools)
+                        response = target.invoke(messages)
+                    finally:
+                        if tools and previous_tools is not None:
+                            llm.bound_tools = previous_tools
             else:
-                response = llm.invoke(messages)
+                response = target.invoke(messages)
             duration_ms = (perf_counter() - started) * 1000
             content = self._content(response)
             input_tokens, output_tokens, estimated = self._tokens(
@@ -107,7 +133,7 @@ class LLMCallTracker:
         with self._lock:
             self._inflight_reserved_tokens -= reserved_tokens
             self._usage = self._usage.add(delta)
-        return content
+        return response
 
     def snapshot(self) -> UsageMetrics:
         with self._lock:

@@ -22,6 +22,7 @@ from agent_app.multi_agent.models import (
     MultiAgentRunResult,
 )
 from agent_app.multi_agent.llm_routing import MultiAgentLLMRegistry
+from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
 from agent_app.multi_agent.tracking import MultiAgentTracker
 from agent_app.multi_agent.usage import estimate_mode_usage
 from agent_app.rag.runtime import OnlineRagRuntime
@@ -40,6 +41,7 @@ class MultiAgentRuntime:
         external_tools: list[BaseTool] | None = None,
         llm_registry: MultiAgentLLMRegistry | None = None,
         role_llms: dict[str, Any] | None = None,
+        checkpoint_store: MultiAgentCheckpointStore | None = None,
     ):
         if not config.multi_agent.enabled:
             raise ValueError("Multi-agent runtime отключён в конфигурации")
@@ -63,6 +65,10 @@ class MultiAgentRuntime:
             )
             external_tools = self._external_mcp_manager.start()
         self.external_tools = external_tools or []
+        self._owns_checkpoint_store = checkpoint_store is None
+        self.checkpoint_store = checkpoint_store or MultiAgentCheckpointStore(
+            config.multi_agent.checkpoint_path
+        )
         self.exporter = MultiAgentExporter(config.multi_agent.output_dir)
         self.tracker = MultiAgentTracker(config.multi_agent)
 
@@ -218,6 +224,27 @@ class MultiAgentRuntime:
     def load_run(self, run_id: str) -> dict[str, object] | None:
         return self.exporter.load_result(run_id)
 
+    def session_history(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "id": message.id,
+                "type": message.type,
+                "content": str(message.content),
+            }
+            for message in self.checkpoint_store.history(
+                user_id=user_id,
+                session_id=session_id,
+            )
+        ]
+
+    def clear_session(self, *, user_id: str, session_id: str) -> bool:
+        return self.checkpoint_store.clear(user_id=user_id, session_id=session_id)
+
     def close(self) -> None:
         if self._external_mcp_manager is not None:
             self._external_mcp_manager.close()
@@ -226,6 +253,8 @@ class MultiAgentRuntime:
             self.llm_registry.close()
         if self._owns_rag:
             self.rag_runtime.close()
+        if self._owns_checkpoint_store:
+            self.checkpoint_store.close()
 
     def _runner(self, *, user_id: str, session_id: str) -> MultiAgentRunner:
         return MultiAgentRunner(
@@ -237,6 +266,7 @@ class MultiAgentRuntime:
             incident_store=self.incident_store,
             external_tools=self.external_tools,
             llm_registry=self.llm_registry,
+            checkpointer=self.checkpoint_store.saver,
         )
 
 

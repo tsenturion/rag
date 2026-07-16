@@ -2,16 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+)
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from agent_app.config import AgentAppConfig
-from agent_app.memory import SQLiteMemoryStore
+from agent_app.memory import SQLiteMemoryStore, SummaryMemory
 from agent_app.multi_agent.bus import AsyncMessageBus
 from agent_app.multi_agent.decomposition import TaskDecomposer
 from agent_app.multi_agent.evaluation import assess_multi_response
@@ -29,6 +39,7 @@ from agent_app.multi_agent.models import (
     MultiAgentRunResult,
     TaskExecutionState,
 )
+from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
 from agent_app.multi_agent.roles import (
     SpecialistAgent,
     compact_results,
@@ -60,6 +71,7 @@ class MultiAgentRunner:
         external_tools: list[BaseTool] | None = None,
         llm_registry: MultiAgentLLMRegistry | None = None,
         role_llms: dict[str, Any] | None = None,
+        checkpointer: Any | None = None,
     ):
         if not config.multi_agent.enabled:
             raise ValueError("Multi-agent режим отключён в конфигурации")
@@ -85,6 +97,13 @@ class MultiAgentRunner:
             config.tools.incident_sqlite_path
         )
         self.memory_store = SQLiteMemoryStore(config.memory.sqlite_path)
+        self.summary = SummaryMemory(
+            self.memory_store,
+            user_id=user_id,
+            session_id=session_id,
+            max_chars=config.agent.max_summary_chars,
+        )
+        self.checkpointer = checkpointer or InMemorySaver()
         self.tools = build_tools(
             config,
             self.memory_store,
@@ -128,6 +147,9 @@ class MultiAgentRunner:
                 tools=self.tools,
                 rag_runtime=self.rag_runtime,
                 llm_invoke=usage_tracker.invoke,
+                llm_invoke_response=usage_tracker.invoke_response,
+                tool_max_iterations=self.config.multi_agent.tool_max_iterations,
+                tool_output_max_chars=(self.config.multi_agent.tool_output_max_chars),
             )
             for definition in definitions
         }
@@ -138,6 +160,7 @@ class MultiAgentRunner:
             max_tasks=self.config.multi_agent.max_tasks,
             mode=self.config.multi_agent.planner_mode,
             llm_invoke=usage_tracker.invoke,
+            available_tool_names={tool.name for tool in self.tools},
         )
 
         graph = self._build_graph(
@@ -147,6 +170,10 @@ class MultiAgentRunner:
             usage_tracker=usage_tracker,
         )
         degraded = False
+        thread_config = MultiAgentCheckpointStore.runnable_config(
+            self.user_id,
+            self.session_id,
+        )
         try:
             state = graph.invoke(
                 {
@@ -154,6 +181,7 @@ class MultiAgentRunner:
                     "user_id": self.user_id,
                     "session_id": self.session_id,
                     "request": normalized,
+                    "history": [HumanMessage(content=normalized)],
                     "tasks": [],
                     "task_results": [],
                     "review": "",
@@ -162,7 +190,8 @@ class MultiAgentRunner:
                     "round_number": 0,
                     "delegations": 0,
                     "degraded": False,
-                }
+                },
+                config=thread_config,
             )
         except Exception as exc:
             LOGGER.exception("Multi-agent граф завершился с ошибкой")
@@ -172,6 +201,7 @@ class MultiAgentRunner:
                 "user_id": self.user_id,
                 "session_id": self.session_id,
                 "request": normalized,
+                "history": [HumanMessage(content=normalized)],
                 "tasks": [],
                 "task_results": [],
                 "review": "Проверка не выполнена из-за ошибки.",
@@ -183,6 +213,13 @@ class MultiAgentRunner:
                 "error": str(exc)[:500],
             }
             degraded = True
+
+        state["history"] = self._compact_history(
+            graph,
+            state.get("history", []),
+            usage_tracker=usage_tracker,
+            thread_config=thread_config,
+        )
 
         usage = usage_tracker.snapshot().model_copy(
             update={
@@ -208,6 +245,8 @@ class MultiAgentRunner:
             task_results=state["task_results"],
             citations=state["citations"],
             review=state["review"],
+            history_messages_used=len(state["history"]),
+            summary_used=bool(self.summary.get()),
             llm_routes=self.llm_registry.route_info(),
             lifecycle=lifecycle.snapshot(),
             usage=usage,
@@ -353,16 +392,28 @@ class MultiAgentRunner:
 
         def synthesize(state: MultiAgentGraphState) -> dict[str, object]:
             citations = self._deduplicate_citations(state["task_results"])
+            citation_guidance = (
+                "Сохрани только существующие ссылки [Источник N]."
+                if citations
+                else "RAG-источников нет: не добавляй ссылки [Источник N] и список источников."
+            )
             evidence = compact_results(state["task_results"])
             if not evidence:
                 evidence = "Специализированные задания не потребовались."
+            conversation = self._conversation_context(state["history"])
+            summary = self.summary.get()
+            long_term_memory = self._long_term_memory_context()
             prompt = (
                 f"Запрос пользователя:\n{state['request']}\n\n"
+                f"Резюме предыдущего диалога:\n{summary or 'нет'}\n\n"
+                f"Последние сообщения сессии:\n{conversation or 'нет'}\n\n"
+                f"Долговременная память пользователя:\n"
+                f"{long_term_memory or 'нет'}\n\n"
                 f"Отчёты специалистов:\n{evidence}\n\n"
                 f"Проверка критика:\n{state['review']}\n\n"
                 "Сформируй окончательный ответ на русском языке. Используй только "
-                "доступные данные, сохрани ссылки [Источник N], отдели факты от "
-                "гипотез и не упоминай внутренний протокол обмена."
+                f"доступные данные. {citation_guidance} Отдели факты от гипотез "
+                "и не упоминай внутренний протокол обмена."
             )
             try:
                 answer = usage_tracker.invoke(
@@ -380,6 +431,8 @@ class MultiAgentRunner:
                 state["degraded"] = True
             if citations:
                 answer = self._append_sources(answer, citations)
+            else:
+                answer = self._remove_unavailable_citations(answer)
             lifecycle.transition(
                 AgentRunState.COMPLETED,
                 details={"citations": len(citations)},
@@ -387,6 +440,7 @@ class MultiAgentRunner:
             return {
                 "answer": answer,
                 "citations": citations,
+                "history": [AIMessage(content=answer)],
                 "degraded": state["degraded"],
             }
 
@@ -404,7 +458,7 @@ class MultiAgentRunner:
             {"retry": "dispatch", "done": "synthesize"},
         )
         workflow.add_edge("synthesize", END)
-        return workflow.compile()
+        return workflow.compile(checkpointer=self.checkpointer)
 
     async def _dispatch(
         self,
@@ -444,17 +498,85 @@ class MultiAgentRunner:
     def _definitions(self):
         definitions = default_role_definitions()
         overrides = self.config.multi_agent.role_tool_allowlists
-        return [
-            definition.model_copy(update={"tool_allowlist": overrides[definition.name]})
-            if definition.name in overrides
-            else definition
-            for definition in definitions
-        ]
+        available = {tool.name for tool in self.tools}
+        resolved = []
+        for definition in definitions:
+            allowlist = overrides.get(definition.name, definition.tool_allowlist)
+            resolved.append(
+                definition.model_copy(
+                    update={
+                        "tool_allowlist": [
+                            name for name in allowlist if name in available
+                        ]
+                    }
+                )
+            )
+        return resolved
 
     def _execution_mode(self):
         if self.llm_registry.has_local_routes:
             return "sequential"
         return self.config.multi_agent.execution_mode
+
+    def _compact_history(
+        self,
+        graph: Any,
+        history: list[BaseMessage],
+        *,
+        usage_tracker: LLMCallTracker,
+        thread_config: RunnableConfig,
+    ) -> list[BaseMessage]:
+        limit = self.config.multi_agent.max_history_messages
+        if len(history) <= limit:
+            return history
+        if self.config.multi_agent.summary_enabled:
+
+            class TrackedSummaryLLM:
+                def invoke(_self, messages: list[BaseMessage]) -> AIMessage:
+                    return AIMessage(
+                        content=usage_tracker.invoke(messages, "coordinator")
+                    )
+
+            try:
+                kept = self.summary.summarize_if_needed(
+                    llm=TrackedSummaryLLM(),
+                    messages=history,
+                    max_history_messages=limit,
+                )
+            except Exception:
+                LOGGER.exception("Не удалось обновить multi-agent summary memory")
+                kept = self.summary.recent_messages(history, limit)
+        else:
+            kept = self.summary.recent_messages(history, limit)
+        try:
+            graph.update_state(
+                thread_config,
+                {
+                    "history": [
+                        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                        *kept,
+                    ]
+                },
+            )
+        except Exception:
+            LOGGER.exception("Не удалось сократить checkpoint history")
+            return history
+        return kept
+
+    def _conversation_context(self, history: list[BaseMessage]) -> str:
+        recent = history[-self.config.multi_agent.max_history_messages :]
+        labels = {"human": "Пользователь", "ai": "Ассистент", "tool": "Tool"}
+        return "\n".join(
+            f"{labels.get(message.type, message.type)}: {message.content}"
+            for message in recent
+        )
+
+    def _long_term_memory_context(self) -> str:
+        records = self.memory_store.list_memories(
+            user_id=self.user_id,
+            limit=self.config.memory.search_limit,
+        )
+        return "\n".join(f"- {record.key}: {record.value}" for record in records)
 
     @staticmethod
     def _failed_task(
@@ -499,6 +621,16 @@ class MultiAgentRunner:
                 label += f", раздел: {citation.section}"
             lines.append(f"{citation.reference} {label}")
         return answer.rstrip() + "\n" + "\n".join(lines)
+
+    @staticmethod
+    def _remove_unavailable_citations(answer: str) -> str:
+        cleaned = re.sub(r"\s*\[Источник\s+\d+\]", "", answer)
+        cleaned = re.sub(
+            r"(?ms)\n+\s*Источники:\s*\n.*\Z",
+            "",
+            cleaned,
+        )
+        return cleaned.strip()
 
     @staticmethod
     def _fallback_answer(results: list[AgentTaskResult]) -> str:

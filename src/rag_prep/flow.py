@@ -213,7 +213,7 @@ def rag_data_preparation_flow(
         "prepared_documents_count": len(documents),
         "llama_index_documents_count": llama_documents_count,
     }
-    diagnostics = {
+    diagnostics: dict[str, object] = {
         "parse_failures": [
             failure.model_dump(mode="json") for failure in parse_result.failures
         ]
@@ -350,7 +350,7 @@ def rag_chunking_flow(
         "missing_lineage_count": validation.missing_lineage_count,
         "low_quality_chunks_count": validation.low_quality_chunks_count,
     }
-    diagnostics = {"validation": validation.model_dump(mode="json")}
+    diagnostics: dict[str, object] = {"validation": validation.model_dump(mode="json")}
     export = export_chunks_task(config, chunks, run_id, counts, diagnostics)
     log_chunking_mlflow_task(config, counts, export)
 

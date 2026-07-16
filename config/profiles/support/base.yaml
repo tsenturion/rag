@@ -50,6 +50,10 @@ tools:
     - calculator
     - current_datetime
     - get_weather
+    - list_workspace_files
+    - read_workspace_file
+    - write_workspace_file
+    - execute_python
     - save_memory
     - search_memory
     - get_memory

@@ -11,3 +11,4 @@ data/qdrant_storage*
 data/fine_tuning
 mlruns
 tests
+data/multi_agent

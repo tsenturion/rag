@@ -164,23 +164,32 @@ class LlamaIndexStructuringStage:
         }
         extra: dict[str, Any] = {}
         for key in keys:
-            values = [
-                element.metadata.get(key)
-                for element in group
-                if element.metadata.get(key) is not None
-            ]
+            values: list[Any] = []
+            for element in group:
+                value = element.metadata.get(key)
+                if value is not None:
+                    values.append(value)
             if values:
                 if key == "token_count":
-                    extra[key] = sum(int(value) for value in values)
+                    token_count = 0
+                    for value in values:
+                        try:
+                            token_count += int(value)
+                        except (TypeError, ValueError):
+                            LOGGER.warning(
+                                "Пропущено некорректное значение token_count: %r",
+                                value,
+                            )
+                    extra[key] = token_count
                 else:
                     extra[key] = (
                         values[0] if len(set(map(str, values))) == 1 else values
                     )
-        quality_values = [
-            element.metadata.get("quality")
-            for element in group
-            if isinstance(element.metadata.get("quality"), dict)
-        ]
+        quality_values: list[dict[str, Any]] = []
+        for element in group:
+            quality = element.metadata.get("quality")
+            if isinstance(quality, dict):
+                quality_values.append(quality)
         if quality_values:
             extra["quality"] = LlamaIndexStructuringStage._merge_quality(quality_values)
         return extra

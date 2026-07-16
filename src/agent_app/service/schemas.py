@@ -76,6 +76,10 @@ class MultiAgentCompareRequest(ChatRequest):
         default_factory=list,
         description="Термины для детерминированной оценки качества обоих режимов.",
     )
+    expected_tools: list[str] = Field(
+        default_factory=list,
+        description="Tools, которые должен вызвать multi-agent режим.",
+    )
     require_citations: bool = Field(
         default=False,
         description="Требовать citations в single- и multi-agent ответах.",
@@ -100,6 +104,12 @@ class SessionResponse(BaseModel):
         default_factory=list,
         description="Инциденты пользователя, связанные с этой сессией.",
     )
+    multi_agent_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Последние сообщения persistent multi-agent checkpoint этой сессии."
+        ),
+    )
 
 
 class DeleteSessionResponse(BaseModel):
@@ -110,6 +120,10 @@ class DeleteSessionResponse(BaseModel):
     )
     runner_removed: bool = Field(
         description="Удалён ли AgentRunner из in-process session cache."
+    )
+    multi_agent_checkpoint_deleted: bool = Field(
+        default=False,
+        description="Удалён ли persistent checkpoint мультиагентного диалога.",
     )
 
 

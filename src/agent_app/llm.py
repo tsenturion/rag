@@ -155,7 +155,7 @@ class LocalTransformersChatModel:
             "low_cpu_mem_usage": self.config.low_cpu_mem_usage,
             "dtype": self.dtype,
         }
-        model = AutoModelForCausalLM.from_pretrained(self.config.model, **kwargs)
+        model: Any = AutoModelForCausalLM.from_pretrained(self.config.model, **kwargs)
         if self.config.adapter_path is not None:
             from peft import PeftModel
 
@@ -268,10 +268,9 @@ class LocalTransformersChatModel:
 
     @staticmethod
     def _tool_schema(tool: BaseTool) -> dict[str, Any]:
-        if isinstance(tool.args_schema, type) and hasattr(
-            tool.args_schema, "model_json_schema"
-        ):
-            parameters = tool.args_schema.model_json_schema()
+        schema_factory = getattr(tool.args_schema, "model_json_schema", None)
+        if isinstance(tool.args_schema, type) and callable(schema_factory):
+            parameters = schema_factory()
         elif isinstance(tool.args_schema, dict):
             parameters = tool.args_schema
         else:

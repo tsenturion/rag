@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
@@ -21,7 +22,7 @@ class MLflowTracker:
         self.config = config
 
     def log_run(
-        self, counts: dict[str, int | float], export: SupportsArtifactPaths
+        self, counts: Mapping[str, int | float], export: SupportsArtifactPaths
     ) -> None:
         if not self.config.logging.mlflow_enabled:
             LOGGER.info("Логирование MLflow отключено")

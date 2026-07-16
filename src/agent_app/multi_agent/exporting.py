@@ -93,6 +93,8 @@ class MultiAgentExporter:
             "tasks_count": len(response.tasks),
             "messages_count": len(result.messages),
             "dead_letters_count": len(result.dead_letters),
+            "history_messages_used": response.history_messages_used,
+            "summary_used": response.summary_used,
             "usage": response.usage.model_dump(mode="json"),
             "quality": (
                 response.quality.model_dump(mode="json")

@@ -50,6 +50,14 @@ class RecordingLLM(StubLLM):
         return super().invoke(messages)
 
 
+class FakeCitationLLM(StubLLM):
+    def invoke(self, messages):
+        system = str(getattr(messages[0], "content", "")).casefold()
+        if "координатор" in system:
+            return AIMessage(content="Результат вычисления равен 30 [Источник 1].")
+        return super().invoke(messages)
+
+
 def _config(root: Path) -> AgentAppConfig:
     return AgentAppConfig(
         agent=AgentConfig(provider="local", model="test-model"),
@@ -67,12 +75,30 @@ def _config(root: Path) -> AgentAppConfig:
             enabled=True,
             execution_mode="parallel",
             output_dir=root / "runs",
+            checkpoint_path=root / "checkpoints.sqlite",
             mlflow_enabled=False,
         ),
     )
 
 
 class MultiAgentRuntimeTest(unittest.TestCase):
+    def test_answer_drops_citation_marker_without_rag_citations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            runner = MultiAgentRunner(
+                _config(root),
+                user_id="engineer",
+                session_id="no-citations",
+                llm=FakeCitationLLM(),
+            )
+            try:
+                result = runner.run("Посчитай значение без обращения к базе знаний.")
+            finally:
+                runner.close()
+
+        self.assertEqual(result.response.citations, [])
+        self.assertNotIn("[Источник", result.response.answer)
+
     def test_graph_uses_different_llms_for_incident_critic_and_coordinator(
         self,
     ) -> None:

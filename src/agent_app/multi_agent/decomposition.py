@@ -20,11 +20,13 @@ class TaskDecomposer:
         max_tasks: int,
         mode: PlannerMode = "rules",
         llm_invoke: Callable[[list[object], str], str] | None = None,
+        available_tool_names: set[str] | None = None,
     ):
         self.definitions = definitions
         self.max_tasks = max_tasks
         self.mode = mode
         self.llm_invoke = llm_invoke
+        self.available_tool_names = available_tool_names or set()
         self._capability_owner = {
             capability.name: definition.name
             for definition in definitions
@@ -41,6 +43,16 @@ class TaskDecomposer:
     def _rule_tasks(self, request: str) -> list[AgentTask]:
         lower = request.casefold()
         tasks: list[AgentTask] = []
+        requested_tools = self._requested_tools(request)
+        if requested_tools:
+            tasks.append(
+                self._task(
+                    "tool_execution",
+                    "Выполнить разрешённые инструменты",
+                    request,
+                    required_tools=requested_tools,
+                )
+            )
         knowledge_markers = (
             "инструк",
             "регламент",
@@ -124,6 +136,7 @@ class TaskDecomposer:
                     capability,
                     str(item.get("title") or capability),
                     str(item.get("instruction") or request),
+                    required_tools=self._valid_tool_names(item.get("tools")),
                 )
             )
         return tasks
@@ -141,12 +154,67 @@ class TaskDecomposer:
         ]
 
     @staticmethod
-    def _task(capability: str, title: str, instruction: str) -> AgentTask:
+    def _task(
+        capability: str,
+        title: str,
+        instruction: str,
+        *,
+        required_tools: list[str] | None = None,
+    ) -> AgentTask:
         return AgentTask(
             capability=capability,
             title=title,
             instruction=instruction,
+            required_tools=required_tools or [],
         )
+
+    def _requested_tools(self, request: str) -> list[str]:
+        lower = request.casefold()
+        requested: list[str] = []
+
+        def add(name: str, markers: tuple[str, ...]) -> None:
+            if name in self.available_tool_names and any(
+                marker in lower for marker in markers
+            ):
+                requested.append(name)
+
+        add("get_weather", ("погод", "температур", "weather"))
+        add(
+            "execute_python",
+            ("```python", "python-код", "python код", "код-интерпрет", "выполни код"),
+        )
+        add("calculator", ("калькулятор", "посчитай", "вычисли"))
+        add("current_datetime", ("текущее время", "текущая дата", "который час"))
+        if "файл" in lower or "workspace" in lower:
+            add(
+                "write_workspace_file",
+                ("запиши", "создай файл", "измени файл", "сохрани в файл"),
+            )
+            add(
+                "read_workspace_file",
+                ("прочитай", "открой", "покажи содержимое"),
+            )
+            if not {
+                "write_workspace_file",
+                "read_workspace_file",
+            }.intersection(requested):
+                add(
+                    "list_workspace_files",
+                    ("список", "перечисли", "покажи файлы", "workspace"),
+                )
+        for name in sorted(self.available_tool_names):
+            if name.casefold() in lower and name not in requested:
+                requested.append(name)
+        return list(dict.fromkeys(requested))
+
+    def _valid_tool_names(self, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [
+            str(item)
+            for item in value
+            if isinstance(item, str) and item in self.available_tool_names
+        ]
 
     @staticmethod
     def _parse_json_array(content: str) -> list[dict[str, object]]:

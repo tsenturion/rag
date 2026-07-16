@@ -32,9 +32,37 @@ services:
       - multi_agent_data:/app/data/multi_agent
       - mlruns_data:/app/mlruns
       - ./data/models:/app/data/models:ro
+    networks:
+      - default
+      - code_runner_internal
     depends_on:
       qdrant:
         condition: service_healthy
+      code-runner:
+        condition: service_healthy
+
+  code-runner:
+    image: rag-code-runner:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.code-runner
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      CODE_RUNNER_API_KEY: ${CODE_RUNNER_API_KEY:?Задайте CODE_RUNNER_API_KEY в .env}
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 256m
+    cpus: 0.50
+    networks:
+      - code_runner_internal
 
   indexer:
     image: rag-support-agent:latest
@@ -62,3 +90,7 @@ volumes:
   agent_data:
   multi_agent_data:
   mlruns_data:
+
+networks:
+  code_runner_internal:
+    internal: true

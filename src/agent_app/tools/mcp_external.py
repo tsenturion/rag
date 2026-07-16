@@ -8,7 +8,7 @@ import re
 import threading
 from contextlib import AsyncExitStack
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 from langchain_core.tools import BaseTool, StructuredTool
@@ -244,7 +244,7 @@ class ExternalMCPToolManager:
         read_stream, write_stream, _ = await stack.enter_async_context(
             streamable_http_client(
                 server.url or "",
-                http_client=http_client,
+                http_client=cast(Any, http_client),
                 terminate_on_close=server.terminate_on_close,
             )
         )

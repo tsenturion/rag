@@ -1,0 +1,38 @@
+scenarios:
+  - id: persistent_context
+    title: Контекст текущей сессии
+    request: Проверь предыдущий контекст этой сессии и кратко перечисли известные факты.
+    expected_terms:
+      - контекст
+    expected_tools:
+      - search_memory
+    require_citations: false
+    max_agents: 2
+
+  - id: weather_api
+    title: Внешний API погоды
+    request: Узнай текущую погоду в Екатеринбурге через get_weather.
+    expected_terms:
+      - Екатеринбург
+    expected_tools:
+      - get_weather
+    require_citations: false
+    max_agents: 2
+
+  - id: workspace_read
+    title: Безопасное чтение workspace
+    request: Покажи список файлов в workspace через list_workspace_files.
+    expected_tools:
+      - list_workspace_files
+    require_citations: false
+    max_agents: 2
+
+  - id: isolated_python
+    title: Изолированное выполнение Python
+    request: Выполни код через execute_python: ```python\nprint(sum(i * i for i in range(5)))\n```.
+    expected_terms:
+      - "30"
+    expected_tools:
+      - execute_python
+    require_citations: false
+    max_agents: 2

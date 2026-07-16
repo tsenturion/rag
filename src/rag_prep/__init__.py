@@ -1,5 +1,7 @@
 """Пакет подготовки данных, чанкинга и embeddings для RAG."""
 
+from typing import TYPE_CHECKING
+
 from rag_prep.config import (
     ChunkingPipelineConfig,
     EmbeddingPipelineConfig,
@@ -10,6 +12,14 @@ from rag_prep.config import (
     load_embedding_config,
     load_vector_store_config,
 )
+
+if TYPE_CHECKING:
+    from rag_prep.pipeline import (
+        RagChunkingPipeline,
+        RagEmbeddingPipeline,
+        RagPreparationPipeline,
+        RagVectorStorePipeline,
+    )
 
 __all__ = [
     "ChunkingPipelineConfig",

@@ -159,21 +159,13 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
         return embedded
 
     def _embed_texts(self, texts: list[str]) -> EmbeddingBatchResult:
-        request: dict[str, object] = {
-            "model": self.config.model,
-            "input": texts,
-            "encoding_format": "float",
-        }
-        if self.config.dimensions is not None:
-            request["dimensions"] = self.config.dimensions
-
         retryer = Retrying(
             stop=stop_after_attempt(self.config.max_retries),
             wait=wait_exponential_jitter(initial=1, max=30),
             retry=retry_if_exception_type((OpenAIError, TimeoutError, ConnectionError)),
             reraise=True,
         )
-        return retryer(self._request_embeddings, request)
+        return retryer(self._request_embeddings, texts)
 
     def embed_query(self, text: str) -> list[float]:
         result = self._embed_texts([text])
@@ -181,8 +173,20 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
             raise ValueError("OpenAI должен вернуть ровно один query embedding")
         return result.vectors[0]
 
-    def _request_embeddings(self, request: dict[str, object]) -> EmbeddingBatchResult:
-        response = self.client.embeddings.create(**request)
+    def _request_embeddings(self, texts: list[str]) -> EmbeddingBatchResult:
+        if self.config.dimensions is None:
+            response = self.client.embeddings.create(
+                model=self.config.model,
+                input=texts,
+                encoding_format="float",
+            )
+        else:
+            response = self.client.embeddings.create(
+                model=self.config.model,
+                input=texts,
+                encoding_format="float",
+                dimensions=self.config.dimensions,
+            )
         embedded_at = utc_now()
         data = sorted(response.data, key=lambda item: item.index)
         return EmbeddingBatchResult(

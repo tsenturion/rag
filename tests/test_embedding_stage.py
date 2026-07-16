@@ -58,7 +58,42 @@ class EmbeddingStageTest(unittest.TestCase):
         self.assertEqual(embedded[1].embedding, [0.0, 1.0, 0.0])
         self.assertEqual(embedded[0].metadata.embedding_dimensions, 3)
         self.assertEqual(embedded[0].metadata.embedding_run_id, "embedding-run")
-        client.embeddings.create.assert_called_once()
+        client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input=["Первый текст", "Второй текст"],
+            encoding_format="float",
+            dimensions=3,
+        )
+
+    def test_openai_request_omits_dimensions_when_not_configured(self) -> None:
+        client = Mock()
+        client.embeddings.create.return_value = SimpleNamespace(
+            data=[SimpleNamespace(index=0, embedding=[1.0, 0.0, 0.0])]
+        )
+        config = EmbeddingConfig(
+            provider="openai",
+            model="text-embedding-3-small",
+            dimensions=None,
+            api_key_env="TEST_OPENAI_API_KEY",
+            max_retries=1,
+            clear_no_proxy_for_openai=False,
+        )
+
+        with (
+            patch.dict(os.environ, {"TEST_OPENAI_API_KEY": "test-key"}),
+            patch(
+                "rag_prep.embedding_stages.embedding.OpenAI",
+                return_value=client,
+            ),
+        ):
+            result = OpenAIEmbeddingStage(config)._embed_texts(["Текст"])
+
+        self.assertEqual(result.vectors, [[1.0, 0.0, 0.0]])
+        client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input=["Текст"],
+            encoding_format="float",
+        )
 
     @staticmethod
     def _chunk(chunk_id: str, text: str) -> PreparedChunk:

@@ -44,6 +44,7 @@ def _config(root: Path) -> AgentAppConfig:
         multi_agent=MultiAgentConfig(
             enabled=True,
             output_dir=root / "runs",
+            checkpoint_path=root / "checkpoints.sqlite",
             mlflow_enabled=False,
             protocols=MultiAgentProtocolConfig(
                 a2a_enabled=True,
@@ -105,7 +106,20 @@ class MultiAgentServiceTest(unittest.TestCase):
                     },
                 )
                 openapi = client.get("/openapi.json")
+                metrics = client.get("/metrics")
                 run = client.get(f"/v1/multi-agent/runs/{response.json()['run_id']}")
+                session = client.get(
+                    "/v1/sessions/incident",
+                    params={"user_id": "engineer"},
+                )
+                deleted = client.delete(
+                    "/v1/sessions/incident",
+                    params={"user_id": "engineer"},
+                )
+                cleared_session = client.get(
+                    "/v1/sessions/incident",
+                    params={"user_id": "engineer"},
+                )
             runtime.close()
 
         self.assertEqual(response.status_code, 200)
@@ -121,7 +135,14 @@ class MultiAgentServiceTest(unittest.TestCase):
         self.assertEqual(mcp.json()["result"]["serverInfo"]["name"], "Инженерные tools")
         self.assertIn("/v1/multi-agent/chat", openapi.json()["paths"])
         self.assertIn("/a2a", openapi.json()["paths"])
+        self.assertIn("/metrics", openapi.json()["paths"])
+        self.assertEqual(metrics.status_code, 200)
+        self.assertTrue(metrics.headers["content-type"].startswith("text/plain"))
+        self.assertIn("support_agent_requests_total", metrics.text)
         self.assertEqual(run.status_code, 200)
+        self.assertGreaterEqual(len(session.json()["multi_agent_history"]), 2)
+        self.assertTrue(deleted.json()["multi_agent_checkpoint_deleted"])
+        self.assertEqual(cleared_session.json()["multi_agent_history"], [])
 
 
 if __name__ == "__main__":

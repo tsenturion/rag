@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from contextlib import contextmanager
 from uuid import NAMESPACE_URL, uuid5
@@ -33,7 +34,7 @@ def _make_qdrant_client(config: VectorStoreConfig) -> QdrantClient:
         port=config.port,
         https=config.https,
         api_key=api_key,
-        timeout=config.timeout_seconds,
+        timeout=max(1, math.ceil(config.timeout_seconds)),
     )
 
 

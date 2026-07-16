@@ -15,6 +15,7 @@ MULTI_AGENT_LLM_ROLES = (
     "knowledge_agent",
     "diagnostics_agent",
     "incident_agent",
+    "tool_agent",
     "critic_agent",
     "coordinator",
 )

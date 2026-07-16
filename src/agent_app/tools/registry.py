@@ -7,7 +7,9 @@ from agent_app.memory.store import SQLiteMemoryStore
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.support.incidents import IncidentStore
 from agent_app.tools.calculator import calculator_tool
+from agent_app.tools.code_runner import code_runner_tool
 from agent_app.tools.datetime_tool import datetime_tool
+from agent_app.tools.filesystem import filesystem_tools
 from agent_app.tools.memory_tools import memory_tools
 from agent_app.tools.project import project_tools
 from agent_app.tools.support import support_tools
@@ -29,6 +31,7 @@ def build_tools(
         calculator_tool(),
         datetime_tool(),
         weather_tool(config.weather),
+        *filesystem_tools(config.file_tools),
         *travel_tools(),
         *project_tools(
             store,
@@ -43,6 +46,9 @@ def build_tools(
         ),
         *(external_tools or []),
     ]
+    code_tool = code_runner_tool(config.code_runner)
+    if code_tool is not None:
+        tools.append(code_tool)
     support_tool_names = {
         "search_knowledge_base",
         "find_runbook",

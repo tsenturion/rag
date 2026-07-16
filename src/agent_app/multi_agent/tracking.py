@@ -32,6 +32,7 @@ class MultiAgentTracker:
             "tool_calls": response.usage.tool_calls,
             "estimated_cost": response.usage.estimated_cost,
             "tasks": len(response.tasks),
+            "history_messages_used": response.history_messages_used,
             "failed_tasks": sum(
                 item.state != "completed" for item in response.task_results
             ),
@@ -40,6 +41,7 @@ class MultiAgentTracker:
             "execution_mode": response.execution_mode,
             "selected_agents": ",".join(response.selected_agents),
             "degraded": response.degraded,
+            "summary_used": response.summary_used,
             "llm_routes": json.dumps(
                 [route.model_dump(mode="json") for route in response.llm_routes],
                 ensure_ascii=False,

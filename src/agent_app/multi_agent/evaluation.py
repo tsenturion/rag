@@ -42,7 +42,7 @@ def assess_multi_response(
     scenario: ComparisonScenario | None = None,
 ) -> QualityAssessment:
     completed = sum(result.state == "completed" for result in response.task_results)
-    return assess_answer(
+    assessment = assess_answer(
         response.answer,
         citations_count=len(response.citations),
         expected_terms=scenario.expected_terms if scenario else [],
@@ -50,3 +50,16 @@ def assess_multi_response(
         completed_roles=completed,
         expected_roles=len(response.tasks),
     )
+    if scenario is not None and scenario.expected_tools:
+        called = {
+            tool for result in response.task_results for tool in result.tool_calls
+        }
+        passed = set(scenario.expected_tools).issubset(called)
+        assessment.checks["expected_tools"] = passed
+        if not passed:
+            assessment.notes.append("expected_tools")
+        assessment.score = round(
+            sum(assessment.checks.values()) / len(assessment.checks),
+            4,
+        )
+    return assessment

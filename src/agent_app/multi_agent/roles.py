@@ -5,7 +5,7 @@ import re
 from collections.abc import Callable
 from time import perf_counter
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from agent_app.multi_agent.models import (
@@ -19,6 +19,7 @@ from agent_app.multi_agent.models import (
     UsageMetrics,
 )
 from agent_app.rag.runtime import OnlineRagRuntime
+from agent_app.support.security import redact_secrets
 
 
 def default_role_definitions() -> list[AgentDefinition]:
@@ -67,6 +68,30 @@ def default_role_definitions() -> list[AgentDefinition]:
             ],
             memory_access="read_write",
         ),
+        AgentDefinition(
+            name="tool_agent",
+            title="Агент инструментов",
+            goal=(
+                "Выбрать и выполнить только разрешённые инструменты, проверить "
+                "результат и безопасно вернуть наблюдаемые данные."
+            ),
+            capabilities=[
+                AgentCapability(
+                    name="tool_execution",
+                    description=(
+                        "Внешние API, вычисления, code runner, файловые и MCP tools."
+                    ),
+                )
+            ],
+            tool_allowlist=[
+                "calculator",
+                "current_datetime",
+                "get_weather",
+                "list_workspace_files",
+                "read_workspace_file",
+                "execute_python",
+            ],
+        ),
     ]
 
 
@@ -78,6 +103,9 @@ class SpecialistAgent:
         tools: list[BaseTool],
         rag_runtime: OnlineRagRuntime | None,
         llm_invoke: Callable[[list[object], str], str],
+        llm_invoke_response: Callable[..., object] | None = None,
+        tool_max_iterations: int = 4,
+        tool_output_max_chars: int = 12_000,
     ):
         self.definition = definition
         self.tools = {
@@ -85,6 +113,9 @@ class SpecialistAgent:
         }
         self.rag_runtime = rag_runtime
         self.llm_invoke = llm_invoke
+        self.llm_invoke_response = llm_invoke_response
+        self.tool_max_iterations = tool_max_iterations
+        self.tool_output_max_chars = tool_output_max_chars
 
     async def handle(self, envelope: AgentEnvelope) -> AgentEnvelope:
         task = AgentTask.model_validate(envelope.payload["task"])
@@ -110,6 +141,8 @@ class SpecialistAgent:
                 content, calls, citations = self._diagnostics(task)
             elif task.capability == "incident_context":
                 content, calls, citations = self._incident_context(task)
+            elif task.capability == "tool_execution":
+                content, calls, citations = self._tool_execution(task)
             else:
                 raise ValueError(f"Неподдерживаемая capability: {task.capability}")
             state = TaskExecutionState.COMPLETED
@@ -189,6 +222,132 @@ class SpecialistAgent:
             ),
         )
         return content, calls, []
+
+    def _tool_execution(self, task: AgentTask):
+        if self.llm_invoke_response is None:
+            raise RuntimeError("Для tool_agent не настроен function calling")
+        missing = sorted(set(task.required_tools) - set(self.tools))
+        if missing:
+            raise RuntimeError(
+                "Tool не разрешён роли tool_agent: " + ", ".join(missing)
+            )
+        if not self.tools:
+            raise RuntimeError("У tool_agent нет разрешённых инструментов")
+        available = list(self.tools.values())
+        required = task.required_tools
+        messages: list[object] = [
+            SystemMessage(
+                content=(
+                    "Ты агент безопасного выполнения tools. Вызывай только переданные "
+                    "инструменты. Не придумывай результат. После ToolMessage кратко "
+                    "объясни фактический результат."
+                )
+            ),
+            HumanMessage(
+                content=(
+                    f"Задание: {task.instruction}\n"
+                    f"Обязательные tools: {', '.join(required) if required else 'нет'}"
+                )
+            ),
+        ]
+        calls: list[str] = []
+        completed_required: set[str] = set()
+        successful_signatures: set[str] = set()
+        for iteration in range(self.tool_max_iterations):
+            raw_response = self.llm_invoke_response(
+                messages,
+                "tool_agent",
+                tools=available,
+            )
+            response = (
+                raw_response
+                if isinstance(raw_response, AIMessage)
+                else AIMessage(content=str(raw_response))
+            )
+            messages.append(response)
+            tool_calls = list(response.tool_calls or [])
+            if not tool_calls:
+                not_called = sorted(set(required) - completed_required)
+                if not_called and iteration + 1 < self.tool_max_iterations:
+                    messages.append(
+                        HumanMessage(
+                            content=(
+                                "Обязательные tools ещё не вызваны: "
+                                + ", ".join(not_called)
+                                + ". Верни function calls, а не текстовое описание."
+                            )
+                        )
+                    )
+                    continue
+                if not_called:
+                    raise RuntimeError(
+                        "LLM не вызвала обязательные tools: " + ", ".join(not_called)
+                    )
+                content = str(response.content).strip()
+                return content or self._tool_summary(messages), calls, []
+            for call in tool_calls:
+                name = str(call.get("name") or "")
+                call_id = str(call.get("id") or f"tool_{iteration}_{len(calls)}")
+                arguments = call.get("args") or {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                signature = json.dumps(
+                    {"name": name, "args": arguments},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                tool = self.tools.get(name)
+                if tool is None:
+                    result = f"Tool {name} не входит в allowlist роли."
+                    is_error = True
+                elif signature in successful_signatures:
+                    result = "Повторный идентичный вызов остановлен loop guard."
+                    is_error = True
+                else:
+                    try:
+                        result = str(tool.invoke(arguments))
+                        is_error = self._tool_result_is_error(result)
+                    except Exception as exc:
+                        result = redact_secrets(str(exc))[: self.tool_output_max_chars]
+                        is_error = True
+                    calls.append(name)
+                    if not is_error:
+                        successful_signatures.add(signature)
+                        completed_required.add(name)
+                messages.append(
+                    ToolMessage(
+                        content=redact_secrets(result)[: self.tool_output_max_chars],
+                        tool_call_id=call_id,
+                        name=name or None,
+                        status="error" if is_error else "success",
+                    )
+                )
+        raise RuntimeError("Tool agent превысил лимит итераций")
+
+    @staticmethod
+    def _tool_result_is_error(result: str) -> bool:
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return result.casefold().startswith(("ошибка", "error"))
+        return isinstance(payload, dict) and payload.get("status") in {
+            "error",
+            "failed",
+            "forbidden",
+            "rejected",
+            "timeout",
+            "unavailable",
+        }
+
+    @staticmethod
+    def _tool_summary(messages: list[object]) -> str:
+        outputs = [
+            str(message.content)
+            for message in messages
+            if isinstance(message, ToolMessage)
+        ]
+        return "\n".join(outputs) or "Инструменты не вернули результат."
 
     def _incident_context(self, task: AgentTask):
         calls: list[str] = []

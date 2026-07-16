@@ -139,7 +139,7 @@ class atomic_text_writer:
         self.file = handle
         return handle
 
-    def __exit__(self, exc_type, exc, traceback) -> bool:
+    def __exit__(self, exc_type, exc, _traceback) -> bool:
         if self.file is not None:
             self.file.close()
         if self.temp_path is None:

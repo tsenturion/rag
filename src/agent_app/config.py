@@ -146,6 +146,58 @@ class AgentToolsConfig(BaseModel):
         return self
 
 
+class FileToolsConfig(BaseModel):
+    enabled: bool = False
+    workspace_path: Path = Path("data/agent/workspace")
+    allow_write: bool = False
+    allow_hidden_files: bool = False
+    max_file_bytes: int = Field(default=1_000_000, ge=1_024, le=20_000_000)
+    max_list_entries: int = Field(default=200, ge=1, le=2_000)
+    allowed_extensions: list[str] = Field(
+        default_factory=lambda: [
+            ".txt",
+            ".md",
+            ".json",
+            ".yaml",
+            ".yml",
+            ".csv",
+            ".log",
+            ".py",
+        ]
+    )
+
+    @field_validator("allowed_extensions")
+    @classmethod
+    def normalize_extensions(cls, values: list[str]) -> list[str]:
+        normalized = []
+        for value in values:
+            extension = value.strip().casefold()
+            if not extension.startswith(".") or len(extension) < 2:
+                raise ValueError("Расширение файла должно начинаться с точки")
+            if extension not in normalized:
+                normalized.append(extension)
+        if not normalized:
+            raise ValueError("Нужно разрешить хотя бы одно расширение файла")
+        return normalized
+
+
+class CodeRunnerConfig(BaseModel):
+    enabled: bool = False
+    base_url: str = "http://127.0.0.1:8010"
+    api_key_env: str = "CODE_RUNNER_API_KEY"
+    timeout_seconds: float = Field(default=8.0, gt=0, le=60)
+    max_code_chars: int = Field(default=12_000, ge=100, le=100_000)
+    max_output_chars: int = Field(default=12_000, ge=100, le=100_000)
+
+    @field_validator("base_url")
+    @classmethod
+    def require_http_url(cls, value: str) -> str:
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("code_runner.base_url должен быть HTTP(S) URL")
+        return normalized
+
+
 class AgentServiceConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
@@ -197,6 +249,11 @@ class MultiAgentConfig(BaseModel):
     message_ttl_seconds: float = Field(default=60.0, gt=0)
     token_budget: int = Field(default=12000, ge=256)
     output_dir: Path = Path("data/multi_agent/runs")
+    checkpoint_path: Path = Path("data/agent/multi_agent_checkpoints.sqlite")
+    max_history_messages: int = Field(default=12, ge=2, le=100)
+    summary_enabled: bool = True
+    tool_max_iterations: int = Field(default=4, ge=1, le=12)
+    tool_output_max_chars: int = Field(default=12_000, ge=100, le=100_000)
     role_tool_allowlists: dict[str, list[str]] = Field(default_factory=dict)
     llm_profiles: dict[str, MultiAgentLLMProfileConfig] = Field(default_factory=dict)
     role_llm_profiles: dict[str, str] = Field(default_factory=dict)
@@ -225,12 +282,19 @@ class MultiAgentConfig(BaseModel):
             "knowledge_agent",
             "diagnostics_agent",
             "incident_agent",
+            "tool_agent",
         }
         unknown_roles = sorted(set(self.role_llm_profiles) - allowed_roles)
         if unknown_roles:
             raise ValueError(
                 "Неизвестные роли в multi_agent.role_llm_profiles: "
                 + ", ".join(unknown_roles)
+            )
+        unknown_tool_roles = sorted(set(self.role_tool_allowlists) - allowed_roles)
+        if unknown_tool_roles:
+            raise ValueError(
+                "Неизвестные роли в multi_agent.role_tool_allowlists: "
+                + ", ".join(unknown_tool_roles)
             )
         missing_profiles = sorted(
             set(self.role_llm_profiles.values()) - set(self.llm_profiles)
@@ -261,6 +325,8 @@ class AgentAppConfig(BaseModel):
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     rag: AgentRagConfig = Field(default_factory=AgentRagConfig)
     tools: AgentToolsConfig = Field(default_factory=AgentToolsConfig)
+    file_tools: FileToolsConfig = Field(default_factory=FileToolsConfig)
+    code_runner: CodeRunnerConfig = Field(default_factory=CodeRunnerConfig)
     service: AgentServiceConfig = Field(default_factory=AgentServiceConfig)
     security: AgentSecurityConfig = Field(default_factory=AgentSecurityConfig)
     multi_agent: MultiAgentConfig = Field(default_factory=MultiAgentConfig)
@@ -314,6 +380,12 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
     output_dir = multi_agent.output_dir
     if not output_dir.is_absolute():
         output_dir = base_dir / output_dir
+    checkpoint_path = multi_agent.checkpoint_path
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = base_dir / checkpoint_path
+    workspace_path = config.file_tools.workspace_path
+    if not workspace_path.is_absolute():
+        workspace_path = base_dir / workspace_path
     tracking_uri = multi_agent.mlflow_tracking_uri
     if "://" not in tracking_uri:
         tracking_path = Path(tracking_uri).expanduser()
@@ -334,9 +406,13 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
                 }
             ),
             "rag": _resolve_rag_config(config.rag, base_dir=base_dir),
+            "file_tools": config.file_tools.model_copy(
+                update={"workspace_path": workspace_path.resolve()}
+            ),
             "multi_agent": multi_agent.model_copy(
                 update={
                     "output_dir": output_dir.resolve(),
+                    "checkpoint_path": checkpoint_path.resolve(),
                     "mlflow_tracking_uri": tracking_uri,
                     "llm_profiles": llm_profiles,
                 }
