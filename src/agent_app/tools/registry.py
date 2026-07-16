@@ -23,6 +23,7 @@ def build_tools(
     session_id: str,
     rag_runtime: OnlineRagRuntime | None = None,
     incident_store: IncidentStore | None = None,
+    external_tools: list[BaseTool] | None = None,
 ) -> list[BaseTool]:
     tools: list[BaseTool] = [
         calculator_tool(),
@@ -40,6 +41,7 @@ def build_tools(
             session_id=session_id,
             default_search_limit=config.memory.search_limit,
         ),
+        *(external_tools or []),
     ]
     support_tool_names = {
         "search_knowledge_base",
@@ -64,6 +66,13 @@ def build_tools(
                 session_id=session_id,
                 max_log_chars=config.tools.max_log_chars,
             )
+        )
+
+    names = [tool.name for tool in tools]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(
+            "Совпали имена локальных и внешних tools: " + ", ".join(duplicates)
         )
 
     disabled = set(config.tools.disabled)

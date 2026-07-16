@@ -1,0 +1,27 @@
+multi_agent:
+  enabled: true
+  planner_mode: rules
+  execution_mode: parallel
+  max_tasks: 3
+  max_delegations: 6
+  max_rounds: 2
+  task_timeout_seconds: 45
+  message_ttl_seconds: 60
+  token_budget: 12000
+  output_dir: data/multi_agent/runs
+  cost:
+    input_cost_per_million: 0.0
+    output_cost_per_million: 0.0
+  protocols:
+    a2a_enabled: true
+    a2a_rpc_path: /a2a
+    a2a_rest_path: /a2a/v1
+    mcp_enabled: true
+    mcp_path: /mcp
+    acp_legacy_enabled: true
+  mlflow_enabled: true
+  mlflow_tracking_uri: mlruns
+  mlflow_experiment: rag-multi-agent
+
+tools:
+  mcp_servers: []

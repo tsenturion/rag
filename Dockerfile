@@ -23,7 +23,7 @@ RUN python -m pip install --no-deps . \
     && mkdir -p /app/data/agent /app/data/embeddings_openai \
         /app/data/embeddings_local /app/data/models \
         /app/data/vector_store_docker_openai \
-        /app/data/vector_store_docker_local \
+        /app/data/vector_store_docker_local /app/mlruns \
     && chown -R app:app /app
 
 USER app

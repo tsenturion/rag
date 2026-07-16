@@ -65,6 +65,8 @@ python -m pip install -e . --no-deps
 
 Флаг `--no-deps` уместен, если зависимости уже установлены через `requirements.txt`. Если проект переносится на новую машину, сначала ставится `requirements.txt`, затем локальный пакет.
 
+Метаданные локального пакета разделяют зависимости по назначению: базовая установка содержит сервис агента, LLM, RAG и протоколы, extra `data-preparation` содержит парсинг и подготовку данных, `fine-tuning` - зависимости обучения, а `full` объединяет оба набора. Поэтому вместо `requirements.txt` допустима установка `python -m pip install -e ".[full]"`; основной сценарий этого репозитория с глобальным окружением по-прежнему использует две команды выше и точные версии из `requirements.txt`.
+
 При первой установке создать рабочий `.env` из примера:
 
 ```powershell
@@ -1994,3 +1996,370 @@ docker compose up -d support-agent
 - Local Qwen загружается один раз на процесс. Запуск Transformers с Intel Arc XPU надёжнее выполнять на Windows host; passthrough Intel XPU в Linux Docker требует отдельного Intel GPU runtime и не включён в базовый Compose.
 - SSE endpoint отдаёт события этапов и готовый результат, но не выполняет token-by-token streaming конкретного LLM provider.
 - API key обеспечивает доступ к сервису, но не заменяет полноценную корпоративную идентификацию пользователя. `user_id` должен поступать из доверенного gateway при production deployment.
+
+# Введение в ИИ-агентов и мультиагентные системы
+
+Этот модуль продолжает существующий MVP-агент и добавляет supervisor-архитектуру, в которой координатор декомпозирует запрос, передаёт задания профильным агентам, собирает результаты, выполняет критическую проверку и формирует общий ответ. Отдельный проект не создаётся: реализация находится в `src/agent_app/multi_agent/`, а существующие LLM, RAG, tools, память, FastAPI и MLflow переиспользуются.
+
+Обычный вызов LLM получает сообщения и возвращает продолжение. ИИ-агент дополнительно управляет состоянием, выбирает tools, использует память, проверяет условия переходов и завершения. Мультиагентная система добавляет явные роли, делегирование, протокол сообщений и контроль общего бюджета.
+
+## Выбор фреймворка мультиагентной оркестрации
+
+В проекте используется [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview): это низкоуровневый runtime для явного графа состояний, ветвлений, циклов, долговременного выполнения и интеграции с LangChain tools. Такой уровень контроля подходит инженерному агенту, потому что переходы `decompose -> dispatch -> review -> synthesize`, лимиты повторов и аварийное завершение должны быть видны в коде и тестироваться отдельно.
+
+| Фреймворк | Архитектурная модель | Оркестрация и состояние | Интеграция tools | Когда уместен |
+|---|---|---|---|---|
+| LangGraph | Граф узлов и переходов над типизированным state | Явные ветвления, циклы, параллельные ветви, checkpointing и human-in-the-loop | LangChain tools или собственные узлы; выбор и права доступа контролирует приложение | Когда критичны предсказуемые переходы, восстановление и точный контроль выполнения |
+| [CrewAI](https://docs.crewai.com/en/introduction) | Ролевые команды `Crews` внутри управляемых `Flows` | Готовые sequential/hierarchical процессы и event-driven flows | Tools назначаются агентам и командам; поддерживается MCP | Когда важнее быстро описать роли, задачи и совместную работу на высоком уровне |
+| [AutoGen](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/index.html) | Stateful agents и actor-подобный асинхронный обмен сообщениями | Event-driven runtime, request-response и распределённое выполнение | Tools, workbench, code executor и расширяемые model clients | Когда система строится вокруг диалогов агентов, событий и последующего распределённого исполнения |
+
+CrewAI и AutoGen не являются зависимостями проекта: таблица нужна для архитектурного выбора, а не для одновременного использования нескольких orchestration runtime. Текущая реализация опирается на `StateGraph`, собственную типизированную шину сообщений, Pydantic-контракты, role-based tool allowlists и отдельные LLM-маршруты. Возможности persistence и conversational memory в LangGraph требуют явно настроенного checkpointer; сам факт использования `StateGraph` не сохраняет состояние между HTTP-запросами. Подробнее: [LangGraph persistence](https://docs.langchain.com/oss/python/langgraph/persistence).
+
+## Архитектура и жизненный цикл
+
+Реализованные роли:
+
+- `coordinator` - определяет подзадачи, собирает отчёты и отвечает пользователю;
+- `knowledge_agent` - выполняет online RAG и сохраняет citations;
+- `diagnostics_agent` - анализирует логи и строит диагностический чек-лист;
+- `incident_agent` - работает только с памятью и инцидентами текущего `user_id`;
+- `critic_agent` - ищет противоречия, неподтверждённые утверждения и ошибки tools.
+
+Жизненный цикл запуска фиксируется как проверяемая цепочка:
+
+```text
+received -> decomposed -> delegated -> running -> reviewing -> completed
+                              ^              |
+                              |--- retry ----|          \-> failed
+```
+
+Из `reviewing` повторно делегируются только задачи со статусом `failed` или `timed_out`. Недопустимые переходы отклоняются, а retry ограничен `max_rounds` и общим `max_delegations`, поэтому цикл не может стать бесконечным. Каждый запуск также ограничен `max_tasks`, `task_timeout_seconds`, TTL сообщений и резервируемым перед LLM-вызовом `token_budget`. Для локального Qwen выполнение принудительно остаётся последовательным, даже если в YAML выбран `parallel`: это предотвращает конкурирующие вызовы одной модели на XPU.
+
+Декомпозиция использует три capabilities:
+
+- `knowledge_retrieval` для документации, процедур и runbook;
+- `technical_diagnostics` для ошибок, логов, timeout и OOM;
+- `incident_context` для памяти, сессии и incident state.
+
+В режиме `rules` маршрутизация детерминирована. `hybrid` сначала применяет правила и обращается к LLM только для незнакомого запроса. `llm` использует structured JSON-планировщик и затем валидирует capabilities по registry. Простому вопросу разрешено не создавать ни одной specialist-задачи: координатор отвечает напрямую и не создаёт искусственную multi-agent стоимость.
+
+## Обмен сообщениями
+
+`AsyncMessageBus` поддерживает:
+
+- request-response между координатором и специалистом;
+- publish-subscribe для lifecycle events;
+- `message_id`, `correlation_id` и `causation_id`;
+- TTL, timeout, дедупликацию и idempotent response cache;
+- dead-letter журнал для недоставленных и просроченных сообщений.
+
+Агенты передают структурированные задания, наблюдения, результаты tools и artifacts. Скрытые рассуждения модели между агентами не сохраняются и не экспортируются.
+
+Локальная симуляция не вызывает LLM или внешние API:
+
+```powershell
+rag-agent `
+  --config config/multi_agent_openai.yaml `
+  --simulate-protocols `
+  --json
+```
+
+Команда показывает request-response, публикацию события, журнал шины и преобразование legacy ACP message в A2A message.
+
+## A2A, MCP и ACP
+
+A2A используется для взаимодействия независимых агентных приложений. Реализация основана на официальном `a2a-sdk==1.1.1` и предоставляет:
+
+- Agent Card: `GET /.well-known/agent-card.json`;
+- JSON-RPC: `POST /a2a`;
+- HTTP+JSON REST binding под `/a2a/v1`;
+- задачи, messages, artifacts, чтение списка и состояния tasks;
+- `A2A-Version: 1.0` и официальный protobuf/JSON contract.
+
+Пример A2A JSON-RPC-запроса:
+
+```powershell
+$body = @{
+  jsonrpc = "2.0"
+  id = "request-1"
+  method = "SendMessage"
+  params = @{
+    message = @{
+      messageId = "message-1"
+      contextId = "incident-42"
+      role = "ROLE_USER"
+      parts = @(@{ text = "Найди runbook и диагностируй timeout." })
+      metadata = @{
+        userId = "engineer-1"
+        sessionId = "incident-42"
+      }
+    }
+  }
+} | ConvertTo-Json -Depth 10
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8000/a2a `
+  -Headers @{ "A2A-Version" = "1.0" } `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+Для Docker preset дополнительно передаётся `X-API-Key`. Agent Card остаётся публичной discovery-информацией и не содержит credentials или внутренних prompts.
+
+MCP предназначен не для agent-to-agent делегирования, а для стандартизованного доступа к tools, resources и prompts. Официальный `mcp==1.28.1` используется в двух направлениях:
+
+- собственный MCP-сервер проекта смонтирован на `/mcp/` и предоставляет безопасные tools `analyze_log_fragment`, `build_diagnostic_checklist` и resource `agent://roles`;
+- MCP-клиент проекта подключает внешние серверы по `stdio` или Streamable HTTP, обнаруживает их tools и передаёт разрешённые инструменты single-agent и multi-agent runtime.
+
+Произвольный shell, память пользователя и incident mutation через собственный MCP-сервер не экспортируются. Для внешних серверов обязательно задаётся доверенный endpoint/command, а `tool_allowlist` ограничивает доступные агенту операции. Application-код по-прежнему использует `httpx2`; обычный `httpx` устанавливается только как транзитивная зависимость официальных A2A/MCP SDK.
+
+Пример внешнего локального MCP-сервера, запускаемого как дочерний процесс:
+
+```yaml
+tools:
+  mcp_servers:
+    - name: filesystem
+      transport: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "C:/work/docs"]
+      cwd: .
+      required: false
+      tool_allowlist: ["read_file", "list_directory"]
+      tool_prefix: external_fs
+      timeout_seconds: 30
+      max_output_chars: 12000
+```
+
+`stdio`-сервер наследует только безопасные системные переменные, которые отбирает официальный MCP SDK. Поле `env` задаёт несекретные значения, а `env_from_host` перечисляет имена переменных с credentials, которые нужно безопасно взять из `.env` или окружения, не записывая значения в YAML. Для каждого включённого сервера `tool_allowlist` обязателен; значение `["*"]` явно разрешает все опубликованные сервером tools и подходит только для полностью доверенного endpoint.
+
+Пример удалённого Streamable HTTP endpoint:
+
+```yaml
+tools:
+  mcp_servers:
+    - name: company_docs
+      transport: streamable_http
+      url: https://mcp.example.org/mcp
+      required: true
+      verify_ssl: true
+      headers:
+        Accept-Language: ru
+      header_env:
+        Authorization: COMPANY_MCP_AUTHORIZATION
+      tool_allowlist: ["search_docs", "get_document"]
+      tool_prefix: company
+      timeout_seconds: 30
+```
+
+В этом примере `.env` содержит уже готовое значение заголовка, например `COMPANY_MCP_AUTHORIZATION=Bearer ...`. `required: true` запрещает запуск с недоступной обязательной интеграцией; необязательный сервер записывает ошибку в readiness и не блокирует остальные tools. Имена, доступные LLM, получают префикс: `company_search_docs`, `company_get_document`. Это предотвращает коллизии между локальными и внешними инструментами.
+
+Проверить discovery без вызова LLM:
+
+```powershell
+rag-agent --config config/multi_agent_openai.yaml --list-mcp-tools
+```
+
+Детерминированно вызвать внешний tool без LLM:
+
+```powershell
+rag-agent `
+  --config config/multi_agent_openai.yaml `
+  --call-mcp-tool company_search_docs `
+  --mcp-arguments '{"query":"регламент сброса пароля"}'
+```
+
+После discovery внешние tools автоматически входят в общий registry. Если `tools.enabled` непустой, prefixed-имена внешних tools нужно добавить и в этот список. Для multi-agent режима их дополнительно нужно назначить конкретной роли через `multi_agent.role_tool_allowlists`, иначе specialist не получит инструмент. Состояние подключений, список tools и ошибки необязательных серверов доступны в поле `external_mcp` ответа `/ready`.
+
+При запуске агента в Docker команда `stdio`-сервера и её runtime должны существовать внутри image; например, `npx` потребует отдельного Node.js-слоя в Dockerfile. Для MCP-сервера, запущенного на Windows host, из контейнера используйте Streamable HTTP URL с `host.docker.internal` вместо `127.0.0.1`. Для сервера из того же Compose укажите DNS-имя его service.
+
+ACP официально объединён с A2A под Linux Foundation, поэтому новый отдельный ACP server не создаётся. Это зафиксировано в [репозитории ACP](https://github.com/i-am-bee/acp) и в [официальном объявлении команды ACP](https://github.com/orgs/i-am-bee/discussions/5). `ACPProtocolAdapter` оставлен как учебный legacy-adapter: он показывает старый envelope и его преобразование в актуальный A2A message. Актуальные спецификации: [A2A](https://a2a-protocol.org/latest/specification) и [MCP](https://modelcontextprotocol.io/specification/latest).
+
+## Конфигурация и запуск
+
+Явные host-конфиги:
+
+| Конфиг | Chat LLM | Retrieval | Выполнение specialists |
+|---|---|---|---|
+| `config/multi_agent_openai.yaml` | OpenAI | OpenAI embeddings | parallel |
+| `config/multi_agent_gigachat.yaml` | GigaChat | локальный E5 | parallel |
+| `config/multi_agent_local.yaml` | локальный Qwen | локальный E5 | sequential |
+| `config/multi_agent_mixed.yaml` | OpenAI + GigaChat + локальный Qwen | OpenAI embeddings | sequential из-за локальной роли |
+
+Общие лимиты, протоколы и параметры MLflow находятся в `config/profiles/support/multi_agent.yaml`. Provider-presets переопределяют только время ожидания, режим выполнения, каталог артефактов и имя эксперимента; копии общего блока по YAML-файлам не расходятся.
+
+### Отдельная LLM для каждой роли
+
+По умолчанию все роли используют общий `agent` из выбранного support-конфига. Для произвольного назначения моделей создаются именованные `multi_agent.llm_profiles`, после чего `multi_agent.role_llm_profiles` связывает профиль с ролью. Поддерживаются роли `planner`, `knowledge_agent`, `diagnostics_agent`, `incident_agent`, `critic_agent` и `coordinator`; каждый профиль может использовать `openai`, `gigachat` или `local` и все параметры соответствующего `AgentConfig`.
+
+```yaml
+multi_agent:
+  llm_profiles:
+    openai_coordination:
+      provider: openai
+      model: gpt-4.1-nano
+      max_new_tokens: 350
+      input_cost_per_million: 0.0
+      output_cost_per_million: 0.0
+    gigachat_review:
+      provider: gigachat
+      model: GigaChat-2
+      gigachat_auth_key_env: GIGACHAT_AUTH_KEY
+    local_incidents:
+      provider: local
+      model: data/models/hf/Qwen2.5-1.5B-Instruct
+      local_device: auto
+      local_files_only: true
+  role_llm_profiles:
+    planner: openai_coordination
+    coordinator: openai_coordination
+    critic_agent: gigachat_review
+    incident_agent: local_incidents
+```
+
+Готовая карта находится в `config/profiles/support/multi_agent_llm_mixed.yaml` и переиспользуется host-конфигом `config/multi_agent_mixed.yaml` и Docker-конфигом `config/multi_agent_docker_mixed.yaml`. Роли без записи в `role_llm_profiles` используют базовую модель `agent`; один профиль, назначенный нескольким ролям, создаёт один LLM client и не дублирует локальную модель в памяти.
+
+Запуск смешанной конфигурации:
+
+```powershell
+rag-agent `
+  --config config/multi_agent_mixed.yaml `
+  --multi-agent `
+  --message "Проверь текущий инцидент, выполни диагностику и сформируй итог." `
+  --user-id engineer-1 `
+  --session-id incident-42 `
+  --json
+```
+
+Для этого примера одновременно требуются `OPENAI_API_KEY`, `GIGACHAT_AUTH_KEY` и скачанный локальный Qwen. Если хотя бы одна назначенная роль использует `provider: local`, effective execution mode становится `sequential`, даже когда в YAML указано `parallel`: это защищает Intel Arc XPU от конкурентных генераций и лишнего расхода памяти. Chat LLM ролей не связана с моделью embeddings: существующая Qdrant collection продолжает использовать тот embedding-профиль, который задан в `rag_profile`, и пересчитывать vectors при смене role LLM не нужно.
+
+Фактический маршрут каждой роли возвращается в `response.llm_routes`, сохраняется в `result.json` и `manifest.json`, отображается в `/ready` и передаётся в MLflow. Token budget остаётся общим для запуска, а стоимость каждого вызова считается по `input_cost_per_million` и `output_cost_per_million` его профиля. Для ролей с базовым `agent` используются тарифы из `multi_agent.cost`.
+
+Проверенная stable-комбинация сервисного слоя закреплена в `requirements-service.txt`: FastAPI `0.139.1`, Starlette `0.52.1`, SSE-Starlette `3.4.5`, A2A SDK `1.1.1`, MCP SDK `1.28.1` и MLflow `3.14.0`. Starlette `0.52.1` является последним совместимым релизом для общего глобального окружения, где `prometheus-fastapi-instrumentator` пока требует Starlette `<1`; аналогично используются Pydantic `2.12.5` из-за ограничения `aiogram <2.13` и NumPy `2.4.6` из-за ограничения `numba <2.5`. Docker использует те же точные версии для воспроизводимости. В `requirements.txt` и `pyproject.toml` указаны границы этой матрицы.
+
+В [README официального MCP Python SDK версии 1.28.1](https://github.com/modelcontextprotocol/python-sdk/tree/v1.28.1#readme) прямо указано, что v1.x является текущей стабильной и рекомендуемой для production веткой, v2 пока находится в alpha, а приложениям рекомендуется заранее установить верхнюю границу `<2`, например `mcp>=1.27,<2`. Поэтому проект использует `mcp>=1.28.1,<2` и не переходит на v2 автоматически; переход выполняется только после стабильного релиза и отдельной проверки миграции.
+
+Перед запуском должны существовать Qdrant collection и provider keys, требуемые базовым support-конфигом. Модуль не пересчитывает document embeddings.
+
+Один multi-agent запрос:
+
+```powershell
+rag-agent `
+  --config config/multi_agent_openai.yaml `
+  --multi-agent `
+  --message "В логах service desk есть timeout. Найди runbook и составь диагностику." `
+  --user-id engineer-1 `
+  --session-id incident-42 `
+  --json
+```
+
+Вывести сохранённый результат по `run_id` без повторного вызова LLM:
+
+```powershell
+rag-agent `
+  --config config/multi_agent_openai.yaml `
+  --get-multi-agent-run <run_id> `
+  --json
+```
+
+## Single-agent и multi-agent
+
+Сравнение выполняет одинаковые запросы и отдельно сохраняет ответы обоих режимов. Single-agent всегда использует базовый `agent`; multi-agent использует карту ролей, поэтому в mixed-конфигурации сравнивается единый агент с составной системой моделей:
+
+```powershell
+rag-agent `
+  --config config/multi_agent_openai.yaml `
+  --compare-agents `
+  --multi-agent-scenarios config/multi_agent_scenarios.yaml `
+  --user-id comparison-user `
+  --json
+```
+
+Сценарии проверяют простой запрос без лишней декомпозиции, RAG + диагностику, session/incident context и безопасный ответ при отсутствии знаний. Сравниваются:
+
+- детерминированный quality score;
+- наличие ожидаемых терминов и citations;
+- количество LLM и tool calls;
+- input/output tokens и доля оценённых tokens;
+- latency;
+- число выбранных агентов;
+- стоимость и разница single vs multi.
+
+Тарифы намеренно не зашиты в код. `multi_agent.cost.input_cost_per_million` и `output_cost_per_million` задают стоимость базового `agent`, а одноимённые поля внутри `llm_profiles` - стоимость конкретного provider/model. Single-agent usage оценивается по базовой модели; multi-agent usage собирается из фактических provider metadata или воспроизводимой оценки каждого role-вызова. Comparison report хранит `llm_routes`, поэтому смешанные модели не маскируются одним названием.
+
+## API и артефакты
+
+Запустить API с мультиагентным конфигом:
+
+```powershell
+rag-support --config config/multi_agent_openai.yaml
+```
+
+Для Docker Compose в `.env` укажите один явный selector:
+
+```dotenv
+SUPPORT_AGENT_CONFIG=config/multi_agent_docker_openai.yaml
+```
+
+Допустимые Docker-presets:
+
+| Конфиг | Chat LLM | Retrieval |
+|---|---|---|
+| `config/multi_agent_docker_openai.yaml` | OpenAI | OpenAI embeddings |
+| `config/multi_agent_docker_gigachat_openai_embeddings.yaml` | GigaChat | OpenAI embeddings |
+| `config/multi_agent_docker_gigachat_local_embeddings.yaml` | GigaChat | локальный E5 |
+| `config/multi_agent_docker_local.yaml` | локальный Qwen | локальный E5 |
+| `config/multi_agent_docker_mixed.yaml` | OpenAI + GigaChat + локальный Qwen | OpenAI embeddings |
+
+Для смешанного Docker-сценария задайте в `.env`:
+
+```dotenv
+SUPPORT_AGENT_CONFIG=config/multi_agent_docker_mixed.yaml
+```
+
+После выбора preset запустите уже описанный Compose-сервис:
+
+```powershell
+docker compose up -d --build qdrant support-agent
+docker compose logs -f support-agent
+```
+
+API доступен на `http://127.0.0.1:8000`, A2A - на `/a2a`, MCP - на `/mcp/`. Артефакты multi-agent запусков сохраняются в именованном volume `multi_agent_data`, а MLflow runs - в `mlruns_data`; оба набора не исчезают при пересоздании контейнера.
+
+После запуска Swagger `http://127.0.0.1:8000/docs` содержит:
+
+- `POST /v1/multi-agent/chat`;
+- `POST /v1/multi-agent/compare`;
+- `GET /v1/multi-agent/runs/{run_id}`;
+- A2A JSON-RPC и REST routes;
+- существующий `POST /v1/chat` как single-agent baseline.
+
+Каждый запуск сохраняется в provider-specific `data/multi_agent/<provider>/<run_id>/`:
+
+- `result.json` - ответ, задания, роли, LLM routes, quality и usage;
+- `manifest.json` - краткий воспроизводимый контракт запуска, включая provider/model каждой роли;
+- `messages.jsonl` - журнал доставки сообщений;
+- `trace.jsonl` - lifecycle events;
+- `dead_letters.jsonl` - ошибки доставки.
+
+Сравнение сохраняется в `comparison-<run_id>/comparison.json`. MLflow получает quality, latency, tokens, tool/LLM calls, стоимость, число и ошибки заданий. Каталог `data/multi_agent/` исключён из Git.
+
+## Проверка модуля
+
+Offline-тесты не вызывают OpenAI, GigaChat или OpenWeatherMap:
+
+```powershell
+python -m unittest tests.test_multi_agent_core -v
+python -m unittest tests.test_multi_agent_runtime -v
+python -m unittest tests.test_multi_agent_service -v
+```
+
+Они проверяют lifecycle, декомпозицию, role-based маршрутизацию OpenAI/GigaChat/local LLM без внешних вызовов, request-response/pub-sub, дедупликацию, timeout/dead letters, собственные MCP tools, подключение и вызов внешнего MCP stdio tool, ACP→A2A, supervisor runtime, comparison report, Swagger, Agent Card и реальный A2A `SendMessage`.
+
+Ограничения текущего учебного модуля:
+
+- message bus работает внутри одного процесса и имеет интерфейс для будущей замены на Redis/NATS;
+- A2A streaming и push notifications явно возвращают unsupported operation;
+- собственный MCP endpoint экспортирует только stateless безопасные tools, а внешние MCP tools доступны только после явной настройки сервера и allowlist;
+- оценка качества основана на фиксированных критериях, а не на скрытом LLM judge;
+- multi-agent полезен для декомпозируемых задач, но для простых запросов обычно дороже и медленнее single-agent режима.

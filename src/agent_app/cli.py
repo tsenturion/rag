@@ -9,7 +9,14 @@ from pathlib import Path
 from agent_app.config import load_agent_config
 from agent_app.graph import AgentRunner
 from agent_app.memory import SQLiteMemoryStore
+from agent_app.multi_agent.exporting import MultiAgentExporter
+from agent_app.multi_agent.protocols.simulation import run_protocol_simulation
+from agent_app.multi_agent.runtime import (
+    MultiAgentRuntime,
+    load_comparison_suite,
+)
 from agent_app.scenarios import ScenarioRunner, load_scenario_suite
+from agent_app.tools.mcp_external import ExternalMCPToolManager
 
 
 class RussianHelpFormatter(argparse.HelpFormatter):
@@ -88,6 +95,46 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Путь для JSON-отчёта сценариев.",
     )
+    parser.add_argument(
+        "--multi-agent",
+        action="store_true",
+        help="Выполнить --message через supervisor-граф нескольких агентов.",
+    )
+    parser.add_argument(
+        "--compare-agents",
+        action="store_true",
+        help="Сравнить single-agent и multi-agent на общем наборе сценариев.",
+    )
+    parser.add_argument(
+        "--multi-agent-scenarios",
+        default="config/multi_agent_scenarios.yaml",
+        help="YAML со сценариями сравнения single vs multi.",
+    )
+    parser.add_argument(
+        "--simulate-protocols",
+        action="store_true",
+        help="Запустить локальную request-response/pub-sub и ACP→A2A симуляцию.",
+    )
+    parser.add_argument(
+        "--get-multi-agent-run",
+        default=None,
+        help="Показать сохранённый multi-agent result.json по run_id.",
+    )
+    parser.add_argument(
+        "--list-mcp-tools",
+        action="store_true",
+        help="Подключить внешние MCP-серверы, вывести доступные tools и выйти.",
+    )
+    parser.add_argument(
+        "--call-mcp-tool",
+        default=None,
+        help="Вызвать внешний MCP tool по его имени с префиксом.",
+    )
+    parser.add_argument(
+        "--mcp-arguments",
+        default="{}",
+        help="JSON-объект аргументов для --call-mcp-tool.",
+    )
     return parser
 
 
@@ -102,6 +149,96 @@ def main() -> int:
 
     user_id = args.user_id or config.memory.default_user_id
     session_id = args.session_id or config.memory.default_session_id
+
+    if args.simulate_protocols:
+        print(
+            json.dumps(
+                run_protocol_simulation(),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.list_mcp_tools or args.call_mcp_tool:
+        manager = ExternalMCPToolManager(config.tools.mcp_servers)
+        try:
+            tools = manager.start()
+            if args.call_mcp_tool:
+                arguments = json.loads(args.mcp_arguments)
+                if not isinstance(arguments, dict):
+                    raise ValueError("--mcp-arguments должен содержать JSON-объект")
+                tool = next(
+                    (item for item in tools if item.name == args.call_mcp_tool),
+                    None,
+                )
+                if tool is None:
+                    known = ", ".join(item.name for item in tools) or "нет"
+                    raise ValueError(
+                        f"Внешний MCP tool не найден: {args.call_mcp_tool}. "
+                        f"Доступные: {known}"
+                    )
+                result = tool.invoke(arguments)
+                print(result)
+                return 0
+            print(
+                json.dumps(
+                    manager.status(),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0 if tools or not config.tools.mcp_servers else 1
+        finally:
+            manager.close()
+
+    if args.get_multi_agent_run:
+        payload = MultiAgentExporter(config.multi_agent.output_dir).load_result(
+            args.get_multi_agent_run
+        )
+        if payload is None:
+            print(f"Multi-agent запуск не найден: {args.get_multi_agent_run}")
+            return 1
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.multi_agent or args.compare_agents:
+        if not config.multi_agent.enabled:
+            raise ValueError(
+                "Multi-agent режим отключён. Используйте config/multi_agent_*.yaml."
+            )
+        runtime = MultiAgentRuntime(config)
+        try:
+            if args.compare_agents:
+                suite = load_comparison_suite(Path(args.multi_agent_scenarios))
+                report = runtime.compare(
+                    suite,
+                    user_id=user_id,
+                    session_prefix=session_id,
+                )
+                print(
+                    json.dumps(
+                        report.model_dump(mode="json"),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            if not args.message:
+                raise ValueError("Для --multi-agent обязательно задайте --message")
+            result = runtime.ask(
+                user_id=user_id,
+                session_id=session_id,
+                message=args.message,
+            )
+            payload = result.model_dump(mode="json")
+            _print_response(payload["response"], as_json=args.json)
+            if not args.json:
+                print(f"Run ID: {result.response.run_id}")
+                print(f"Артефакты: {result.run_dir}")
+            return 0 if result.response.lifecycle[-1].state == "completed" else 1
+        finally:
+            runtime.close()
 
     if args.list_memory:
         store = SQLiteMemoryStore(config.memory.sqlite_path)

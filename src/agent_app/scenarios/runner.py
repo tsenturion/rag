@@ -20,6 +20,7 @@ from agent_app.scenarios.models import (
     ScenarioSuite,
 )
 from agent_app.support.incidents import IncidentStore
+from agent_app.tools.mcp_external import ExternalMCPToolManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ class ScenarioRunner:
         self._shared_llm: Any | None = None
         self._shared_rag = OnlineRagRuntime(config.rag) if config.rag.enabled else None
         self._incident_store = IncidentStore(config.tools.incident_sqlite_path)
+        self._external_mcp_manager = ExternalMCPToolManager(config.tools.mcp_servers)
+        self._external_tools = self._external_mcp_manager.start()
 
     def run_all(self) -> ScenarioRunReport:
         return self._report(self.suite.scenarios)
@@ -66,6 +69,7 @@ class ScenarioRunner:
         return report_path
 
     def close(self) -> None:
+        self._external_mcp_manager.close()
         if self._shared_rag is not None:
             self._shared_rag.close()
 
@@ -93,6 +97,7 @@ class ScenarioRunner:
             llm=self._shared_llm,
             rag_runtime=self._shared_rag,
             incident_store=self._incident_store,
+            external_tools=self._external_tools,
         )
         if self._shared_llm is None:
             self._shared_llm = runner.llm

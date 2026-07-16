@@ -5,6 +5,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent_app.models import AgentResponse
+from agent_app.multi_agent.models import (
+    MultiAgentComparisonReport,
+    MultiAgentResponse,
+)
 
 
 class ChatRequest(BaseModel):
@@ -53,6 +57,35 @@ class ChatResponse(AgentResponse):
     request_id: str = Field(description="Корреляционный идентификатор HTTP-запроса.")
     duration_ms: float = Field(
         description="Полная длительность обработки запроса в миллисекундах."
+    )
+
+
+class MultiAgentChatResponse(MultiAgentResponse):
+    request_id: str = Field(description="Корреляционный идентификатор HTTP-запроса.")
+    duration_ms: float = Field(
+        description="Полная длительность supervisor-графа в миллисекундах."
+    )
+    run_dir: str | None = Field(
+        default=None,
+        description="Каталог воспроизводимых артефактов запуска.",
+    )
+
+
+class MultiAgentCompareRequest(ChatRequest):
+    expected_terms: list[str] = Field(
+        default_factory=list,
+        description="Термины для детерминированной оценки качества обоих режимов.",
+    )
+    require_citations: bool = Field(
+        default=False,
+        description="Требовать citations в single- и multi-agent ответах.",
+    )
+
+
+class MultiAgentCompareResponse(MultiAgentComparisonReport):
+    request_id: str = Field(description="Корреляционный идентификатор HTTP-запроса.")
+    duration_ms: float = Field(
+        description="Длительность двух запусков в миллисекундах."
     )
 
 

@@ -12,11 +12,21 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from llm_tuning.config import load_fine_tuning_config  # noqa: E402
+from agent_app.config import MultiAgentConfig  # noqa: E402
+from agent_app.multi_agent.tracking import MultiAgentTracker  # noqa: E402
 from rag_prep.config import PipelineConfig, load_config  # noqa: E402
 from rag_prep.tracking import MLflowTracker  # noqa: E402
 
 
 class MlflowTrackingUriTest(unittest.TestCase):
+    def test_multi_agent_tracker_uses_file_uri_for_windows_path(self) -> None:
+        path = (PROJECT_ROOT / "mlruns").resolve()
+        config = MultiAgentConfig(mlflow_tracking_uri=str(path))
+
+        uri = MultiAgentTracker(config)._tracking_uri()
+
+        self.assertEqual(uri, path.as_uri())
+
     def test_tracker_fallback_does_not_depend_on_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:
             original_cwd = Path.cwd()

@@ -12,6 +12,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.tools import BaseTool
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -33,6 +34,7 @@ from agent_app.rag.models import RagCitation, RagRetrievalResult
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.support.incidents import IncidentStore
 from agent_app.tools import build_tools
+from agent_app.tools.mcp_external import ExternalMCPToolManager
 
 LOGGER = logging.getLogger(__name__)
 SECRET_STORAGE_RE = re.compile(
@@ -53,6 +55,7 @@ class AgentRunner:
         llm: Any | None = None,
         rag_runtime: OnlineRagRuntime | None = None,
         incident_store: IncidentStore | None = None,
+        external_tools: list[BaseTool] | None = None,
     ):
         self.config = config
         self.user_id = user_id or config.memory.default_user_id
@@ -94,6 +97,12 @@ class AgentRunner:
             if needs_support_tools
             else None
         )
+        self._external_mcp_manager: ExternalMCPToolManager | None = None
+        if external_tools is None and config.tools.mcp_servers:
+            self._external_mcp_manager = ExternalMCPToolManager(
+                config.tools.mcp_servers
+            )
+            external_tools = self._external_mcp_manager.start()
         self.tools = build_tools(
             config,
             self.store,
@@ -101,6 +110,7 @@ class AgentRunner:
             session_id=self.session_id,
             rag_runtime=self.rag_runtime,
             incident_store=self.incident_store,
+            external_tools=external_tools,
         )
         self.graph = self._build_graph()
 
@@ -276,6 +286,9 @@ class AgentRunner:
         )
 
     def close(self) -> None:
+        if self._external_mcp_manager is not None:
+            self._external_mcp_manager.close()
+            self._external_mcp_manager = None
         if self._owns_rag_runtime and self.rag_runtime is not None:
             self.rag_runtime.close()
 

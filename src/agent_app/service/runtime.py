@@ -12,10 +12,18 @@ from agent_app.graph import AgentRunner
 from agent_app.llm import build_llm
 from agent_app.memory import SQLiteMemoryStore
 from agent_app.models import AgentResponse
+from agent_app.multi_agent.models import (
+    ComparisonScenario,
+    ComparisonScenarioSuite,
+    MultiAgentComparisonReport,
+    MultiAgentRunResult,
+)
+from agent_app.multi_agent.runtime import MultiAgentRuntime
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.service.schemas import DeleteSessionResponse, SessionResponse
 from agent_app.support.incidents import IncidentStore
 from agent_app.support.security import redact_secrets
+from agent_app.tools.mcp_external import ExternalMCPToolManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,15 +39,20 @@ class SupportApplicationRuntime:
         self.config = config
         self._llm = llm
         self._llm_error: str | None = None
+        self._multi_agent_error: str | None = None
         self._owns_rag = rag_runtime is None
         self.rag_runtime = rag_runtime or OnlineRagRuntime(config.rag)
         self.incident_store = IncidentStore(config.tools.incident_sqlite_path)
         self.memory_store = SQLiteMemoryStore(config.memory.sqlite_path)
+        self.external_mcp_manager = ExternalMCPToolManager(config.tools.mcp_servers)
+        self.external_tools = self.external_mcp_manager.start()
         self._runners: OrderedDict[tuple[str, str], AgentRunner] = OrderedDict()
         self._cache_lock = threading.RLock()
         self._execution_lock = threading.RLock()
+        self.multi_agent_runtime: MultiAgentRuntime | None = None
         if self._llm is None:
             self._initialize_llm()
+        self._initialize_multi_agent()
 
     def ask(
         self, *, user_id: str, session_id: str, message: str
@@ -49,6 +62,51 @@ class SupportApplicationRuntime:
             runner = self._runner(user_id=user_id, session_id=session_id)
             response = runner.ask(message)
         return response, round((perf_counter() - started) * 1000, 3)
+
+    def ask_multi(
+        self, *, user_id: str, session_id: str, message: str
+    ) -> tuple[MultiAgentRunResult, float]:
+        started = perf_counter()
+        with self._execution_lock:
+            runtime = self._require_multi_agent()
+            result = runtime.ask(
+                user_id=user_id,
+                session_id=session_id,
+                message=message,
+            )
+        return result, round((perf_counter() - started) * 1000, 3)
+
+    def compare_multi(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        message: str,
+        expected_terms: list[str],
+        require_citations: bool,
+    ) -> tuple[MultiAgentComparisonReport, float]:
+        started = perf_counter()
+        suite = ComparisonScenarioSuite(
+            scenarios=[
+                ComparisonScenario(
+                    id="api-comparison",
+                    title="Сравнение по API-запросу",
+                    request=message,
+                    expected_terms=expected_terms,
+                    require_citations=require_citations,
+                )
+            ]
+        )
+        with self._execution_lock:
+            report = self._require_multi_agent().compare(
+                suite,
+                user_id=user_id,
+                session_prefix=session_id,
+            )
+        return report, round((perf_counter() - started) * 1000, 3)
+
+    def load_multi_run(self, run_id: str) -> dict[str, object] | None:
+        return self._require_multi_agent().load_run(run_id)
 
     def session(self, *, user_id: str, session_id: str) -> SessionResponse:
         memory = self.memory_store.list_memories(user_id=user_id, limit=200)
@@ -84,10 +142,14 @@ class SupportApplicationRuntime:
     def readiness(self) -> dict[str, Any]:
         if self._llm is None:
             self._initialize_llm()
+        self._initialize_multi_agent()
         rag = self.rag_runtime.start().model_dump(mode="json")
         llm_ready = self._llm is not None
         api_key_ready = self._service_api_key_ready()
-        ready = llm_ready and bool(rag["ready"]) and api_key_ready
+        multi_agent_ready = (
+            not self.config.multi_agent.enabled or self.multi_agent_runtime is not None
+        )
+        ready = llm_ready and bool(rag["ready"]) and api_key_ready and multi_agent_ready
         return {
             "ready": ready,
             "llm": {
@@ -102,6 +164,23 @@ class SupportApplicationRuntime:
                 "api_key_configured": api_key_ready,
             },
             "sessions_cached": len(self._runners),
+            "multi_agent": {
+                "enabled": self.config.multi_agent.enabled,
+                "ready": multi_agent_ready,
+                "error": self._multi_agent_error,
+                "execution_mode": self.config.multi_agent.execution_mode,
+                "a2a_enabled": self.config.multi_agent.protocols.a2a_enabled,
+                "mcp_enabled": self.config.multi_agent.protocols.mcp_enabled,
+                "llm_routes": (
+                    [
+                        route.model_dump(mode="json")
+                        for route in self.multi_agent_runtime.llm_registry.route_info()
+                    ]
+                    if self.multi_agent_runtime is not None
+                    else []
+                ),
+            },
+            "external_mcp": self.external_mcp_manager.status(),
         }
 
     def close(self) -> None:
@@ -110,6 +189,10 @@ class SupportApplicationRuntime:
             self._runners.clear()
         for runner in runners:
             runner.close()
+        if self.multi_agent_runtime is not None:
+            self.multi_agent_runtime.close()
+            self.multi_agent_runtime = None
+        self.external_mcp_manager.close()
         if self._owns_rag:
             self.rag_runtime.close()
 
@@ -132,6 +215,7 @@ class SupportApplicationRuntime:
                 llm=self._llm,
                 rag_runtime=self.rag_runtime,
                 incident_store=self.incident_store,
+                external_tools=self.external_tools,
             )
             self._runners[key] = runner
             self._evict_runners()
@@ -150,6 +234,34 @@ class SupportApplicationRuntime:
             self._llm = None
             self._llm_error = redact_secrets(str(exc))[:500]
             LOGGER.exception("Не удалось инициализировать LLM")
+
+    def _initialize_multi_agent(self) -> None:
+        if (
+            not self.config.multi_agent.enabled
+            or self._llm is None
+            or self.multi_agent_runtime is not None
+        ):
+            return
+        try:
+            self.multi_agent_runtime = MultiAgentRuntime(
+                self.config,
+                llm=self._llm,
+                rag_runtime=self.rag_runtime,
+                incident_store=self.incident_store,
+                external_tools=self.external_tools,
+            )
+            self._multi_agent_error = None
+        except Exception as exc:
+            self.multi_agent_runtime = None
+            self._multi_agent_error = redact_secrets(str(exc))[:500]
+            LOGGER.exception("Не удалось инициализировать LLM-профили multi-agent")
+
+    def _require_multi_agent(self) -> MultiAgentRuntime:
+        if self.multi_agent_runtime is None:
+            self._initialize_multi_agent()
+        if self.multi_agent_runtime is None:
+            raise RuntimeError("Multi-agent runtime отключён или LLM недоступна")
+        return self.multi_agent_runtime
 
     def _service_api_key_ready(self) -> bool:
         if not self.config.security.require_api_key:

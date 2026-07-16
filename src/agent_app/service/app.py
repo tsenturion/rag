@@ -4,7 +4,7 @@ import hmac
 import json
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
@@ -22,6 +22,8 @@ from prometheus_client import (
 )
 
 from agent_app.config import AgentAppConfig, load_agent_config
+from agent_app.multi_agent.protocols.a2a import install_a2a_routes
+from agent_app.multi_agent.protocols.mcp import build_mcp_server
 from agent_app.service.runtime import SupportApplicationRuntime
 from agent_app.service.schemas import (
     ApiError,
@@ -29,6 +31,9 @@ from agent_app.service.schemas import (
     ChatResponse,
     DeleteSessionResponse,
     HealthResponse,
+    MultiAgentChatResponse,
+    MultiAgentCompareRequest,
+    MultiAgentCompareResponse,
     SessionResponse,
 )
 from agent_app.support.security import redact_secrets
@@ -40,6 +45,10 @@ OPENAPI_TAGS = [
     {
         "name": "Диалог",
         "description": "Запросы к агенту, RAG, tools и памяти.",
+    },
+    {
+        "name": "Мультиагентная система",
+        "description": "Supervisor-граф, сравнение режимов и артефакты запусков.",
     },
     {
         "name": "Сессии",
@@ -101,15 +110,23 @@ def create_app(
         config = load_agent_config(resolved_config_path)
     setup_logging(config.logging.level)
     owns_runtime = runtime is None
+    mcp_server = (
+        build_mcp_server(max_log_chars=config.tools.max_log_chars)
+        if config.multi_agent.enabled and config.multi_agent.protocols.mcp_enabled
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.runtime = runtime or SupportApplicationRuntime(config)
-        try:
-            yield
-        finally:
-            if owns_runtime:
-                app.state.runtime.close()
+        async with AsyncExitStack() as stack:
+            if mcp_server is not None:
+                await stack.enter_async_context(mcp_server.session_manager.run())
+            try:
+                yield
+            finally:
+                if owns_runtime:
+                    app.state.runtime.close()
 
     app = FastAPI(
         title="ИИ-агент поддержки инженера",
@@ -133,6 +150,12 @@ def create_app(
         },
         lifespan=lifespan,
     )
+    if mcp_server is not None:
+        app.mount(
+            config.multi_agent.protocols.mcp_path,
+            mcp_server.streamable_http_app(),
+            name="mcp-engineering-tools",
+        )
     if config.service.cors_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -161,11 +184,43 @@ def create_app(
         ["status"],
         registry=registry,
     )
+    multi_agent_counter = Counter(
+        "support_agent_multi_runs_total",
+        "Результаты мультиагентных запусков",
+        ["status"],
+        registry=registry,
+    )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):
         request_id = request.headers.get("X-Request-ID") or str(uuid4())
         request.state.request_id = request_id
+        protected_protocol_paths = (
+            config.multi_agent.protocols.a2a_rpc_path,
+            config.multi_agent.protocols.a2a_rest_path,
+            config.multi_agent.protocols.mcp_path,
+        )
+        if config.security.require_api_key and any(
+            request.url.path == path or request.url.path.startswith(path + "/")
+            for path in protected_protocol_paths
+            if path != "/"
+        ):
+            expected = os.getenv(config.security.api_key_env)
+            supplied = request.headers.get("X-API-Key")
+            if not expected:
+                return _error_response(
+                    request,
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    "security_not_configured",
+                    "Сервисный API key не настроен.",
+                )
+            if not supplied or not hmac.compare_digest(supplied, expected):
+                return _error_response(
+                    request,
+                    status.HTTP_401_UNAUTHORIZED,
+                    "unauthorized",
+                    "Некорректный API key.",
+                )
         content_length = request.headers.get("content-length")
         try:
             content_length_value = int(content_length) if content_length else 0
@@ -174,7 +229,7 @@ def create_app(
         if content_length_value > config.service.request_max_chars * 4:
             return _error_response(
                 request,
-                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status.HTTP_413_CONTENT_TOO_LARGE,
                 "request_too_large",
                 "Размер HTTP-запроса превышает допустимый предел.",
             )
@@ -265,6 +320,82 @@ def create_app(
             request_id=request.state.request_id,
             duration_ms=duration_ms,
         )
+
+    @app.post(
+        "/v1/multi-agent/chat",
+        response_model=MultiAgentChatResponse,
+        tags=["Мультиагентная система"],
+        summary="Выполнить запрос через supervisor-граф",
+        description=(
+            "Декомпозирует запрос, делегирует подзадачи профильным агентам, "
+            "проверяет отчёты критиком и возвращает итог с lifecycle и usage."
+        ),
+        responses=_error_responses(401, 413, 422, 500, 503),
+        dependencies=[Depends(require_api_key)],
+    )
+    def multi_agent_chat(
+        request: Request,
+        payload: ChatRequest,
+    ) -> MultiAgentChatResponse:
+        _validate_message_size(payload.message, config)
+        result, duration_ms = request.app.state.runtime.ask_multi(
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            message=payload.message,
+        )
+        multi_agent_counter.labels(
+            "degraded" if result.response.degraded else "completed"
+        ).inc()
+        return MultiAgentChatResponse(
+            **result.response.model_dump(mode="python"),
+            request_id=request.state.request_id,
+            duration_ms=duration_ms,
+            run_dir=result.run_dir,
+        )
+
+    @app.post(
+        "/v1/multi-agent/compare",
+        response_model=MultiAgentCompareResponse,
+        tags=["Мультиагентная система"],
+        summary="Сравнить single-agent и multi-agent",
+        description=(
+            "Выполняет один запрос в обоих режимах при общей модели и возвращает "
+            "качество, latency, tokens, tool calls и настраиваемую стоимость."
+        ),
+        responses=_error_responses(401, 413, 422, 500, 503),
+        dependencies=[Depends(require_api_key)],
+    )
+    def compare_agents(
+        request: Request,
+        payload: MultiAgentCompareRequest,
+    ) -> MultiAgentCompareResponse:
+        _validate_message_size(payload.message, config)
+        report, duration_ms = request.app.state.runtime.compare_multi(
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            message=payload.message,
+            expected_terms=payload.expected_terms,
+            require_citations=payload.require_citations,
+        )
+        return MultiAgentCompareResponse(
+            **report.model_dump(mode="python"),
+            request_id=request.state.request_id,
+            duration_ms=duration_ms,
+        )
+
+    @app.get(
+        "/v1/multi-agent/runs/{run_id}",
+        response_model=dict[str, object],
+        tags=["Мультиагентная система"],
+        summary="Получить сохранённый результат запуска",
+        responses=_error_responses(401, 500, 503),
+        dependencies=[Depends(require_api_key)],
+    )
+    def get_multi_agent_run(request: Request, run_id: str) -> dict[str, object]:
+        payload = request.app.state.runtime.load_multi_run(run_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Multi-agent запуск не найден")
+        return payload
 
     @app.post(
         "/v1/chat/stream",
@@ -408,13 +539,30 @@ def create_app(
     def metrics() -> Response:
         return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
+    if config.multi_agent.enabled and config.multi_agent.protocols.a2a_enabled:
+        public_host = (
+            "127.0.0.1" if config.service.host == "0.0.0.0" else config.service.host
+        )
+        base_url = f"http://{public_host}:{config.service.port}"
+
+        def a2a_ask(**kwargs):
+            result, _ = app.state.runtime.ask_multi(**kwargs)
+            return result
+
+        install_a2a_routes(
+            app,
+            config,
+            base_url=base_url,
+            ask=a2a_ask,
+        )
+
     return app
 
 
 def _validate_message_size(message: str, config: AgentAppConfig) -> None:
     if len(message) > config.service.request_max_chars:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 "Сообщение превышает service.request_max_chars: "
                 f"actual={len(message)} limit={config.service.request_max_chars}"

@@ -95,25 +95,12 @@ def support_tools(
         return search_knowledge_base(query=query, top_k=5)
 
     def analyze_log_fragment(log_text: str, component: str | None = None) -> str:
-        if len(log_text) > max_log_chars:
-            return _json(
-                {
-                    "status": "error",
-                    "error": "log_too_large",
-                    "max_log_chars": max_log_chars,
-                    "actual_chars": len(log_text),
-                }
-            )
-        redacted = redact_secrets(log_text)
-        findings = _log_findings(redacted)
         return _json(
-            {
-                "status": "ok",
-                "component": component,
-                "findings": findings,
-                "redacted_log_preview": redacted[:1000],
-                "secrets_redacted": redacted != log_text,
-            }
+            analyze_log_fragment_payload(
+                log_text,
+                component=component,
+                max_log_chars=max_log_chars,
+            )
         )
 
     def create_incident(
@@ -173,35 +160,7 @@ def support_tools(
         )
 
     def build_diagnostic_checklist(component: str, symptoms: str) -> str:
-        lowered = symptoms.lower()
-        steps = [
-            "Зафиксировать время начала и область влияния.",
-            f"Проверить состояние и последние изменения компонента {component}.",
-            "Собрать логи с корреляционным идентификатором и точными timestamps.",
-            "Проверить зависимости, сеть, DNS и доступность downstream-сервисов.",
-        ]
-        if any(marker in lowered for marker in ("медлен", "timeout", "таймаут")):
-            steps.extend(
-                [
-                    "Сравнить latency p50/p95/p99 с нормальным интервалом.",
-                    "Проверить saturation CPU, памяти, диска и пулов соединений.",
-                ]
-            )
-        if any(marker in lowered for marker in ("401", "403", "доступ", "auth")):
-            steps.append(
-                "Проверить срок действия credentials и права без вывода секретов."
-            )
-        steps.append(
-            "После изменения повторить проверку и зафиксировать результат в инциденте."
-        )
-        return _json(
-            {
-                "status": "ok",
-                "component": component,
-                "symptoms": redact_secrets(symptoms),
-                "steps": steps,
-            }
-        )
+        return _json(diagnostic_checklist_payload(component, symptoms))
 
     return [
         StructuredTool.from_function(
@@ -304,6 +263,62 @@ def _log_findings(log_text: str) -> list[dict[str, str]]:
             }
         )
     return findings
+
+
+def analyze_log_fragment_payload(
+    log_text: str,
+    *,
+    component: str | None = None,
+    max_log_chars: int = 12000,
+) -> dict[str, object]:
+    """Безопасное ядро анализа логов для LangChain tool и MCP server."""
+    if len(log_text) > max_log_chars:
+        return {
+            "status": "error",
+            "error": "log_too_large",
+            "max_log_chars": max_log_chars,
+            "actual_chars": len(log_text),
+        }
+    redacted = redact_secrets(log_text)
+    return {
+        "status": "ok",
+        "component": component,
+        "findings": _log_findings(redacted),
+        "redacted_log_preview": redacted[:1000],
+        "secrets_redacted": redacted != log_text,
+    }
+
+
+def diagnostic_checklist_payload(
+    component: str,
+    symptoms: str,
+) -> dict[str, object]:
+    """Детерминированный чек-лист без зависимости от LLM runtime."""
+    lowered = symptoms.lower()
+    steps = [
+        "Зафиксировать время начала и область влияния.",
+        f"Проверить состояние и последние изменения компонента {component}.",
+        "Собрать логи с корреляционным идентификатором и точными timestamps.",
+        "Проверить зависимости, сеть, DNS и доступность downstream-сервисов.",
+    ]
+    if any(marker in lowered for marker in ("медлен", "timeout", "таймаут")):
+        steps.extend(
+            [
+                "Сравнить latency p50/p95/p99 с нормальным интервалом.",
+                "Проверить saturation CPU, памяти, диска и пулов соединений.",
+            ]
+        )
+    if any(marker in lowered for marker in ("401", "403", "доступ", "auth")):
+        steps.append("Проверить срок действия credentials и права без вывода секретов.")
+    steps.append(
+        "После изменения повторить проверку и зафиксировать результат в инциденте."
+    )
+    return {
+        "status": "ok",
+        "component": component,
+        "symptoms": redact_secrets(symptoms),
+        "steps": steps,
+    }
 
 
 def _json(payload: object) -> str:

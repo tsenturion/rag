@@ -29,6 +29,8 @@ services:
       - "8000:8000"
     volumes:
       - agent_data:/app/data/agent
+      - multi_agent_data:/app/data/multi_agent
+      - mlruns_data:/app/mlruns
       - ./data/models:/app/data/models:ro
     depends_on:
       qdrant:
@@ -58,3 +60,5 @@ services:
 volumes:
   qdrant_data:
   agent_data:
+  multi_agent_data:
+  mlruns_data:

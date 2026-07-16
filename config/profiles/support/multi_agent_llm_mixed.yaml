@@ -1,0 +1,33 @@
+multi_agent:
+  llm_profiles:
+    openai_coordination:
+      provider: openai
+      model: gpt-4.1-nano
+      max_new_tokens: 350
+      timeout_seconds: 60
+      max_retries: 2
+    gigachat_review:
+      provider: gigachat
+      model: GigaChat-2
+      max_new_tokens: 512
+      timeout_seconds: 60
+      max_retries: 2
+      gigachat_auth_key_env: GIGACHAT_AUTH_KEY
+      gigachat_scope: GIGACHAT_API_PERS
+      gigachat_verify_ssl_certs: false
+    local_incidents:
+      provider: local
+      model: data/models/hf/Qwen2.5-1.5B-Instruct
+      max_new_tokens: 384
+      timeout_seconds: 120
+      max_retries: 0
+      local_device: auto
+      local_dtype: auto
+      local_files_only: true
+      trust_remote_code: true
+      low_cpu_mem_usage: true
+  role_llm_profiles:
+    planner: openai_coordination
+    coordinator: openai_coordination
+    critic_agent: gigachat_review
+    incident_agent: local_incidents

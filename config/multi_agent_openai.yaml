@@ -1,0 +1,7 @@
+extends:
+  - support_agent_openai.yaml
+  - profiles/support/multi_agent.yaml
+
+multi_agent:
+  output_dir: data/multi_agent/openai
+  mlflow_experiment: rag-multi-agent-openai
