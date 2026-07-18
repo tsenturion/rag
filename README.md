@@ -63,14 +63,14 @@ rag-prep --config config/default.yaml --no-prefect
 - `documents.jsonl`
 - `manifest.json`
 
-MLflow tracking по умолчанию пишется в `mlruns/` относительно корня проекта, определённого по расположению YAML-конфига. Запуск CLI из другого рабочего каталога не создаёт отдельное хранилище экспериментов.
+MLflow tracking использует SQLite БД `mlruns/mlflow.db` относительно корня проекта, определённого по расположению YAML-конфига. Запуск CLI из другого рабочего каталога не создаёт отдельное хранилище экспериментов. Артефакты также остаются в локальном каталоге MLflow; в Docker каталог `mlruns/` подключён как именованный volume.
 В `manifest.json` сохраняются параметры запуска, числовые счётчики и диагностический блок `parse_failures` для файлов, которые не удалось разобрать при `parser.fail_on_error: false`.
 JSON, JSONL и manifest сначала полностью формируются во временной директории, а затем заменяются как согласованный набор. При ошибке записи или замены предыдущая версия всех артефактов восстанавливается, поэтому новый JSON не смешивается со старым JSONL или manifest.
 
 Посмотреть запуски, параметры, метрики и артефакты в MLflow UI можно из корня проекта:
 
 ```powershell
-mlflow ui --backend-store-uri ./mlruns --host 127.0.0.1 --port 5000
+mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port 5000
 ```
 
 Интерфейс будет доступен на `http://127.0.0.1:5000`. Команда запускает долгоживущий локальный сервер MLflow и работает до `Ctrl+C`; открывать интерфейс нужно в браузере, а следующие команды выполнять во втором терминале.
@@ -2708,3 +2708,317 @@ python -m pytest `
 ```
 
 Тесты воспроизводят восстановление истории после перезапуска runtime, изоляцию пользователей, summary при переполнении, очистку checkpoint через API, произвольный внешний tool, ограничения файловой системы, авторизацию code runner, timeout и запрет опасных imports.
+
+# Оркестрация: паттерны, логика и контроль
+
+Этот модуль расширяет существующую мультиагентную систему распределённым контуром выполнения. LangGraph управляет планом и переходами между шагами, Celery передаёт задания через RabbitMQ, Redis хранит состояния и события, Flower показывает нагрузку, а Camunda связывает детерминированный BPMN-процесс с недетерминированным агентным шагом.
+
+## Архитектура оркестрации
+
+```mermaid
+flowchart LR
+    Client["CLI, Swagger или API client"] --> API["Support API"]
+    API --> Admission["Idempotency и backpressure"]
+    Admission --> Rabbit["RabbitMQ priority queues"]
+    Rabbit --> Workers["Celery workers"]
+    Workers --> Graph["LangGraph orchestration engine"]
+
+    subgraph Patterns["Паттерны выполнения"]
+        Sequential["Последовательный"]
+        Parallel["Параллельный"]
+        Conditional["Условный"]
+        Quorum["Barrier и quorum"]
+        Dynamic["Replanning и fallback"]
+    end
+
+    Graph --> Patterns
+    Patterns --> MultiAgent["MultiAgentRuntime"]
+    MultiAgent --> LLM["OpenAI, GigaChat или local LLM"]
+    MultiAgent --> Tools["Tools, memory и RAG"]
+    Workers --> Redis[("Redis states, events и leases")]
+    API --> Redis
+    Flower["Flower"] --> Rabbit
+    Metrics["Prometheus /metrics"] --> API
+```
+
+Основные компоненты:
+
+| Задача | Реализация | Файлы |
+|---|---|---|
+| Модель задания и состояния | job, plan, step result, event, deadline, priority | `src/agent_app/orchestration/models.py` |
+| Планирование | пять ограниченных сервером шаблонов и fallback-роли | `planning.py` |
+| Исполнение | LangGraph, зависимости, ветвления, parallel barrier, quorum | `engine.py`, `synchronization.py` |
+| Интеграция агента | адаптер к существующему `MultiAgentRuntime` | `executors.py` |
+| Очередь | Celery, RabbitMQ priority, retry, DLQ и routing | `queue.py`, `tasks.py` |
+| Состояние | in-memory для локальной отладки, Redis для нескольких процессов | `store.py`, `service.py` |
+| HTTP и CLI | Swagger endpoints и команды `rag-agent` | `service/app.py`, `cli.py` |
+| BPMN | Camunda SDK, workers и исполняемый процесс | `camunda.py`, `camunda_cli.py`, `bpmn/engineer_support.bpmn` |
+
+Жизненный цикл задания фиксируется явно: `queued -> running -> completed/failed/expired`; перед повтором используется промежуточное состояние `retrying`, а пользовательская отмена переводит незавершённое задание в `cancelled`. Каждый переход и каждый шаг сохраняются как `JobEvent` с возрастающим `sequence`.
+
+## Паттерны выполнения
+
+| `pattern` | Поведение | Практическое применение |
+|---|---|---|
+| `sequential` | анализ выполняется после проверки входа, затем формируется результат | зависимые шаги и предсказуемый порядок |
+| `parallel` | диагностика, база знаний и анализ рисков запускаются одновременно, затем ожидается barrier | независимые исследования с меньшей latency |
+| `conditional` | ветка выбирается по `risk_level`; вторая ветка помечается `skipped` | разные правила для обычных и опасных операций |
+| `quorum` | три роли голосуют `approve/reject/abstain`; нужны кворум и согласованное большинство | проверка критичных решений несколькими ролями |
+| `dynamic` | временная ошибка вызывает новую версию плана и смену роли по fallback-цепочке | адаптация к недоступному provider или инструменту |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Validate
+    Validate --> Decide
+    Decide --> Sequential: sequential
+    Decide --> Parallel: parallel
+    Decide --> RiskBranch: conditional
+    Decide --> Voting: quorum
+    Decide --> Adaptive: dynamic
+    Parallel --> Barrier
+    Voting --> QuorumCheck
+    Adaptive --> Replan: retryable failure
+    Replan --> Adaptive: revision limit not reached
+    Sequential --> Aggregate
+    Barrier --> Aggregate
+    RiskBranch --> Aggregate
+    QuorumCheck --> Aggregate: consensus reached
+    Adaptive --> Aggregate: success
+    Aggregate --> [*]
+```
+
+`ExecutionPlan` валидирует уникальность идентификаторов, существование зависимостей и отсутствие циклических или прямых ссылок. Параллельная группа не переходит к агрегации, пока не завершатся все доступные шаги. Для local LLM параллельное выполнение внутри задания отключается, чтобы несколько одновременных копий модели не исчерпали память GPU.
+
+Условное ветвление детерминировано и не делегируется LLM. Кворум считается успешным только при достаточном числе успешных ответов и определившемся большинстве. В динамическом режиме `max_plan_revisions` предотвращает бесконечное перепланирование; исчерпание лимита завершает задание ошибкой.
+
+## Очереди, приоритеты и нагрузка
+
+Распределённый режим использует delivery semantics `at least once`. Поэтому `idempotency_key` обязателен для вызывающей системы, которая может повторить HTTP-запрос после timeout. Redis атомарно закрепляет этот ключ за первым `job_id`; повтор возвращает исходное задание с `deduplicated: true`.
+
+RabbitMQ создаёт очереди `agent.high`, `agent.default`, `agent.low` с приоритетами `1/5/9` и dead-letter exchange `agent.dead_letter`. Worker подтверждает сообщение после выполнения (`acks_late`), использует `prefetch=1` и возвращает потерянное worker-сообщение в broker. Временные ошибки повторяются с exponential backoff и jitter; после исчерпания retry сообщение отклоняется без requeue и попадает в DLQ. Невосстановимая прикладная ошибка фиксируется как `failed` без бессмысленных повторов.
+
+RabbitMQ 4.3 запрещает deprecated transient non-exclusive queues. Celery 5.6 явно настроен на `control_queue_exclusive: true` и `event_queue_exclusive: true`, поэтому remote control, inspector, gossip и Flower используют допустимые exclusive queues без включения устаревшей возможности broker. В Celery 5.7 control queue станет exclusive по умолчанию; до стабильного выпуска 5.7 проект фиксирует последнюю стабильную ветку 5.6.
+
+`max_pending_jobs` реализует admission control: при заполнении API возвращает HTTP `429`, не создавая ещё одно задание. `provider_concurrency_limits` и распределённые Redis leases отдельно ограничивают число одновременных обращений к OpenAI, GigaChat и local provider. Deadline проверяется до старта и между шагами; Celery дополнительно применяет soft и hard time limits.
+
+Параметры находятся в композиционных профилях `config/profiles/support/orchestration.yaml` и `orchestration_docker.yaml`:
+
+```yaml
+orchestration:
+  enabled: true
+  backend: celery
+  max_pending_jobs: 500
+  max_parallelism: 3
+  worker_prefetch_multiplier: 1
+  max_retries: 3
+  retry_backoff_seconds: 5
+  retry_backoff_max_seconds: 120
+  provider_concurrency_limits:
+    openai: 8
+    gigachat: 4
+    local: 1
+```
+
+Host-конфиги `config/multi_agent_openai.yaml`, `multi_agent_gigachat.yaml`, `multi_agent_local.yaml` и `multi_agent_mixed.yaml` используют `backend: inline`. Соответствующие `multi_agent_docker_*.yaml` включают Celery backend. Provider выбирается явно именем конфига, OpenAI не является скрытым значением по умолчанию.
+
+## Локальный запуск и CLI
+
+Новые зависимости устанавливаются в тот же глобальный Python:
+
+```powershell
+python -m pip install --upgrade -r requirements.txt
+python -m pip install -e . --no-deps
+```
+
+Inline-режим не требует RabbitMQ и Redis. Он удобен для изучения графа и отладки одного процесса:
+
+```powershell
+rag-agent `
+  --config config/multi_agent_openai.yaml `
+  --enqueue `
+  --message "Проверь недоступность API и предложи порядок восстановления" `
+  --pattern parallel `
+  --priority high `
+  --user-id engineer-1 `
+  --session-id incident-42 `
+  --idempotency-key incident-42-analysis-v1 `
+  --wait `
+  --json
+```
+
+Для условного, кворумного и динамического сценариев измените `--pattern` на `conditional`, `quorum` или `dynamic`. Дополнительные параметры: `--risk-level high`, `--quorum-size 2`, `--deadline-seconds 300`, `--max-plan-revisions 2`.
+
+В распределённом режиме доступны операции над уже поставленным заданием:
+
+```powershell
+rag-agent --config config/multi_agent_docker_openai.yaml --job-status <job-id>
+rag-agent --config config/multi_agent_docker_openai.yaml --job-events <job-id>
+rag-agent --config config/multi_agent_docker_openai.yaml --cancel-job <job-id>
+rag-agent --config config/multi_agent_docker_openai.yaml --queue-status
+```
+
+Команды читают `ORCHESTRATION_REDIS_URL` и `ORCHESTRATION_BROKER_URL` из `.env`. Worker при наличии `SUPPORT_AGENT_CONFIG` заново загружает конфиг внутри собственной файловой системы, поэтому абсолютные Windows-пути не передаются в Docker runtime.
+
+При отдельном host-запуске worker путь задаётся явно; команда сначала загружает `.env`, затем создаёт Celery app:
+
+```powershell
+rag-orchestration-worker --config config/multi_agent_openai.yaml --concurrency 2
+```
+
+## HTTP API и Swagger
+
+Swagger содержит отдельную группу «Оркестрация»:
+
+- `POST /v1/orchestration/jobs` - поставить задание;
+- `GET /v1/orchestration/jobs/{job_id}` - прочитать состояние и результат;
+- `GET /v1/orchestration/jobs/{job_id}/events` - получить упорядоченный журнал;
+- `DELETE /v1/orchestration/jobs/{job_id}` - отменить незавершённое задание;
+- `GET /v1/orchestration/queues/status` - проверить Redis, broker и workers.
+
+Пример постановки через PowerShell:
+
+```powershell
+$headers = @{ "X-API-Key" = $env:SUPPORT_SERVICE_API_KEY }
+$body = @{
+  message = "Проверь инцидент с недоступностью API и оцени риски"
+  user_id = "engineer-1"
+  session_id = "incident-42"
+  pattern = "dynamic"
+  priority = "high"
+  risk_level = "high"
+  idempotency_key = "incident-42-dynamic-v1"
+  deadline_seconds = 300
+} | ConvertTo-Json
+
+$job = Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8000/v1/orchestration/jobs `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body $body
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/v1/orchestration/jobs/$($job.record.job.id)" `
+  -Headers $headers
+```
+
+`POST` возвращает HTTP `202`. В inline-режиме запись уже может иметь терминальный статус; в Celery-режиме клиент опрашивает `GET` или читает события. Swagger доступен на `http://127.0.0.1:8000/docs`, OpenAPI JSON - на `/openapi.json`.
+
+## Docker Compose и масштабирование
+
+В `.env` выберите multi-agent Docker-конфиг и задайте отдельные секреты RabbitMQ:
+
+```dotenv
+SUPPORT_AGENT_CONFIG=config/multi_agent_docker_openai.yaml
+SUPPORT_SERVICE_API_KEY=replace-with-random-secret
+CODE_RUNNER_API_KEY=replace-with-another-random-secret
+RABBITMQ_DEFAULT_USER=rag
+RABBITMQ_DEFAULT_PASS=replace-with-random-secret
+ORCHESTRATION_WORKER_CONCURRENCY=2
+```
+
+Для GigaChat, local Qwen или смешанного routing используются соответственно `multi_agent_docker_gigachat_openai_embeddings.yaml`, `multi_agent_docker_gigachat_local_embeddings.yaml`, `multi_agent_docker_local.yaml` или `multi_agent_docker_mixed.yaml`. Остальные provider credentials и vector-store профиль должны соответствовать выбранному конфигу.
+
+Запуск распределённого контура:
+
+```powershell
+docker compose --profile orchestration up -d --build
+docker compose --profile orchestration ps
+```
+
+После запуска доступны:
+
+- Support API и Swagger: `http://127.0.0.1:8000/docs`;
+- RabbitMQ Management: `http://127.0.0.1:15672`;
+- Flower: `http://127.0.0.1:5555`;
+- Prometheus exposition: `http://127.0.0.1:8000/metrics`.
+
+Горизонтальное масштабирование worker:
+
+```powershell
+docker compose --profile orchestration up -d --scale orchestration-worker=3
+```
+
+Для OpenAI/GigaChat число процессов ограничивается provider quota и настройкой `provider_concurrency_limits`. Для Qwen на Intel Arc оставьте `ORCHESTRATION_WORKER_CONCURRENCY=1` и одну реплику worker: каждый процесс загружает собственную модель, поэтому увеличение числа реплик может привести к XPU OOM. SQLite memory, incidents и LangGraph checkpoints используют WAL и `busy_timeout`, но для production с несколькими узлами эти хранилища следует заменить внешней БД.
+
+## Гибридная оркестрация Camunda
+
+Camunda управляет проверяемой бизнес-логикой, а агент получает только тот шаг, где допустимо недетерминированное решение:
+
+```mermaid
+flowchart LR
+    Start(["Запрос"]) --> Validate["Проверка обязательных полей"]
+    Validate --> Classify["Классификация риска"]
+    Classify --> Risk{"Высокий риск?"}
+    Risk -- "да" --> Approval["User Task: ручное согласование"]
+    Risk -- "нет" --> Merge["Продолжить"]
+    Approval --> Merge
+    Merge --> Agent["Celery: dynamic agent plan"]
+    Agent --> Verify["Детерминированная проверка результата"]
+    Verify --> Accepted{"Проверка пройдена?"}
+    Accepted -- "да" --> Done(["Завершено"])
+    Accepted -- "нет" --> Escalate(["Эскалация"])
+```
+
+Локальный Camunda 8.9 с H2 предназначен для разработки и оценки, не для production deploy. Запуск всего BPMN-профиля:
+
+```powershell
+docker compose --profile bpmn up -d --build
+docker compose --profile bpmn ps
+```
+
+Для команд с host Python в `.env` нужны:
+
+```dotenv
+CAMUNDA_REST_ADDRESS=http://127.0.0.1:8088/v2
+CAMUNDA_AUTH_STRATEGY=NONE
+```
+
+Развернуть BPMN и запустить экземпляр обычного риска:
+
+```powershell
+rag-camunda --config config/multi_agent_docker_openai.yaml deploy
+
+rag-camunda `
+  --config config/multi_agent_docker_openai.yaml `
+  start `
+  --message "Разбери инцидент с timeout API" `
+  --user-id engineer-1 `
+  --session-id camunda-incident-1 `
+  --risk-level medium
+```
+
+Operate доступен на `http://127.0.0.1:8088/operate`, Tasklist - на `http://127.0.0.1:8088/tasklist`, локальные учётные данные - `demo/demo`. Для `risk_level=high` процесс остановится на User Task, назначенной пользователю `demo`; после ручного завершения продолжится агентный шаг. Python worker запускается сервисом `camunda-worker` и использует официальный `camunda-orchestration-sdk`.
+
+`orchestration.camunda.poll_request_timeout_seconds` по умолчанию равен `5`: это long-poll ниже инфраструктурного HTTP timeout. Не увеличивайте его до граничного значения reverse proxy, иначе пустой poll может завершаться `503`, хотя сам worker продолжит работу.
+
+Официальные материалы: [Celery configuration](https://docs.celeryq.dev/en/stable/userguide/configuration.html), [RabbitMQ priority queues](https://www.rabbitmq.com/docs/priority), [RabbitMQ transient queue compatibility](https://www.rabbitmq.com/docs/4.2/queues), [Camunda Python SDK](https://docs.camunda.io/docs/apis-tools/python-sdk/), [Camunda job workers](https://docs.camunda.io/docs/apis-tools/python-sdk/job-workers/), [Camunda Docker Compose quickstart](https://docs.camunda.io/docs/self-managed/quickstart/developer-quickstart/docker-compose/).
+
+## Наблюдаемость и воспроизводимость
+
+В Redis сохраняются полная запись задания, терминальный результат, попытки и ограниченный журнал событий. RabbitMQ Management показывает очереди, unacked messages и DLQ; Flower показывает active, reserved и scheduled tasks. `/ready` включает состояние orchestration backend, а `/metrics` экспортирует `support_agent_orchestration_jobs_total` вместе с общими HTTP-метриками.
+
+Воспроизводимость обеспечивают:
+
+- явный YAML-профиль provider и orchestration backend;
+- стабильный UUID задания и отдельный `idempotency_key` внешней операции;
+- сохранённые версия плана, шаги, роли, revisions, timestamps и ошибки;
+- точные версии service dependencies в `requirements-service.txt`;
+- фиксированные Docker tags RabbitMQ, Redis и Camunda;
+- детерминированные ветвления и явные пределы retry, deadline и replanning.
+
+Ограничение: отмена Celery task выполняется без принудительного завершения процесса. Уже начатый LLM-вызов нельзя безопасно остановить из другого процесса, поэтому worker проверяет сохранённый `cancelled` status перед фиксацией результата. Для жёсткой изоляции долгих jobs нужны отдельные worker pools и инфраструктурное завершение контейнера.
+
+## Проверка модуля
+
+Offline-тесты не вызывают LLM providers, embeddings или погодный API:
+
+```powershell
+python -m pytest tests/test_orchestration.py -q
+```
+
+Они проверяют последовательный, параллельный, условный, кворумный и динамический паттерны, barrier, consensus, fallback роли, idempotency, backpressure, Swagger API, priority/DLQ конфигурацию и BPMN worker callbacks. Конфигурацию Compose можно проверить без запуска контейнеров:
+
+```powershell
+docker compose --profile orchestration --profile bpmn config --quiet
+```

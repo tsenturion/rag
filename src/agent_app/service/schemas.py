@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from datetime import timedelta
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -8,6 +9,12 @@ from agent_app.models import AgentResponse
 from agent_app.multi_agent.models import (
     MultiAgentComparisonReport,
     MultiAgentResponse,
+)
+from agent_app.orchestration.models import (
+    JobPriority,
+    OrchestrationJob,
+    OrchestrationPattern,
+    utc_now,
 )
 
 
@@ -91,6 +98,91 @@ class MultiAgentCompareResponse(MultiAgentComparisonReport):
     duration_ms: float = Field(
         description="Длительность двух запусков в миллисекундах."
     )
+
+
+class OrchestrationJobRequest(ChatRequest):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "message": (
+                        "Проверь инцидент с недоступностью API, оцени риски "
+                        "и предложи порядок восстановления."
+                    ),
+                    "user_id": "engineer-1",
+                    "session_id": "incident-42",
+                    "pattern": "parallel",
+                    "priority": "high",
+                    "risk_level": "high",
+                    "deadline_seconds": 300,
+                    "idempotency_key": "incident-42-analysis-v1",
+                }
+            ]
+        }
+    )
+
+    pattern: OrchestrationPattern = Field(
+        default=OrchestrationPattern.SEQUENTIAL,
+        description=(
+            "Паттерн выполнения: последовательный, параллельный, условный, "
+            "кворум или динамическое перепланирование."
+        ),
+    )
+    priority: JobPriority = Field(
+        default=JobPriority.NORMAL,
+        description="Приоритет broker-очереди.",
+    )
+    risk_level: Literal["low", "medium", "high"] = Field(
+        default="medium",
+        description="Детерминированный вход для условной ветки.",
+    )
+    quorum_size: int = Field(
+        default=2,
+        ge=1,
+        le=3,
+        description="Число успешных голосов для кворума из трёх агентов.",
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=200,
+        description="Ключ защиты от повторной постановки одного задания.",
+    )
+    deadline_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        le=86_400,
+        description="Срок выполнения относительно момента постановки.",
+    )
+    max_plan_revisions: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        description="Максимальное число динамических перепланирований.",
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Дополнительный контекст задания без секретов.",
+    )
+
+    def to_job(self) -> OrchestrationJob:
+        return OrchestrationJob(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            message=self.message,
+            pattern=self.pattern,
+            priority=self.priority,
+            risk_level=self.risk_level,
+            quorum_size=self.quorum_size,
+            idempotency_key=self.idempotency_key,
+            deadline_at=(
+                utc_now() + timedelta(seconds=self.deadline_seconds)
+                if self.deadline_seconds is not None
+                else None
+            ),
+            max_plan_revisions=self.max_plan_revisions,
+            metadata=self.metadata,
+        )
 
 
 class SessionResponse(BaseModel):

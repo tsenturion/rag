@@ -29,7 +29,11 @@ scenarios:
 
   - id: isolated_python
     title: Изолированное выполнение Python
-    request: Выполни код через execute_python: ```python\nprint(sum(i * i for i in range(5)))\n```.
+    request: |
+      Выполни код через execute_python:
+      ```python
+      print(sum(i * i for i in range(5)))
+      ```
     expected_terms:
       - "30"
     expected_tools:

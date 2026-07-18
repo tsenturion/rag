@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  id="Definitions_engineer_support"
+                  targetNamespace="http://rag.example/engineer-support"
+                  exporter="Camunda Modeler"
+                  exporterVersion="5.42.0">
+  <bpmn:process id="engineer-support-process" name="Поддержка инженера" isExecutable="true">
+    <bpmn:startEvent id="start" name="Получен запрос">
+      <bpmn:outgoing>flow_start_validate</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="validate" name="Проверить запрос">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="validate-support-request" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>flow_start_validate</bpmn:incoming>
+      <bpmn:outgoing>flow_validate_classify</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="classify" name="Классифицировать риск">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="classify-support-risk" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>flow_validate_classify</bpmn:incoming>
+      <bpmn:outgoing>flow_classify_gateway</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="risk_gateway" name="Высокий риск?" default="flow_standard_merge">
+      <bpmn:incoming>flow_classify_gateway</bpmn:incoming>
+      <bpmn:outgoing>flow_high_approval</bpmn:outgoing>
+      <bpmn:outgoing>flow_standard_merge</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="manual_approval" name="Ручное согласование">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateUsers="demo" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>flow_high_approval</bpmn:incoming>
+      <bpmn:outgoing>flow_approval_merge</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="approval_merge">
+      <bpmn:incoming>flow_standard_merge</bpmn:incoming>
+      <bpmn:incoming>flow_approval_merge</bpmn:incoming>
+      <bpmn:outgoing>flow_merge_agent</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="agent" name="Выполнить агентный план">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="run-support-agent" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>flow_merge_agent</bpmn:incoming>
+      <bpmn:outgoing>flow_agent_verify</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="verify" name="Проверить результат">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="verify-support-result" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>flow_agent_verify</bpmn:incoming>
+      <bpmn:outgoing>flow_verify_gateway</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="verification_gateway" name="Результат принят?" default="flow_escalated">
+      <bpmn:incoming>flow_verify_gateway</bpmn:incoming>
+      <bpmn:outgoing>flow_completed</bpmn:outgoing>
+      <bpmn:outgoing>flow_escalated</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:endEvent id="completed" name="Завершено">
+      <bpmn:incoming>flow_completed</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="escalated" name="Эскалация">
+      <bpmn:incoming>flow_escalated</bpmn:incoming>
+      <bpmn:escalationEventDefinition escalationRef="Escalation_verification_failed" />
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="flow_start_validate" sourceRef="start" targetRef="validate" />
+    <bpmn:sequenceFlow id="flow_validate_classify" sourceRef="validate" targetRef="classify" />
+    <bpmn:sequenceFlow id="flow_classify_gateway" sourceRef="classify" targetRef="risk_gateway" />
+    <bpmn:sequenceFlow id="flow_high_approval" sourceRef="risk_gateway" targetRef="manual_approval">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">= requiresApproval = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="flow_standard_merge" sourceRef="risk_gateway" targetRef="approval_merge" />
+    <bpmn:sequenceFlow id="flow_approval_merge" sourceRef="manual_approval" targetRef="approval_merge" />
+    <bpmn:sequenceFlow id="flow_merge_agent" sourceRef="approval_merge" targetRef="agent" />
+    <bpmn:sequenceFlow id="flow_agent_verify" sourceRef="agent" targetRef="verify" />
+    <bpmn:sequenceFlow id="flow_verify_gateway" sourceRef="verify" targetRef="verification_gateway" />
+    <bpmn:sequenceFlow id="flow_completed" sourceRef="verification_gateway" targetRef="completed">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">= verificationPassed = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="flow_escalated" sourceRef="verification_gateway" targetRef="escalated" />
+  </bpmn:process>
+  <bpmn:escalation id="Escalation_verification_failed" name="Результат не прошёл проверку" escalationCode="VERIFICATION_FAILED" />
+</bpmn:definitions>

@@ -2,6 +2,8 @@ extends:
   - support_agent_docker_gigachat_local_embeddings.yaml
   - profiles/support/multi_agent.yaml
   - profiles/support/multi_agent_docker_tools.yaml
+  - profiles/support/orchestration.yaml
+  - profiles/support/orchestration_docker.yaml
 
 multi_agent:
   task_timeout_seconds: 60

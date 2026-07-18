@@ -19,6 +19,7 @@ from agent_app.multi_agent.models import (
     MultiAgentRunResult,
 )
 from agent_app.multi_agent.runtime import MultiAgentRuntime
+from agent_app.orchestration.service import OrchestrationService, callback_executor
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.service.schemas import DeleteSessionResponse, SessionResponse
 from agent_app.support.incidents import IncidentStore
@@ -51,9 +52,11 @@ class SupportApplicationRuntime:
         self._cache_lock = threading.RLock()
         self._execution_lock = threading.RLock()
         self.multi_agent_runtime: MultiAgentRuntime | None = None
+        self.orchestration_service: OrchestrationService | None = None
         if self._llm is None:
             self._initialize_llm()
         self._initialize_multi_agent()
+        self._initialize_orchestration()
 
     def ask(
         self, *, user_id: str, session_id: str, message: str
@@ -163,6 +166,7 @@ class SupportApplicationRuntime:
         if self._llm is None:
             self._initialize_llm()
         self._initialize_multi_agent()
+        self._initialize_orchestration()
         rag = self.rag_runtime.start().model_dump(mode="json")
         llm_ready = self._llm is not None
         api_key_ready = self._service_api_key_ready()
@@ -170,12 +174,28 @@ class SupportApplicationRuntime:
             not self.config.multi_agent.enabled or self.multi_agent_runtime is not None
         )
         runner = code_runner_status(self.config.code_runner)
+        orchestration = (
+            self.orchestration_service.status().model_dump(mode="json")
+            if self.orchestration_service is not None
+            else {
+                "backend": self.config.orchestration.backend,
+                "ready": not self.config.orchestration.enabled,
+                "status_counts": {},
+                "workers": {},
+                "error": (
+                    None
+                    if not self.config.orchestration.enabled
+                    else "Orchestration service не инициализирован"
+                ),
+            }
+        )
         ready = (
             llm_ready
             and bool(rag["ready"])
             and api_key_ready
             and multi_agent_ready
             and bool(runner["ready"])
+            and bool(orchestration["ready"])
         )
         return {
             "ready": ready,
@@ -209,6 +229,7 @@ class SupportApplicationRuntime:
             },
             "external_mcp": self.external_mcp_manager.status(),
             "code_runner": runner,
+            "orchestration": orchestration,
         }
 
     def close(self) -> None:
@@ -220,6 +241,9 @@ class SupportApplicationRuntime:
         if self.multi_agent_runtime is not None:
             self.multi_agent_runtime.close()
             self.multi_agent_runtime = None
+        if self.orchestration_service is not None:
+            self.orchestration_service.close()
+            self.orchestration_service = None
         self.external_mcp_manager.close()
         if self._owns_rag:
             self.rag_runtime.close()
@@ -283,6 +307,38 @@ class SupportApplicationRuntime:
             self.multi_agent_runtime = None
             self._multi_agent_error = redact_secrets(str(exc))[:500]
             LOGGER.exception("Не удалось инициализировать LLM-профили multi-agent")
+
+    def _initialize_orchestration(self) -> None:
+        if (
+            not self.config.orchestration.enabled
+            or self.orchestration_service is not None
+        ):
+            return
+        if self.config.orchestration.backend == "inline":
+            self._initialize_multi_agent()
+            if self.multi_agent_runtime is None:
+                return
+        try:
+            self.orchestration_service = OrchestrationService(
+                self.config,
+                executor_factory=callback_executor(self._orchestration_ask),
+            )
+        except Exception:
+            self.orchestration_service = None
+            LOGGER.exception("Не удалось инициализировать orchestration service")
+
+    def _orchestration_ask(
+        self,
+        user_id: str,
+        session_id: str,
+        message: str,
+    ) -> MultiAgentRunResult:
+        with self._execution_lock:
+            return self._require_multi_agent().ask(
+                user_id=user_id,
+                session_id=session_id,
+                message=message,
+            )
 
     def _require_multi_agent(self) -> MultiAgentRuntime:
         if self.multi_agent_runtime is None:

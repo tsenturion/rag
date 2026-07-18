@@ -33,7 +33,7 @@ multi_agent:
     mcp_path: /mcp
     acp_legacy_enabled: true
   mlflow_enabled: true
-  mlflow_tracking_uri: mlruns
+  mlflow_tracking_uri: sqlite:///mlruns/mlflow.db
   mlflow_experiment: rag-multi-agent
 
 file_tools:

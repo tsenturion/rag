@@ -11,6 +11,10 @@ from agent_app.multi_agent.models import (
     MultiAgentComparisonReport,
     MultiAgentRunResult,
 )
+from rag_prep.mlflow_uri import (
+    ensure_mlflow_tracking_parent,
+    resolve_mlflow_tracking_uri,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -84,7 +88,9 @@ class MultiAgentTracker:
         artifact_dir: Path,
     ) -> None:
         try:
-            mlflow.set_tracking_uri(self._tracking_uri())
+            tracking_uri = self._tracking_uri()
+            ensure_mlflow_tracking_parent(tracking_uri)
+            mlflow.set_tracking_uri(tracking_uri)
             mlflow.set_experiment(self.config.mlflow_experiment)
             with mlflow.start_run(
                 run_name=run_name,
@@ -97,7 +103,11 @@ class MultiAgentTracker:
             LOGGER.exception("Не удалось записать multi-agent запуск в MLflow")
 
     def _tracking_uri(self) -> str:
-        uri = self.config.mlflow_tracking_uri
+        project_root = Path(__file__).resolve().parents[3]
+        uri = resolve_mlflow_tracking_uri(
+            self.config.mlflow_tracking_uri,
+            base_dir=project_root,
+        )
         if "://" in uri:
             return uri
-        return Path(uri).expanduser().resolve().as_uri()
+        return Path(uri).resolve().as_uri()

@@ -19,10 +19,11 @@ RUN python -m pip install --upgrade pip \
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY config ./config
+COPY bpmn ./bpmn
 RUN python -m pip install --no-deps . \
     && mkdir -p /app/data/agent /app/data/embeddings_openai \
         /app/data/embeddings_local /app/data/models \
-        /app/data/multi_agent \
+        /app/data/multi_agent /app/data/orchestration \
         /app/data/vector_store_docker_openai \
         /app/data/vector_store_docker_local /app/mlruns \
     && chown -R app:app /app

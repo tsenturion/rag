@@ -25,7 +25,10 @@ class MultiAgentCheckpointStore:
         self._connection = sqlite3.connect(
             self.path,
             check_same_thread=False,
+            timeout=30,
         )
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA busy_timeout=30000")
         serializer = JsonPlusSerializer(
             allowed_msgpack_modules=[
                 ("agent_app.multi_agent.models", "AgentTask"),

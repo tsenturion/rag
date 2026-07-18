@@ -16,6 +16,7 @@ from agent_app.config import MultiAgentConfig  # noqa: E402
 from agent_app.multi_agent.tracking import MultiAgentTracker  # noqa: E402
 from rag_prep.config import PipelineConfig, load_config  # noqa: E402
 from rag_prep.tracking import MLflowTracker  # noqa: E402
+from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri  # noqa: E402
 
 
 class MlflowTrackingUriTest(unittest.TestCase):
@@ -36,7 +37,22 @@ class MlflowTrackingUriTest(unittest.TestCase):
             finally:
                 os.chdir(original_cwd)
 
-        self.assertEqual(uri, (PROJECT_ROOT / "mlruns").resolve().as_uri())
+        expected = (PROJECT_ROOT / "mlruns" / "mlflow.db").resolve().as_posix()
+        self.assertEqual(uri, f"sqlite:///{expected}")
+
+    def test_sqlite_tracking_uri_is_resolved_from_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir) / "project"
+
+            uri = resolve_mlflow_tracking_uri(
+                "sqlite:///metrics/mlflow.db",
+                base_dir=root,
+            )
+
+        self.assertEqual(
+            uri,
+            f"sqlite:///{(root / 'metrics' / 'mlflow.db').resolve().as_posix()}",
+        )
 
     def test_rag_tracking_uri_is_resolved_from_config_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_dir:

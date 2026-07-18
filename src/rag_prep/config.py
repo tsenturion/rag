@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
+from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri
 
 
 class RunConfig(BaseModel):
@@ -83,7 +83,7 @@ class StructuringConfig(BaseModel):
 class LoggingConfig(BaseModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     mlflow_enabled: bool = True
-    mlflow_tracking_uri: str = "mlruns"
+    mlflow_tracking_uri: str = "sqlite:///mlruns/mlflow.db"
     mlflow_experiment: str = "rag-data-preparation"
 
 
@@ -490,13 +490,13 @@ def _resolve_local_model_reference(model: str, *, base_dir: Path) -> str:
 
 
 def _resolve_logging_tracking_uri(config: Any, *, base_dir: Path) -> Any:
-    uri = config.logging.mlflow_tracking_uri
-    path = Path(uri).expanduser()
-    if path.is_absolute() or path.drive or urlparse(uri).scheme:
-        return config
-
     logging_config = config.logging.model_copy(
-        update={"mlflow_tracking_uri": str((base_dir / path).resolve())}
+        update={
+            "mlflow_tracking_uri": resolve_mlflow_tracking_uri(
+                config.logging.mlflow_tracking_uri,
+                base_dir=base_dir,
+            )
+        }
     )
     return config.model_copy(update={"logging": logging_config})
 

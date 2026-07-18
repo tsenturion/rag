@@ -9,6 +9,10 @@ from urllib.parse import urlparse
 import mlflow
 
 from rag_prep.utils import flatten_dict
+from rag_prep.mlflow_uri import (
+    ensure_mlflow_tracking_parent,
+    resolve_mlflow_tracking_uri,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +33,7 @@ class MLflowTracker:
             return
 
         tracking_uri = self._tracking_uri()
+        ensure_mlflow_tracking_parent(tracking_uri)
         mlflow.set_tracking_uri(tracking_uri)
         mlflow.set_experiment(self.config.logging.mlflow_experiment)
 
@@ -48,17 +53,18 @@ class MLflowTracker:
         LOGGER.info("Запуск залогирован в MLflow tracking URI %s", tracking_uri)
 
     def _tracking_uri(self) -> str:
-        uri = self.config.logging.mlflow_tracking_uri
+        project_root = Path(__file__).resolve().parents[2]
+        uri = resolve_mlflow_tracking_uri(
+            self.config.logging.mlflow_tracking_uri,
+            base_dir=project_root,
+        )
         path = Path(uri)
         if path.is_absolute() or path.drive:
             return path.resolve().as_uri()
-
         parsed = urlparse(uri)
         if parsed.scheme:
             return uri
-
-        project_root = Path(__file__).resolve().parents[2]
-        return (project_root / path).resolve().as_uri()
+        return path.resolve().as_uri()
 
     @staticmethod
     def _safe_param(value: Any) -> str | int | float | bool:

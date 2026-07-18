@@ -4,9 +4,11 @@ import argparse
 import json
 import logging
 import sys
+from datetime import timedelta
 from pathlib import Path
 
-from agent_app.config import load_agent_config
+from agent_app.config import AgentAppConfig, load_agent_config
+from agent_app.cli_formatting import RussianHelpFormatter, add_russian_help
 from agent_app.graph import AgentRunner
 from agent_app.memory import SQLiteMemoryStore
 from agent_app.multi_agent.exporting import MultiAgentExporter
@@ -16,28 +18,16 @@ from agent_app.multi_agent.runtime import (
     MultiAgentRuntime,
     load_comparison_suite,
 )
+from agent_app.orchestration.models import (
+    JobPriority,
+    JobStatus,
+    OrchestrationJob,
+    OrchestrationPattern,
+    utc_now,
+)
+from agent_app.orchestration.service import OrchestrationService
 from agent_app.scenarios import ScenarioRunner, load_scenario_suite
 from agent_app.tools.mcp_external import ExternalMCPToolManager
-
-
-class RussianHelpFormatter(argparse.HelpFormatter):
-    def _format_usage(self, *args, **kwargs) -> str:
-        return (
-            super()
-            ._format_usage(*args, **kwargs)
-            .replace("usage:", "использование:", 1)
-        )
-
-
-def _add_russian_help(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "-h",
-        "--help",
-        action="help",
-        default=argparse.SUPPRESS,
-        help="показать это сообщение и выйти",
-    )
-    parser._optionals.title = "параметры"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         add_help=False,
         formatter_class=RussianHelpFormatter,
     )
-    _add_russian_help(parser)
+    add_russian_help(parser, positionals_title="аргументы")
     parser.add_argument(
         "--config",
         required=True,
@@ -141,6 +131,86 @@ def build_parser() -> argparse.ArgumentParser:
         default="{}",
         help="JSON-объект аргументов для --call-mcp-tool.",
     )
+    parser.add_argument(
+        "--enqueue",
+        action="store_true",
+        help="Поставить --message в orchestration-очередь.",
+    )
+    parser.add_argument(
+        "--job-status",
+        default=None,
+        metavar="JOB_ID",
+        help="Показать состояние orchestration-задания.",
+    )
+    parser.add_argument(
+        "--job-events",
+        default=None,
+        metavar="JOB_ID",
+        help="Показать журнал событий orchestration-задания.",
+    )
+    parser.add_argument(
+        "--cancel-job",
+        default=None,
+        metavar="JOB_ID",
+        help="Отменить незавершённое orchestration-задание.",
+    )
+    parser.add_argument(
+        "--queue-status",
+        action="store_true",
+        help="Показать состояние broker, хранилища и workers.",
+    )
+    parser.add_argument(
+        "--pattern",
+        choices=[item.value for item in OrchestrationPattern],
+        default=OrchestrationPattern.SEQUENTIAL.value,
+        help="Паттерн orchestration-задания.",
+    )
+    parser.add_argument(
+        "--priority",
+        choices=[item.value for item in JobPriority],
+        default=JobPriority.NORMAL.value,
+        help="Приоритет задания в очереди.",
+    )
+    parser.add_argument(
+        "--risk-level",
+        choices=["low", "medium", "high"],
+        default="medium",
+        help="Уровень риска для условного паттерна.",
+    )
+    parser.add_argument(
+        "--quorum-size",
+        type=int,
+        default=2,
+        help="Требуемый кворум из трёх агентов.",
+    )
+    parser.add_argument(
+        "--idempotency-key",
+        default=None,
+        help="Ключ защиты от повторной постановки задания.",
+    )
+    parser.add_argument(
+        "--deadline-seconds",
+        type=int,
+        default=None,
+        help="Срок выполнения задания в секундах.",
+    )
+    parser.add_argument(
+        "--max-plan-revisions",
+        type=int,
+        default=2,
+        help="Максимальное число динамических перепланирований.",
+    )
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="Ожидать терминального состояния поставленного задания.",
+    )
+    parser.add_argument(
+        "--wait-timeout",
+        type=float,
+        default=360.0,
+        help="Максимальное ожидание задания в секундах.",
+    )
     return parser
 
 
@@ -155,6 +225,23 @@ def main() -> int:
 
     user_id = args.user_id or config.memory.default_user_id
     session_id = args.session_id or config.memory.default_session_id
+
+    orchestration_action = any(
+        (
+            args.enqueue,
+            args.job_status,
+            args.job_events,
+            args.cancel_job,
+            args.queue_status,
+        )
+    )
+    if orchestration_action:
+        return _run_orchestration_command(
+            args,
+            config=config,
+            user_id=user_id,
+            session_id=session_id,
+        )
 
     if args.simulate_protocols:
         print(
@@ -371,6 +458,67 @@ def _print_scenario_report(payload: dict[str, object], *, as_json: bool) -> None
             continue
         print(f"- {result.get('id')}: {'passed' if result.get('passed') else 'failed'}")
     print(f"Отчёт: {payload.get('report_path')}")
+
+
+def _run_orchestration_command(
+    args: argparse.Namespace,
+    *,
+    config: AgentAppConfig,
+    user_id: str,
+    session_id: str,
+) -> int:
+    service = OrchestrationService(config)
+    try:
+        if args.queue_status:
+            payload = service.status().model_dump(mode="json")
+        elif args.job_status:
+            payload = service.get(args.job_status).model_dump(mode="json")
+        elif args.job_events:
+            payload = [
+                event.model_dump(mode="json")
+                for event in service.events(args.job_events)
+            ]
+        elif args.cancel_job:
+            payload = service.cancel(args.cancel_job).model_dump(mode="json")
+        else:
+            if not args.message:
+                raise ValueError("Для --enqueue обязательно задайте --message")
+            job = OrchestrationJob(
+                user_id=user_id,
+                session_id=session_id,
+                message=args.message,
+                pattern=OrchestrationPattern(args.pattern),
+                priority=JobPriority(args.priority),
+                risk_level=args.risk_level,
+                quorum_size=args.quorum_size,
+                idempotency_key=args.idempotency_key,
+                deadline_at=(
+                    utc_now() + timedelta(seconds=args.deadline_seconds)
+                    if args.deadline_seconds is not None
+                    else None
+                ),
+                max_plan_revisions=args.max_plan_revisions,
+            )
+            submission = service.submit(job)
+            record = submission.record
+            if args.wait and not record.status.terminal:
+                record = service.wait(job.id, timeout_seconds=args.wait_timeout)
+            payload = {
+                "deduplicated": submission.deduplicated,
+                "record": record.model_dump(mode="json"),
+            }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if isinstance(payload, dict):
+            record_payload = payload.get("record", payload)
+            if isinstance(record_payload, dict) and record_payload.get("status") in {
+                JobStatus.FAILED.value,
+                JobStatus.CANCELLED.value,
+                JobStatus.EXPIRED.value,
+            }:
+                return 1
+        return 0
+    finally:
+        service.close()
 
 
 def _configure_stdio() -> None:

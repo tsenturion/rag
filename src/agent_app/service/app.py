@@ -25,6 +25,14 @@ from prometheus_client import (
 from agent_app.config import AgentAppConfig, load_agent_config
 from agent_app.multi_agent.protocols.a2a import install_a2a_routes
 from agent_app.multi_agent.protocols.mcp import build_mcp_server
+from agent_app.orchestration.errors import JobNotFoundError, QueueCapacityError
+from agent_app.orchestration.models import (
+    JobEvent,
+    JobRecord,
+    JobSubmission,
+    QueueStatus,
+)
+from agent_app.orchestration.service import OrchestrationService
 from agent_app.service.runtime import SupportApplicationRuntime
 from agent_app.service.schemas import (
     ApiError,
@@ -35,6 +43,7 @@ from agent_app.service.schemas import (
     MultiAgentChatResponse,
     MultiAgentCompareRequest,
     MultiAgentCompareResponse,
+    OrchestrationJobRequest,
     SessionResponse,
 )
 from agent_app.support.security import redact_secrets
@@ -50,6 +59,12 @@ OPENAPI_TAGS = [
     {
         "name": "Мультиагентная система",
         "description": "Supervisor-граф, сравнение режимов и артефакты запусков.",
+    },
+    {
+        "name": "Оркестрация",
+        "description": (
+            "Постановка заданий, паттерны выполнения, очередь, события и отмена."
+        ),
     },
     {
         "name": "Сессии",
@@ -80,7 +95,10 @@ REQUEST_ID_HEADER: dict[str, Any] = {
 def _error_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
     descriptions = {
         401: "API key отсутствует или некорректен.",
+        404: "Задание или ресурс не найден.",
+        409: "Операция конфликтует с текущим состоянием задания.",
         413: "Размер запроса или сообщения превышает установленный предел.",
+        429: "Очередь заполнена: сработал backpressure.",
         422: "Запрос не соответствует OpenAPI-схеме.",
         500: "Непредвиденная ошибка выполнения агента.",
         503: "Сервис, LLM или RAG временно не готов к обработке запроса.",
@@ -191,6 +209,12 @@ def create_app(
         ["status"],
         registry=registry,
     )
+    orchestration_counter = Counter(
+        "support_agent_orchestration_jobs_total",
+        "Результаты постановки orchestration-заданий",
+        ["pattern", "status", "deduplicated"],
+        registry=registry,
+    )
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):
@@ -273,6 +297,15 @@ def create_app(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Некорректный API key.",
             )
+
+    def require_orchestration(request: Request) -> OrchestrationService:
+        service = request.app.state.runtime.orchestration_service
+        if service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Оркестрация отключена или не инициализирована.",
+            )
+        return service
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
@@ -398,6 +431,93 @@ def create_app(
         if payload is None:
             raise HTTPException(status_code=404, detail="Multi-agent запуск не найден")
         return payload
+
+    @app.post(
+        "/v1/orchestration/jobs",
+        response_model=JobSubmission,
+        status_code=status.HTTP_202_ACCEPTED,
+        tags=["Оркестрация"],
+        summary="Поставить задание в оркестратор",
+        description=(
+            "Создаёт воспроизводимое задание с выбранным паттерном. В inline "
+            "режиме оно выполняется до возврата ответа; в Celery-режиме попадает "
+            "в приоритетную RabbitMQ-очередь."
+        ),
+        responses=_error_responses(401, 413, 422, 429, 500, 503),
+        dependencies=[Depends(require_api_key)],
+    )
+    def submit_orchestration_job(
+        request: Request,
+        payload: OrchestrationJobRequest,
+    ) -> JobSubmission:
+        _validate_message_size(payload.message, config)
+        service = require_orchestration(request)
+        try:
+            submission = service.submit(payload.to_job())
+        except QueueCapacityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=str(exc),
+            ) from exc
+        orchestration_counter.labels(
+            submission.record.job.pattern.value,
+            submission.record.status.value,
+            str(submission.deduplicated).lower(),
+        ).inc()
+        return submission
+
+    @app.get(
+        "/v1/orchestration/jobs/{job_id}",
+        response_model=JobRecord,
+        tags=["Оркестрация"],
+        summary="Получить состояние задания",
+        responses=_error_responses(401, 404, 500, 503),
+        dependencies=[Depends(require_api_key)],
+    )
+    def get_orchestration_job(request: Request, job_id: str) -> JobRecord:
+        try:
+            return require_orchestration(request).get(job_id)
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/v1/orchestration/jobs/{job_id}/events",
+        response_model=list[JobEvent],
+        tags=["Оркестрация"],
+        summary="Получить журнал событий задания",
+        responses=_error_responses(401, 404, 500, 503),
+        dependencies=[Depends(require_api_key)],
+    )
+    def get_orchestration_events(request: Request, job_id: str) -> list[JobEvent]:
+        try:
+            return require_orchestration(request).events(job_id)
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.delete(
+        "/v1/orchestration/jobs/{job_id}",
+        response_model=JobRecord,
+        tags=["Оркестрация"],
+        summary="Отменить незавершённое задание",
+        responses=_error_responses(401, 404, 500, 503),
+        dependencies=[Depends(require_api_key)],
+    )
+    def cancel_orchestration_job(request: Request, job_id: str) -> JobRecord:
+        try:
+            return require_orchestration(request).cancel(job_id)
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/v1/orchestration/queues/status",
+        response_model=QueueStatus,
+        tags=["Оркестрация"],
+        summary="Проверить очередь и workers",
+        responses=_error_responses(401, 503),
+        dependencies=[Depends(require_api_key)],
+    )
+    def orchestration_queue_status(request: Request) -> QueueStatus:
+        return require_orchestration(request).status()
 
     @app.post(
         "/v1/chat/stream",

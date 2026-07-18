@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from rag_prep.config import EmbeddingConfig, VectorStoreConfig
 from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
+from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri
 
 
 class AgentConfig(BaseModel):
@@ -262,7 +263,7 @@ class MultiAgentConfig(BaseModel):
         default_factory=MultiAgentProtocolConfig
     )
     mlflow_enabled: bool = True
-    mlflow_tracking_uri: str = "mlruns"
+    mlflow_tracking_uri: str = "sqlite:///mlruns/mlflow.db"
     mlflow_experiment: str = "rag-multi-agent"
 
     @model_validator(mode="after")
@@ -317,6 +318,77 @@ class MultiAgentConfig(BaseModel):
         return self
 
 
+class CamundaConfig(BaseModel):
+    enabled: bool = False
+    process_id: str = "engineer-support-process"
+    process_path: Path = Path("bpmn/engineer_support.bpmn")
+    worker_timeout_seconds: int = Field(default=300, ge=10, le=3600)
+    poll_request_timeout_seconds: int = Field(default=5, ge=1, le=25)
+    poll_interval_seconds: float = Field(default=1.0, gt=0, le=30)
+    job_type_validate: str = "validate-support-request"
+    job_type_classify: str = "classify-support-risk"
+    job_type_agent: str = "run-support-agent"
+    job_type_verify: str = "verify-support-result"
+
+
+class OrchestrationConfig(BaseModel):
+    enabled: bool = False
+    backend: Literal["inline", "celery"] = "inline"
+    broker_url_env: str = "ORCHESTRATION_BROKER_URL"
+    result_backend_url_env: str = "ORCHESTRATION_RESULT_BACKEND_URL"
+    state_store_url_env: str = "ORCHESTRATION_REDIS_URL"
+    queue_high: str = "agent.high"
+    queue_default: str = "agent.default"
+    queue_low: str = "agent.low"
+    queue_dead_letter: str = "agent.dead_letter"
+    max_priority: int = Field(default=9, ge=2, le=10)
+    max_pending_jobs: int = Field(default=500, ge=1, le=100_000)
+    state_ttl_seconds: int = Field(default=86_400, ge=60)
+    idempotency_ttl_seconds: int = Field(default=86_400, ge=60)
+    event_limit: int = Field(default=500, ge=10, le=10_000)
+    max_parallelism: int = Field(default=3, ge=1, le=32)
+    worker_concurrency: int = Field(default=2, ge=1, le=64)
+    worker_prefetch_multiplier: int = Field(default=1, ge=1, le=16)
+    task_soft_time_limit_seconds: int = Field(default=300, ge=10, le=7200)
+    task_time_limit_seconds: int = Field(default=330, ge=10, le=7500)
+    max_retries: int = Field(default=3, ge=0, le=20)
+    retry_backoff_seconds: int = Field(default=5, ge=1, le=600)
+    retry_backoff_max_seconds: int = Field(default=120, ge=1, le=3600)
+    retry_jitter: bool = True
+    provider_concurrency_limits: dict[str, int] = Field(
+        default_factory=lambda: {"openai": 8, "gigachat": 4, "local": 1}
+    )
+    slot_lease_seconds: int = Field(default=600, ge=30, le=7200)
+    eager: bool = False
+    camunda: CamundaConfig = Field(default_factory=CamundaConfig)
+
+    @model_validator(mode="after")
+    def validate_runtime_limits(self) -> OrchestrationConfig:
+        if self.task_soft_time_limit_seconds >= self.task_time_limit_seconds:
+            raise ValueError(
+                "orchestration.task_soft_time_limit_seconds должен быть меньше "
+                "task_time_limit_seconds"
+            )
+        if self.retry_backoff_seconds > self.retry_backoff_max_seconds:
+            raise ValueError(
+                "orchestration.retry_backoff_seconds не может быть больше "
+                "retry_backoff_max_seconds"
+            )
+        invalid_limits = {
+            name: limit
+            for name, limit in self.provider_concurrency_limits.items()
+            if not name.strip() or limit < 1
+        }
+        if invalid_limits:
+            raise ValueError(
+                "Некорректные provider_concurrency_limits: "
+                + ", ".join(f"{key}={value}" for key, value in invalid_limits.items())
+            )
+        if self.enabled and self.backend == "celery" and self.eager:
+            raise ValueError("eager-режим допустим только для backend=inline")
+        return self
+
+
 class AgentAppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -330,6 +402,7 @@ class AgentAppConfig(BaseModel):
     service: AgentServiceConfig = Field(default_factory=AgentServiceConfig)
     security: AgentSecurityConfig = Field(default_factory=AgentSecurityConfig)
     multi_agent: MultiAgentConfig = Field(default_factory=MultiAgentConfig)
+    orchestration: OrchestrationConfig = Field(default_factory=OrchestrationConfig)
     logging: AgentLoggingConfig = Field(default_factory=AgentLoggingConfig)
 
     @field_validator("memory")
@@ -383,15 +456,16 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
     checkpoint_path = multi_agent.checkpoint_path
     if not checkpoint_path.is_absolute():
         checkpoint_path = base_dir / checkpoint_path
+    process_path = config.orchestration.camunda.process_path
+    if not process_path.is_absolute():
+        process_path = base_dir / process_path
     workspace_path = config.file_tools.workspace_path
     if not workspace_path.is_absolute():
         workspace_path = base_dir / workspace_path
-    tracking_uri = multi_agent.mlflow_tracking_uri
-    if "://" not in tracking_uri:
-        tracking_path = Path(tracking_uri).expanduser()
-        if not tracking_path.is_absolute():
-            tracking_path = base_dir / tracking_path
-        tracking_uri = str(tracking_path.resolve())
+    tracking_uri = resolve_mlflow_tracking_uri(
+        multi_agent.mlflow_tracking_uri,
+        base_dir=base_dir,
+    )
 
     return config.model_copy(
         update={
@@ -415,6 +489,13 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
                     "checkpoint_path": checkpoint_path.resolve(),
                     "mlflow_tracking_uri": tracking_uri,
                     "llm_profiles": llm_profiles,
+                }
+            ),
+            "orchestration": config.orchestration.model_copy(
+                update={
+                    "camunda": config.orchestration.camunda.model_copy(
+                        update={"process_path": process_path.resolve()}
+                    )
                 }
             ),
         }

@@ -1,6 +1,7 @@
 extends:
   - support_agent_local.yaml
   - profiles/support/multi_agent.yaml
+  - profiles/support/orchestration.yaml
 
 multi_agent:
   execution_mode: sequential
