@@ -72,38 +72,6 @@ flowchart LR
 
 Офлайн-этапы не запускаются из support-сервиса. Во время запроса рассчитывается только query embedding, совместимый с уже созданной коллекцией.
 
-## Быстрый запуск
-
-Зависимости и локальный пакет уже установлены в глобальный Python. Запуск из корня проекта:
-
-```powershell
-rag-prep --config config/default.yaml
-```
-
-Прямой запуск без Prefect, но с теми же классами этапов:
-
-```powershell
-rag-prep --config config/default.yaml --no-prefect
-```
-
-Результаты пишутся в `data/prepared/`:
-
-- `documents.json`
-- `documents.jsonl`
-- `manifest.json`
-
-MLflow tracking использует SQLite БД `mlruns/mlflow.db` относительно корня проекта, определённого по расположению YAML-конфига. Запуск CLI из другого рабочего каталога не создаёт отдельное хранилище экспериментов. Артефакты также остаются в локальном каталоге MLflow; в Docker каталог `mlruns/` подключён как именованный volume.
-В `manifest.json` сохраняются параметры запуска, числовые счётчики и диагностический блок `parse_failures` для файлов, которые не удалось разобрать при `parser.fail_on_error: false`.
-JSON, JSONL и manifest сначала полностью формируются во временной директории, а затем публикуются как согласованный набор под directory lock. Перед первой заменой создаются durable write-ahead journal и резервные копии, после последней замены фиксируется состояние `committed`. При обычной ошибке набор откатывается сразу; после аварийного завершения следующий экспорт или downstream-проверка по manifest восстанавливает весь старый набор либо принимает весь новый, поэтому смешанное состояние не используется.
-
-Посмотреть запуски, параметры, метрики и артефакты в MLflow UI можно из корня проекта:
-
-```powershell
-mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port 5000
-```
-
-Интерфейс будет доступен на `http://127.0.0.1:5000`. Команда запускает долгоживущий локальный сервер MLflow и работает до `Ctrl+C`; открывать интерфейс нужно в браузере, а следующие команды выполнять во втором терминале.
-
 ## Установка
 
 Проект рассчитан на установку в текущий глобальный Python, без создания отдельного окружения. Команды нужно выполнять из корня проекта.
@@ -143,6 +111,38 @@ python -m pip check
 С FastAPI/Starlette 1.x используется Prefect `3.7.8` или новее: более ранний
 `3.7.0` несовместим с актуальным router API временного Prefect server. Ограничение
 зафиксировано в `requirements.txt` и `pyproject.toml`.
+
+## Быстрый запуск
+
+Зависимости и локальный пакет уже установлены в глобальный Python. Запуск из корня проекта:
+
+```powershell
+rag-prep --config config/default.yaml
+```
+
+Прямой запуск без Prefect, но с теми же классами этапов:
+
+```powershell
+rag-prep --config config/default.yaml --no-prefect
+```
+
+Результаты пишутся в `data/prepared/`:
+
+- `documents.json`
+- `documents.jsonl`
+- `manifest.json`
+
+MLflow tracking использует SQLite БД `mlruns/mlflow.db` относительно корня проекта, определённого по расположению YAML-конфига. Запуск CLI из другого рабочего каталога не создаёт отдельное хранилище экспериментов. Артефакты также остаются в локальном каталоге MLflow; в Docker каталог `mlruns/` подключён как именованный volume.
+В `manifest.json` сохраняются параметры запуска, числовые счётчики и диагностический блок `parse_failures` для файлов, которые не удалось разобрать при `parser.fail_on_error: false`.
+JSON, JSONL и manifest сначала полностью формируются во временной директории, а затем публикуются как согласованный набор под directory lock. Перед первой заменой создаются durable write-ahead journal и резервные копии, после последней замены фиксируется состояние `committed`. При обычной ошибке набор откатывается сразу; после аварийного завершения следующий экспорт или downstream-проверка по manifest восстанавливает весь старый набор либо принимает весь новый, поэтому смешанное состояние не используется.
+
+Посмотреть запуски, параметры, метрики и артефакты в MLflow UI можно из корня проекта:
+
+```powershell
+mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port 5000
+```
+
+Интерфейс будет доступен на `http://127.0.0.1:5000`. Команда запускает долгоживущий локальный сервер MLflow и работает до `Ctrl+C`; открывать интерфейс нужно в браузере, а следующие команды выполнять во втором терминале.
 
 ## Официальная документация используемого стека
 
@@ -1378,7 +1378,7 @@ rag-prep vector-store --config config/vector_store_gigachat.yaml --no-prefect
 | `config/support_agent_docker_gigachat_local_embeddings.yaml`  | Docker-комбинация GigaChat + локальные E5 vectors.                                                |
 | `src/agent_app/llm.py`                                        | Создаёт `langchain_gigachat.GigaChat`, передаёт scope/model/retry и очищает значение credentials. |
 | `src/rag_prep/embedding_stages/embedding.py`                  | Реализует `GigaChatEmbeddingStage` и batch-вызовы embedding API.                                  |
-| `src/rag_prep/gigachat_tls.py`                               | Разрешает `GIGACHAT_CA_BUNDLE_FILE` независимо от рабочего каталога процесса.                     |
+| `src/rag_prep/gigachat_tls.py`                                | Разрешает `GIGACHAT_CA_BUNDLE_FILE` независимо от рабочего каталога процесса.                     |
 | `src/rag_prep/config.py`                                      | Проверяет допустимые GigaChat embedding dimensions.                                               |
 | `.env.example`                                                | Показывает имена Authorization key и CA bundle, не содержит рабочего секрета.                     |
 
