@@ -111,7 +111,8 @@ class QdrantPipelineTest(unittest.TestCase):
             embedding_model="test-embedding",
             fail_on_validation_error=False,
         )
-        chunk_validation = ChunkValidationStage(chunk_config).run([])
+        with self.assertRaisesRegex(ValueError, "ни одного чанка"):
+            ChunkValidationStage(chunk_config).run([])
         vector_config = VectorStoreConfig(
             collection_name="empty_check",
             vector_size=3,
@@ -119,8 +120,6 @@ class QdrantPipelineTest(unittest.TestCase):
         )
         client = QdrantClient(":memory:")
 
-        self.assertTrue(chunk_validation.has_errors)
-        self.assertEqual(chunk_validation.no_chunks_count, 1)
         try:
             with self.assertRaisesRegex(ValueError, "пустого списка embeddings"):
                 QdrantIndexingStage(vector_config).run([], client=client)
@@ -236,6 +235,66 @@ class QdrantPipelineTest(unittest.TestCase):
         self.assertEqual(second.stale_points_deleted, 1)
         self.assertEqual(second.collection_points_count, 1)
         self.assertFalse(validation.has_errors)
+
+    def test_existing_collection_schema_is_checked_before_mutation(self) -> None:
+        """Не выполняет upsert/prune при несовместимой distance существующей коллекции."""
+        config = VectorStoreConfig(
+            collection_name="schema_preflight",
+            vector_size=3,
+            distance="Cosine",
+            local_storage_path=Path("unused-qdrant-storage"),
+            recreate_collection=False,
+            prune_stale_points=True,
+        )
+        old_point_id = point_id_for_chunk(config.collection_name, "old")
+        new_chunk = self._embedded_chunk(
+            "new",
+            "Новый",
+            [0.0, 1.0, 0.0],
+            0,
+        )
+        client = QdrantClient(":memory:")
+        try:
+            client.create_collection(
+                collection_name=config.collection_name,
+                vectors_config=qdrant_models.VectorParams(
+                    size=3,
+                    distance=qdrant_models.Distance.DOT,
+                ),
+            )
+            client.upsert(
+                collection_name=config.collection_name,
+                points=[
+                    qdrant_models.PointStruct(
+                        id=old_point_id,
+                        vector=[1.0, 0.0, 0.0],
+                        payload={"chunk_id": "old"},
+                    )
+                ],
+                wait=True,
+            )
+
+            with self.assertRaisesRegex(ValueError, "distance actual=Dot"):
+                QdrantIndexingStage(config).run([new_chunk], client=client)
+
+            old_points = client.retrieve(
+                collection_name=config.collection_name,
+                ids=[old_point_id],
+            )
+            new_points = client.retrieve(
+                collection_name=config.collection_name,
+                ids=[point_id_for_chunk(config.collection_name, "new")],
+            )
+            points_count = client.count(
+                collection_name=config.collection_name,
+                exact=True,
+            ).count
+        finally:
+            client.close()
+
+        self.assertEqual(points_count, 1)
+        self.assertEqual(len(old_points), 1)
+        self.assertEqual(new_points, [])
 
     @staticmethod
     def _embedded_chunk(

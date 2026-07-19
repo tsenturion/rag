@@ -49,6 +49,7 @@ from agent_app.multi_agent.roles import (
     default_role_definitions,
     result_from_envelope,
 )
+from agent_app.multi_agent.sanitization import sanitize_run_result, sanitize_response
 from agent_app.multi_agent.tracking import MultiAgentTracker
 from agent_app.multi_agent.usage import LLMCallTracker
 from agent_app.guardrails import GuardrailPipeline
@@ -272,17 +273,16 @@ class MultiAgentRunner:
         response = response.model_copy(
             update={"quality": assess_multi_response(response)}
         )
+        response = sanitize_response(response, guardrails)
         self._publish_completion(bus, response)
         result = MultiAgentRunResult(
             response=response,
             messages=bus.journal(),
             dead_letters=bus.dead_letters(),
         )
+        result = sanitize_run_result(result, guardrails)
         run_dir = self.exporter.export_run(result)
-        response = response.model_copy()
-        result = result.model_copy(
-            update={"response": response, "run_dir": str(run_dir)}
-        )
+        result = result.model_copy(update={"run_dir": str(run_dir)})
         self.tracker.log_run(result)
         return result
 
@@ -403,7 +403,10 @@ class MultiAgentRunner:
         response = response.model_copy(
             update={"quality": assess_multi_response(response)}
         )
-        result = MultiAgentRunResult(response=response)
+        result = sanitize_run_result(
+            MultiAgentRunResult(response=response),
+            guardrails,
+        )
         run_dir = self.exporter.export_run(result)
         result = result.model_copy(update={"run_dir": str(run_dir)})
         self.tracker.log_run(result)

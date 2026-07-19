@@ -20,12 +20,13 @@ from agent_app.cli import build_parser as build_agent_parser  # noqa: E402
 from agent_app.config import AgentConfig, load_agent_config  # noqa: E402
 from agent_app.service.cli import build_parser  # noqa: E402
 from rag_prep.cli import build_parser as build_rag_parser  # noqa: E402
-from rag_prep.config import EmbeddingConfig, VectorStoreConfig  # noqa: E402
+from rag_prep.config import ChunkingConfig, EmbeddingConfig, VectorStoreConfig  # noqa: E402
 from rag_prep.config import (  # noqa: E402
     load_chunking_config,
     load_embedding_config,
     load_vector_store_config,
 )
+from rag_prep.gigachat_tls import resolve_gigachat_ca_bundle  # noqa: E402
 
 
 class SupportProviderConfigsTest(unittest.TestCase):
@@ -93,6 +94,43 @@ class SupportProviderConfigsTest(unittest.TestCase):
                 build_rag_parser().parse_args([command])
         with self.assertRaises(SystemExit):
             build_agent_parser().parse_args([])
+
+    def test_nested_config_typos_are_rejected(self) -> None:
+        """Не игнорирует опечатки в параметрах вложенных секций YAML."""
+        with self.assertRaises(ValidationError):
+            AgentConfig.model_validate(
+                {"provider": "local", "model": "test", "max_new_token": 10}
+            )
+        with self.assertRaises(ValidationError):
+            ChunkingConfig.model_validate(
+                {
+                    "tokenizer_model": "cl100k_base",
+                    "embedding_model": "test",
+                    "chunk_szie": 128,
+                }
+            )
+
+    def test_gigachat_ca_bundle_is_validated_before_api_call(self) -> None:
+        """Разрешает существующий CA path и заранее отклоняет ошибочный."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            certificate = Path(temporary_dir) / "root.pem"
+            certificate.write_text("test certificate", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"GIGACHAT_CA_BUNDLE_FILE": str(certificate)},
+            ):
+                self.assertEqual(
+                    resolve_gigachat_ca_bundle(),
+                    str(certificate.resolve()),
+                )
+            with (
+                patch.dict(
+                    os.environ,
+                    {"GIGACHAT_CA_BUNDLE_FILE": str(certificate) + ".missing"},
+                ),
+                self.assertRaisesRegex(RuntimeError, "отсутствующий сертификат"),
+            ):
+                resolve_gigachat_ca_bundle()
 
     def test_service_cli_uses_provider_config_from_environment(self) -> None:
         """Проверяет, что CLI-сервис использует конфигурацию провайдера, заданную через переменную окружения."""
@@ -232,16 +270,24 @@ class SupportProviderConfigsTest(unittest.TestCase):
                     "SUPPORT_JWT_SECRET",
                 )
 
-    def test_docker_smoke_preset_avoids_paid_api_calls(self) -> None:
-        """Проверяет, что конфигурация docker_smoke_preset корректно отключает платные API и включает обязательное требование API-ключа для безопасности."""
+    def test_docker_smoke_preset_checks_all_readiness_dependencies(self) -> None:
+        """Проверяет, что CI smoke включает RAG и broker, не выполняя платных LLM-вызовов."""
         config = load_agent_config(
             PROJECT_ROOT / "config" / "support_agent_docker_openai_smoke.yaml"
         )
 
         self.assertEqual(config.agent.provider, "openai")
-        self.assertFalse(config.rag.enabled)
-        self.assertFalse(config.multi_agent.enabled)
-        self.assertFalse(config.orchestration.enabled)
+        self.assertTrue(config.rag.enabled)
+        self.assertTrue(config.multi_agent.enabled)
+        self.assertTrue(config.orchestration.enabled)
+        self.assertEqual(config.orchestration.backend, "celery")
+        self.assertIsNotNone(config.rag.embedding)
+        self.assertIsNotNone(config.rag.vector_store)
+        self.assertEqual(config.rag.embedding.dimensions, 3)  # type: ignore[union-attr]
+        self.assertEqual(
+            config.rag.vector_store.collection_name,  # type: ignore[union-attr]
+            "rag_ci_smoke",
+        )
         self.assertFalse(config.observability.enabled)
         self.assertTrue(config.security.require_api_key)
 

@@ -12,15 +12,21 @@ from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
 from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri
 
 
+class StrictConfigModel(BaseModel):
+    """Запрещает неизвестные поля во всех вложенных секциях RAG-конфигурации."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # Общие параметры первого этапа подготовки данных.
-class RunConfig(BaseModel):
+class RunConfig(StrictConfigModel):
     """Гарантирует воспроизводимость и идентифицируемость запуска пайплайна за счёт фиксированных имени и seed."""
 
     name: str = "rag_data_preparation"
     seed: int = 42
 
 
-class PathConfig(BaseModel):
+class PathConfig(StrictConfigModel):
     """Обеспечивает согласованное размещение входных и выходных данных пайплайна независимо от окружения."""
 
     input_dir: Path = Path("data/raw")
@@ -30,7 +36,7 @@ class PathConfig(BaseModel):
     manifest_filename: str = "manifest.json"
 
 
-class LoaderConfig(BaseModel):
+class LoaderConfig(StrictConfigModel):
     """Гарантирует фильтрацию и нормализацию списка файлов для загрузки, исключая скрытые и неподходящие форматы."""
 
     recursive: bool = True
@@ -51,7 +57,7 @@ class LoaderConfig(BaseModel):
         return normalized
 
 
-class ParserConfig(BaseModel):
+class ParserConfig(StrictConfigModel):
     """Обеспечивает единый контракт разбора документов с контролем ошибок и поддержкой мультиязычности."""
 
     strategy: Literal["auto", "fast", "hi_res", "ocr_only"] = "fast"
@@ -64,7 +70,7 @@ class ParserConfig(BaseModel):
     )
 
 
-class CleaningConfig(BaseModel):
+class CleaningConfig(StrictConfigModel):
     """Гарантирует удаление мусорных и нерелевантных фрагментов текста по заданным правилам."""
 
     min_chars: int = 12
@@ -74,7 +80,7 @@ class CleaningConfig(BaseModel):
     boilerplate_patterns: list[str] = Field(default_factory=list)
 
 
-class NormalizationConfig(BaseModel):
+class NormalizationConfig(StrictConfigModel):
     """Обеспечивает стандартизацию текста для дальнейшей обработки и анализа, включая нормализацию юникода и статистику предложений."""
 
     unicode_form: Literal["NFC", "NFKC", "NFD", "NFKD"] = "NFKC"
@@ -83,7 +89,7 @@ class NormalizationConfig(BaseModel):
     collect_sentence_stats: bool = True
 
 
-class DeduplicationConfig(BaseModel):
+class DeduplicationConfig(StrictConfigModel):
     """Гарантирует удаление дублирующихся текстов по настраиваемому порогу схожести и минимальному размеру."""
 
     enabled: bool = True
@@ -93,14 +99,14 @@ class DeduplicationConfig(BaseModel):
     min_tokens: int = Field(default=8, ge=1)
 
 
-class StructuringConfig(BaseModel):
+class StructuringConfig(StrictConfigModel):
     """Обеспечивает структурирование данных по секциям для унификации downstream-процессов."""
 
     group_by_section: bool = True
     default_section: str = "full_document"
 
 
-class LoggingConfig(BaseModel):
+class LoggingConfig(StrictConfigModel):
     """Гарантирует трассировку и аудит выполнения пайплайна с возможностью интеграции с MLflow."""
 
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -109,7 +115,7 @@ class LoggingConfig(BaseModel):
     mlflow_experiment: str = "rag-data-preparation"
 
 
-class PipelineConfig(BaseModel):
+class PipelineConfig(StrictConfigModel):
     """Объединяет настройки подготовки данных и запрещает неизвестные параметры конфигурации."""
 
     model_config = ConfigDict(extra="forbid")
@@ -126,7 +132,7 @@ class PipelineConfig(BaseModel):
 
 
 # Параметры chunking отделены от подготовки, но используют тот же run/logging contract.
-class ChunkingPathConfig(BaseModel):
+class ChunkingPathConfig(StrictConfigModel):
     """Гарантирует, что все пути для входных и выходных файлов этапа нарезки RAG-конвейера заданы явно и доступны вызывающему коду."""
 
     input_jsonl: Path
@@ -136,7 +142,7 @@ class ChunkingPathConfig(BaseModel):
     manifest_filename: str = "manifest.json"
 
 
-class ChunkingConfig(BaseModel):
+class ChunkingConfig(StrictConfigModel):
     """Обеспечивает согласованность параметров нарезки текста и контроль инвариантов размера и перекрытия чанков для корректной работы пайплайна."""
 
     strategy: Literal["sentence", "token"] = "sentence"
@@ -163,7 +169,7 @@ class ChunkingConfig(BaseModel):
         return value
 
 
-class ChunkingPipelineConfig(BaseModel):
+class ChunkingPipelineConfig(StrictConfigModel):
     """Гарантирует целостную и валидированную конфигурацию запуска этапа нарезки, включая пути, параметры нарезки и настройки логирования."""
 
     model_config = ConfigDict(extra="forbid")
@@ -176,7 +182,7 @@ class ChunkingPipelineConfig(BaseModel):
     )
 
 
-class EmbeddingPathConfig(BaseModel):
+class EmbeddingPathConfig(StrictConfigModel):
     """Гарантирует, что все пути для входных и выходных файлов этапа эмбеддинга RAG-конвейера заданы явно и доступны вызывающему коду."""
 
     input_jsonl: Path
@@ -186,7 +192,7 @@ class EmbeddingPathConfig(BaseModel):
     manifest_filename: str = "manifest.json"
 
 
-class EmbeddingConfig(BaseModel):
+class EmbeddingConfig(StrictConfigModel):
     """Параметры одного явно выбранного provider embeddings."""
 
     provider: Literal["openai", "local", "gigachat"]
@@ -213,7 +219,7 @@ class EmbeddingConfig(BaseModel):
     hub_disable_xet: bool = True
     hub_disable_symlink_warning: bool = True
     gigachat_scope: str = "GIGACHAT_API_PERS"
-    gigachat_verify_ssl_certs: bool = False
+    gigachat_verify_ssl_certs: bool = True
     gigachat_use_prefix_query: bool = False
     gigachat_prefix_query: str = (
         "Дано предложение, необходимо найти его парафраз \nпредложение: "
@@ -222,7 +228,7 @@ class EmbeddingConfig(BaseModel):
     fail_on_validation_error: bool = True
 
 
-class EmbeddingPipelineConfig(BaseModel):
+class EmbeddingPipelineConfig(StrictConfigModel):
     """Обеспечивает валидированную и самодостаточную конфигурацию запуска этапа эмбеддинга, включая пути, параметры эмбеддинга и логирование."""
 
     model_config = ConfigDict(extra="forbid")
@@ -246,7 +252,7 @@ GIGACHAT_EMBEDDING_DIMENSIONS: dict[str, int] = {
 }
 
 
-class VectorStorePathConfig(BaseModel):
+class VectorStorePathConfig(StrictConfigModel):
     """Гарантирует, что все пути для файлов индексации, валидации и поиска векторного хранилища заданы явно и доступны вызывающему коду."""
 
     input_jsonl: Path
@@ -256,7 +262,7 @@ class VectorStorePathConfig(BaseModel):
     search_results_filename: str = "search_results.json"
 
 
-class VectorStoreConfig(BaseModel):
+class VectorStoreConfig(StrictConfigModel):
     """Параметры Qdrant, согласованные с размерностью embedding-профиля."""
 
     provider: Literal["qdrant"] = "qdrant"
@@ -290,7 +296,7 @@ class VectorStoreConfig(BaseModel):
         return value
 
 
-class VectorStorePipelineConfig(BaseModel):
+class VectorStorePipelineConfig(StrictConfigModel):
     """Обеспечивает валидированную и целостную конфигурацию запуска этапа индексации векторного хранилища, включая пути, параметры и логирование."""
 
     model_config = ConfigDict(extra="forbid")

@@ -51,17 +51,23 @@ def evaluate_output(
     forbidden = [
         fact for fact in case.forbidden_facts if fact_present(fact, output.answer)
     ]
-    true_positive = len(expected)
-    false_positive = len(forbidden)
+    claims = _extract_claims(output.answer)
+    supported_claims = [
+        claim
+        for claim in claims
+        if any(fact_present(fact, claim) for fact in case.expected_facts)
+        and not any(fact_present(fact, claim) for fact in case.forbidden_facts)
+    ]
+    unsupported_claims = [claim for claim in claims if claim not in supported_claims]
     precision = (
-        true_positive / (true_positive + false_positive)
-        if true_positive + false_positive
-        else (1.0 if not case.expected_facts and not forbidden else 0.0)
+        len(supported_claims) / len(claims)
+        if claims
+        else (1.0 if not case.expected_facts else 0.0)
     )
+    true_positive = len(expected)
     recall = true_positive / len(case.expected_facts) if case.expected_facts else 1.0
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    assertions = true_positive + false_positive
-    unsupported = false_positive / assertions if assertions else 0.0
+    unsupported = len(unsupported_claims) / len(claims) if claims else 0.0
     citations_ok = not case.require_citations or output.citations_count > 0
     tools_ok = set(case.expected_tools).issubset(output.tool_calls)
     roles_ok = set(case.expected_roles).issubset(output.selected_roles)
@@ -70,6 +76,7 @@ def evaluate_output(
         and output.guardrail_action != "review"
         and recall == 1.0
         and not forbidden
+        and not unsupported_claims
         and citations_ok
         and tools_ok
         and roles_ok
@@ -88,7 +95,18 @@ def evaluate_output(
         roles_ok=roles_ok,
         matched_expected_facts=expected,
         matched_forbidden_facts=forbidden,
+        unsupported_claims=unsupported_claims,
     )
+
+
+def _extract_claims(answer: str) -> list[str]:
+    """Делит ответ на проверяемые утверждения для консервативной groundedness-оценки."""
+    claims = []
+    for value in re.split(r"(?:[.!?]+|\n+|;\s*)", answer):
+        claim = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", value).strip()
+        if normalize(claim):
+            claims.append(claim)
+    return claims
 
 
 def summarize(

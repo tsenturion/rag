@@ -305,13 +305,79 @@ class SQLiteMemoryStore:
                 "DELETE FROM memories WHERE user_id = ? AND session_id = ?",
                 (user_id, session_id),
             )
+            conn.execute(
+                "DELETE FROM conversation_history WHERE user_id = ? AND session_id = ?",
+                (user_id, session_id),
+            )
             return int(cursor.rowcount)
 
     def clear_user(self, *, user_id: str) -> int:
         """Удаляет все записи памяти, связанные с пользователем, обеспечивая полное удаление пользовательских данных из хранилища."""
         with self._connect() as conn:
             cursor = conn.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
+            conn.execute(
+                "DELETE FROM conversation_history WHERE user_id = ?", (user_id,)
+            )
             return int(cursor.rowcount)
+
+    def save_conversation_history(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        messages: list[dict[str, str]],
+    ) -> None:
+        """Атомарно сохраняет ограниченный диалоговый буфер для восстановления runner."""
+        if not messages:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM conversation_history WHERE user_id = ? AND session_id = ?",
+                    (user_id, session_id),
+                )
+            return
+        payload = json.dumps(messages, ensure_ascii=False)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversation_history (user_id, session_id, messages, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, session_id) DO UPDATE SET
+                  messages = excluded.messages,
+                  updated_at = excluded.updated_at
+                """,
+                (user_id, session_id, payload, utc_now().isoformat()),
+            )
+
+    def load_conversation_history(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> list[dict[str, str]]:
+        """Восстанавливает только допустимые роли и строковое содержимое диалога."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT messages FROM conversation_history
+                WHERE user_id = ? AND session_id = ?
+                """,
+                (user_id, session_id),
+            ).fetchone()
+        if row is None:
+            return []
+        try:
+            payload = json.loads(row["messages"])
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(payload, list):
+            return []
+        return [
+            {"role": item["role"], "content": item["content"]}
+            for item in payload
+            if isinstance(item, dict)
+            and item.get("role") in {"user", "assistant"}
+            and isinstance(item.get("content"), str)
+        ]
 
     def _valid_record(self, row: sqlite3.Row) -> MemoryRecord | None:
         """Гарантирует, что возвращаемая запись памяти не просрочена, автоматически удаляя устаревшие записи и предотвращая их использование."""
@@ -369,6 +435,17 @@ class SQLiteMemoryStore:
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique_scoped_key
                 ON memories(user_id, IFNULL(session_id, ''), memory_type, key)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS conversation_history (
+                  user_id TEXT NOT NULL,
+                  session_id TEXT NOT NULL,
+                  messages TEXT NOT NULL,
+                  updated_at TEXT NOT NULL,
+                  PRIMARY KEY (user_id, session_id)
+                )
                 """
             )
 

@@ -63,6 +63,8 @@ class ChunkValidationStage:
             result.missing_lineage_count,
             result.low_quality_chunks_count,
         )
+        if result.no_chunks_count:
+            raise ValueError("Чанкинг не сформировал ни одного чанка")
         if self.config.fail_on_validation_error and result.has_errors:
             raise ValueError(
                 f"Валидация чанков завершилась ошибкой: {result.model_dump()}"

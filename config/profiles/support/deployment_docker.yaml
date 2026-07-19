@@ -8,6 +8,8 @@ service:
 
 security:
   require_api_key: true
+  # Все replicas используют один атомарный token bucket в Redis.
+  rate_limit_backend: redis
 
 logging:
   json_format: true

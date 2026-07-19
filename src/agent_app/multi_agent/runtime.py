@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool
 from agent_app.config import AgentAppConfig
 from agent_app.currency import CBRCurrencyConverter
 from agent_app.graph import AgentRunner
+from agent_app.guardrails import GuardrailPipeline
 from agent_app.multi_agent.evaluation import assess_answer, assess_multi_response
 from agent_app.multi_agent.exporting import MultiAgentExporter
 from agent_app.multi_agent.graph import MultiAgentRunner
@@ -26,6 +27,7 @@ from agent_app.multi_agent.models import (
 )
 from agent_app.multi_agent.llm_routing import MultiAgentLLMRegistry
 from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
+from agent_app.multi_agent.sanitization import sanitize_comparison_report
 from agent_app.multi_agent.tracking import MultiAgentTracker
 from agent_app.multi_agent.usage import estimate_mode_usage
 from agent_app.paths import resolve_project_file
@@ -269,6 +271,10 @@ class MultiAgentRuntime:
             total_single_cost_rub=single_cost_rub,
             total_multi_cost_rub=multi_cost_rub,
             total_cost_delta_rub=cost_delta_rub,
+        )
+        report = sanitize_comparison_report(
+            report,
+            GuardrailPipeline(self.config.guardrails),
         )
         run_dir = self.exporter.export_comparison(report)
         report = report.model_copy(update={"run_dir": str(run_dir)})

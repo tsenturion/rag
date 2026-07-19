@@ -13,7 +13,10 @@ from agent_app.orchestration.models import (
     JobEvent,
     JobRecord,
     JobStatus,
+    utc_now,
 )
+
+PENDING_STATUSES = {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.RETRYING}
 
 
 class JobStore(Protocol):
@@ -25,6 +28,46 @@ class JobStore(Protocol):
 
     def get(self, job_id: str) -> JobRecord | None:
         """Возвращает задание по идентификатору."""
+        ...
+
+    def create_if_capacity(self, record: JobRecord, *, max_pending: int) -> bool:
+        """Атомарно создаёт queued-задание, если лимит незавершённых работ не исчерпан."""
+        ...
+
+    def claim_run(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        lease_seconds: int,
+    ) -> JobRecord | None:
+        """Атомарно закрепляет одну попытку выполнения за worker до истечения lease."""
+        ...
+
+    def renew_run_claim(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        """Продлевает lease только для worker, который владеет текущей попыткой."""
+        ...
+
+    def compare_and_save(
+        self,
+        record: JobRecord,
+        *,
+        expected_statuses: set[JobStatus],
+        expected_attempt: int | None = None,
+        claim_token: str | None = None,
+        release_claim: bool = False,
+    ) -> bool:
+        """Сохраняет переход только при совпадении статуса, попытки и claim token."""
+        ...
+
+    def set_task_id(self, job_id: str, task_id: str) -> JobRecord | None:
+        """Атомарно дописывает broker task ID, не заменяя конкурентный статус."""
         ...
 
     def append_event(self, event: JobEvent) -> JobEvent:
@@ -91,6 +134,7 @@ class InMemoryJobStore:
         self._events: dict[str, list[JobEvent]] = {}
         self._idempotency: dict[str, tuple[str, float]] = {}
         self._slots: dict[str, set[str]] = {}
+        self._run_claims: dict[str, tuple[str, float]] = {}
         self._lock = threading.RLock()
 
     def save(self, record: JobRecord) -> None:
@@ -103,6 +147,120 @@ class InMemoryJobStore:
         with self._lock:
             record = self._records.get(job_id)
             return record.model_copy(deep=True) if record is not None else None
+
+    def create_if_capacity(self, record: JobRecord, *, max_pending: int) -> bool:
+        """Проверяет capacity и создаёт запись внутри одной критической секции."""
+        with self._lock:
+            if record.job.id in self._records:
+                return False
+            pending = sum(
+                item.status in PENDING_STATUSES for item in self._records.values()
+            )
+            if pending >= max_pending:
+                return False
+            self._records[record.job.id] = record.model_copy(deep=True)
+            return True
+
+    def claim_run(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        lease_seconds: int,
+    ) -> JobRecord | None:
+        """Не позволяет двум потокам одновременно исполнять один job ID."""
+        if lease_seconds <= 0:
+            raise ValueError("Lease выполнения должен быть положительным")
+        now = time.monotonic()
+        with self._lock:
+            record = self._records.get(job_id)
+            if record is None or record.status.terminal:
+                return None
+            existing = self._run_claims.get(job_id)
+            if existing is not None and existing[1] <= now:
+                self._run_claims.pop(job_id, None)
+                existing = None
+            if existing is not None:
+                return None
+            if record.status not in {
+                JobStatus.QUEUED,
+                JobStatus.RETRYING,
+                JobStatus.RUNNING,
+            }:
+                return None
+
+            timestamp = utc_now()
+            claimed = record.model_copy(
+                update={
+                    "status": JobStatus.RUNNING,
+                    "attempts": record.attempts + 1,
+                    "started_at": record.started_at or timestamp,
+                    "updated_at": timestamp,
+                    "finished_at": None,
+                    "result": None,
+                    "error": None,
+                },
+                deep=True,
+            )
+            self._records[job_id] = claimed
+            self._run_claims[job_id] = (token, now + lease_seconds)
+            return claimed.model_copy(deep=True)
+
+    def renew_run_claim(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        """Продлевает in-memory claim без возможности присвоить чужой lease."""
+        now = time.monotonic()
+        with self._lock:
+            existing = self._run_claims.get(job_id)
+            if existing is None or existing[0] != token or existing[1] <= now:
+                self._run_claims.pop(job_id, None)
+                return False
+            self._run_claims[job_id] = (token, now + lease_seconds)
+            return True
+
+    def compare_and_save(
+        self,
+        record: JobRecord,
+        *,
+        expected_statuses: set[JobStatus],
+        expected_attempt: int | None = None,
+        claim_token: str | None = None,
+        release_claim: bool = False,
+    ) -> bool:
+        """Выполняет CAS над записью и, при необходимости, освобождает run claim."""
+        now = time.monotonic()
+        with self._lock:
+            current = self._records.get(record.job.id)
+            if current is None or current.status not in expected_statuses:
+                return False
+            if expected_attempt is not None and current.attempts != expected_attempt:
+                return False
+            if claim_token is not None:
+                claim = self._run_claims.get(record.job.id)
+                if claim is None or claim[0] != claim_token or claim[1] <= now:
+                    return False
+            self._records[record.job.id] = record.model_copy(deep=True)
+            if release_claim:
+                self._run_claims.pop(record.job.id, None)
+            return True
+
+    def set_task_id(self, job_id: str, task_id: str) -> JobRecord | None:
+        """Меняет только task_id, сохраняя статус, установленный worker или отменой."""
+        with self._lock:
+            current = self._records.get(job_id)
+            if current is None:
+                return None
+            updated = current.model_copy(
+                update={"task_id": task_id, "updated_at": utc_now()},
+                deep=True,
+            )
+            self._records[job_id] = updated
+            return updated.model_copy(deep=True)
 
     def append_event(self, event: JobEvent) -> JobEvent:
         """Добавляет событие к истории задания с уникальным порядковым номером и возвращает его копию."""
@@ -230,11 +388,237 @@ class RedisJobStore:
             pipe.srem(self._status_key(status), job_id)
         pipe.sadd(self._status_key(record.status), job_id)
         pipe.expire(self._status_key(record.status), self.state_ttl_seconds)
+        if record.status in PENDING_STATUSES:
+            pipe.zadd(
+                self._pending_key(),
+                {job_id: self._pending_expiry_ms()},
+            )
+            pipe.expire(self._pending_key(), self.state_ttl_seconds)
+        else:
+            pipe.zrem(self._pending_key(), job_id)
         pipe.execute()
 
     def get(self, job_id: str) -> JobRecord | None:
         """Гарантирует получение полной информации о задаче по идентификатору или отсутствие результата, если задача не найдена."""
         payload = self.client.get(self._job_key(job_id))
+        return JobRecord.model_validate_json(payload) if payload else None
+
+    def create_if_capacity(self, record: JobRecord, *, max_pending: int) -> bool:
+        """Одной Lua-операцией резервирует capacity и создаёт queued-запись."""
+        job_id = record.job.id
+        status_keys = [self._status_key(status) for status in JobStatus]
+        script = """
+        redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[5])
+        if redis.call('EXISTS', KEYS[1]) == 1 then
+          return 0
+        end
+        if redis.call('ZCARD', KEYS[2]) >= tonumber(ARGV[4]) then
+          return 0
+        end
+        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+        for index = 3, #KEYS do
+          redis.call('SREM', KEYS[index], ARGV[2])
+        end
+        redis.call('SADD', KEYS[3], ARGV[2])
+        redis.call('EXPIRE', KEYS[3], ARGV[3])
+        redis.call('ZADD', KEYS[2], ARGV[6], ARGV[2])
+        redis.call('EXPIRE', KEYS[2], ARGV[3])
+        return 1
+        """
+        return bool(
+            self.client.eval(
+                script,
+                2 + len(status_keys),
+                self._job_key(job_id),
+                self._pending_key(),
+                *status_keys,
+                record.model_dump_json(),
+                job_id,
+                self.state_ttl_seconds,
+                max_pending,
+                self._now_ms(),
+                self._pending_expiry_ms(),
+            )
+        )
+
+    def claim_run(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        lease_seconds: int,
+    ) -> JobRecord | None:
+        """Атомарно переводит queued/retrying либо abandoned running job в RUNNING."""
+        status_keys = [self._status_key(status) for status in JobStatus]
+        timestamp = utc_now().isoformat()
+        script = """
+        local raw = redis.call('GET', KEYS[1])
+        if not raw then
+          return nil
+        end
+        local data = cjson.decode(raw)
+        local status = data['status']
+        local active_claim = redis.call('GET', KEYS[2])
+        if active_claim then
+          return nil
+        end
+        if status ~= 'queued' and status ~= 'retrying' and status ~= 'running' then
+          return nil
+        end
+        data['status'] = 'running'
+        data['attempts'] = (data['attempts'] or 0) + 1
+        if data['started_at'] == nil or data['started_at'] == cjson.null then
+          data['started_at'] = ARGV[4]
+        end
+        data['updated_at'] = ARGV[4]
+        data['finished_at'] = cjson.null
+        data['result'] = cjson.null
+        data['error'] = cjson.null
+        local encoded = cjson.encode(data)
+        redis.call('SET', KEYS[1], encoded, 'EX', ARGV[3])
+        redis.call('SET', KEYS[2], ARGV[1], 'PX', ARGV[2])
+        for index = 4, #KEYS do
+          redis.call('SREM', KEYS[index], ARGV[5])
+        end
+        redis.call('SADD', KEYS[5], ARGV[5])
+        redis.call('EXPIRE', KEYS[5], ARGV[3])
+        redis.call('ZADD', KEYS[3], ARGV[6], ARGV[5])
+        redis.call('EXPIRE', KEYS[3], ARGV[3])
+        return encoded
+        """
+        payload = self.client.eval(
+            script,
+            3 + len(status_keys),
+            self._job_key(job_id),
+            self._run_claim_key(job_id),
+            self._pending_key(),
+            *status_keys,
+            token,
+            lease_seconds * 1000,
+            self.state_ttl_seconds,
+            timestamp,
+            job_id,
+            self._pending_expiry_ms(),
+        )
+        return JobRecord.model_validate_json(payload) if payload else None
+
+    def renew_run_claim(
+        self,
+        job_id: str,
+        token: str,
+        *,
+        lease_seconds: int,
+    ) -> bool:
+        """Продлевает Redis claim только при точном совпадении token."""
+        script = """
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+          return 0
+        end
+        redis.call('PEXPIRE', KEYS[1], ARGV[2])
+        return 1
+        """
+        return bool(
+            self.client.eval(
+                script,
+                1,
+                self._run_claim_key(job_id),
+                token,
+                lease_seconds * 1000,
+            )
+        )
+
+    def compare_and_save(
+        self,
+        record: JobRecord,
+        *,
+        expected_statuses: set[JobStatus],
+        expected_attempt: int | None = None,
+        claim_token: str | None = None,
+        release_claim: bool = False,
+    ) -> bool:
+        """Выполняет Redis CAS и синхронно обновляет status/pending индексы."""
+        job_id = record.job.id
+        status_keys = [self._status_key(status) for status in JobStatus]
+        expected = "|" + "|".join(item.value for item in expected_statuses) + "|"
+        script = """
+        local raw = redis.call('GET', KEYS[1])
+        if not raw then
+          return 0
+        end
+        local current = cjson.decode(raw)
+        if not string.find(ARGV[4], '|' .. current['status'] .. '|', 1, true) then
+          return 0
+        end
+        if ARGV[5] ~= '' and tonumber(current['attempts'] or 0) ~= tonumber(ARGV[5]) then
+          return 0
+        end
+        if ARGV[6] ~= '' and redis.call('GET', KEYS[2]) ~= ARGV[6] then
+          return 0
+        end
+        redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+        for index = 4, #KEYS do
+          redis.call('SREM', KEYS[index], ARGV[2])
+        end
+        local target_index = tonumber(ARGV[9])
+        redis.call('SADD', KEYS[target_index], ARGV[2])
+        redis.call('EXPIRE', KEYS[target_index], ARGV[3])
+        if ARGV[8] == '1' then
+          redis.call('ZADD', KEYS[3], ARGV[10], ARGV[2])
+          redis.call('EXPIRE', KEYS[3], ARGV[3])
+        else
+          redis.call('ZREM', KEYS[3], ARGV[2])
+        end
+        if ARGV[7] == '1' then
+          redis.call('DEL', KEYS[2])
+        end
+        return 1
+        """
+        target_index = 4 + list(JobStatus).index(record.status)
+        return bool(
+            self.client.eval(
+                script,
+                3 + len(status_keys),
+                self._job_key(job_id),
+                self._run_claim_key(job_id),
+                self._pending_key(),
+                *status_keys,
+                record.model_dump_json(),
+                job_id,
+                self.state_ttl_seconds,
+                expected,
+                "" if expected_attempt is None else expected_attempt,
+                claim_token or "",
+                int(release_claim),
+                int(record.status in PENDING_STATUSES),
+                target_index,
+                self._pending_expiry_ms(),
+            )
+        )
+
+    def set_task_id(self, job_id: str, task_id: str) -> JobRecord | None:
+        """Дополняет JSON broker ID без read-modify-write гонки со статусом."""
+        status_keys = [self._status_key(status) for status in JobStatus]
+        script = """
+        local raw = redis.call('GET', KEYS[1])
+        if not raw then
+          return nil
+        end
+        local data = cjson.decode(raw)
+        data['task_id'] = ARGV[1]
+        data['updated_at'] = ARGV[2]
+        local encoded = cjson.encode(data)
+        redis.call('SET', KEYS[1], encoded, 'EX', ARGV[3])
+        return encoded
+        """
+        payload = self.client.eval(
+            script,
+            1 + len(status_keys),
+            self._job_key(job_id),
+            *status_keys,
+            task_id,
+            utc_now().isoformat(),
+            self.state_ttl_seconds,
+        )
         return JobRecord.model_validate_json(payload) if payload else None
 
     def append_event(self, event: JobEvent) -> JobEvent:
@@ -390,3 +774,20 @@ class RedisJobStore:
     def _status_key(self, status: JobStatus) -> str:
         """Гарантирует уникальное отображение статуса задания в пространстве ключей Redis для эффективной фильтрации и поиска."""
         return f"{self.prefix}:status:{status.value}"
+
+    def _run_claim_key(self, job_id: str) -> str:
+        """Возвращает отдельный lease-ключ владельца текущей попытки."""
+        return f"{self.prefix}:run-claim:{job_id}"
+
+    def _pending_key(self) -> str:
+        """Возвращает sorted set незавершённых заданий с TTL каждого member."""
+        return f"{self.prefix}:pending"
+
+    @staticmethod
+    def _now_ms() -> int:
+        """Возвращает текущее Unix-время в миллисекундах для Redis lease."""
+        return int(time.time() * 1000)
+
+    def _pending_expiry_ms(self) -> int:
+        """Задаёт срок жизни pending-member одновременно с job state."""
+        return self._now_ms() + self.state_ttl_seconds * 1000

@@ -8,7 +8,7 @@ embedding:
   max_input_tokens: 512
   normalize: false
   gigachat_scope: GIGACHAT_API_PERS
-  gigachat_verify_ssl_certs: false
+  gigachat_verify_ssl_certs: true
   gigachat_use_prefix_query: false
   gigachat_chars_per_token: 3
 

@@ -98,7 +98,19 @@ class UnstructuredParsingStage:
     def _parse_csv_source(self, source: SourceFile) -> list[RawElement]:
         """Обеспечивает корректное чтение CSV-файла и преобразование строк в элементы с метаданными, сохраняя структуру и контекст данных."""
         with source.path.open("r", encoding=self.config.encoding, newline="") as file:
-            reader = csv.DictReader(file)
+            sample = file.read(65_536)
+            file.seek(0)
+            try:
+                # csv.Sniffer учитывает кавычки и экранирование, поэтому надёжнее
+                # ручного split для русских CSV с ';', tab или '|'.
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+            except csv.Error:
+                LOGGER.warning(
+                    "Не удалось определить CSV delimiter для %s; используется запятая",
+                    source.source,
+                )
+                dialect = csv.excel
+            reader = csv.DictReader(file, dialect=dialect)
             columns = reader.fieldnames or []
             raw_elements: list[RawElement] = []
             for row_number, row in enumerate(reader, start=1):

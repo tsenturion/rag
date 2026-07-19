@@ -550,11 +550,13 @@ def test_human_review_holds_answer_and_operator_can_decide() -> None:
                 pending = client.get(
                     "/v1/reviews?review_status=pending", headers=headers
                 )
+                pending_metrics = client.get("/metrics", headers=headers)
                 decision = client.post(
                     f"/v1/reviews/{review_id}/decision",
                     headers=headers,
                     json={"approved": False, "comment": "Раскрытие запрещено"},
                 )
+                resolved_metrics = client.get("/metrics", headers=headers)
                 audit = client.get("/v1/security/audit", headers=headers)
         runtime.close()
 
@@ -562,5 +564,7 @@ def test_human_review_holds_answer_and_operator_can_decide() -> None:
     assert chat.json()["guardrail_action"] == "review"
     assert "временно удержан" in chat.json()["answer"]
     assert len(pending.json()) == 1
+    assert "support_agent_human_reviews_pending 1.0" in pending_metrics.text
     assert decision.json()["status"] == "rejected"
+    assert "support_agent_human_reviews_pending 0.0" in resolved_metrics.text
     assert audit.status_code == 200

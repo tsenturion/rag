@@ -101,11 +101,22 @@ def test_observability_assets_exist() -> None:
         (PROJECT_ROOT / "observability/prometheus.yaml").read_text(encoding="utf-8")
     )
     metrics_job = prometheus["scrape_configs"][0]
+    alerts = yaml.safe_load(
+        (PROJECT_ROOT / "observability/alerts.yaml").read_text(encoding="utf-8")
+    )
+    review_alert = next(
+        rule
+        for group in alerts["groups"]
+        for rule in group["rules"]
+        if rule["alert"] == "SupportAgentHumanReviewBacklog"
+    )
     assert dashboard["uid"] == "rag-support-agent"
     assert len(dashboard["panels"]) >= 3
     assert metrics_job["http_headers"]["X-API-Key"]["files"] == [
         "/run/secrets/support_service_api_key"
     ]
+    assert review_alert["expr"] == "max(support_agent_human_reviews_pending) > 10"
+    assert "increase(" not in review_alert["expr"]
 
 
 def test_w3c_trace_context_is_injected_and_extracted() -> None:

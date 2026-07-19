@@ -1,14 +1,19 @@
-extends: support_agent_docker_openai.yaml
+extends: multi_agent_docker_openai.yaml
 
-# CI проверяет контейнер, OpenAPI, аутентификацию и guardrails без платных API-вызовов.
+# CI проверяет readiness RAG, RabbitMQ/Redis/Celery и API без платных LLM-вызовов.
 rag:
-  enabled: false
+  embedding:
+    dimensions: 3
+  vector_store:
+    collection_name: rag_ci_smoke
+    vector_size: 3
 
 multi_agent:
-  enabled: false
+  mlflow_enabled: false
 
 orchestration:
-  enabled: false
+  camunda:
+    enabled: false
 
 observability:
   enabled: false

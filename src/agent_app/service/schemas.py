@@ -90,7 +90,9 @@ class MultiAgentChatResponse(MultiAgentResponse):
     )
     run_dir: str | None = Field(
         default=None,
-        description="Каталог воспроизводимых артефактов запуска.",
+        description=(
+            "Публичный идентификатор каталога артефактов без локального пути сервера."
+        ),
     )
     guardrail_action: str = "allow"
     review_id: str | None = None

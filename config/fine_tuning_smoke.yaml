@@ -17,7 +17,7 @@ model:
   model_id: sshleifer/tiny-gpt2
   fallback_model_id: Qwen/Qwen2.5-0.5B-Instruct
   tokenizer_id: null
-  trust_remote_code: true
+  trust_remote_code: false
   max_seq_length: 256
   device: auto
   dtype: auto

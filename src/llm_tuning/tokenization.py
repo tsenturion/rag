@@ -90,24 +90,35 @@ def tokenize_example(
 
     full = tokenizer(
         full_text,
-        truncation=True,
-        max_length=max_seq_length,
+        truncation=False,
         add_special_tokens=False,
     )
     prompt = tokenizer(
         prompt_text,
-        truncation=True,
-        max_length=max_seq_length,
+        truncation=False,
         add_special_tokens=False,
     )
 
-    input_ids = list(full["input_ids"])
-    attention_mask = list(full["attention_mask"])
-    prompt_length = min(len(prompt["input_ids"]), len(input_ids))
-    labels = [-100] * prompt_length + input_ids[prompt_length:]
+    full_ids = list(full["input_ids"])
+    prompt_ids = list(prompt["input_ids"])
+    if full_ids[: len(prompt_ids)] != prompt_ids:
+        raise ValueError(
+            "Chat template не позволяет однозначно отделить prompt от ответа"
+        )
+    response_ids = full_ids[len(prompt_ids) :]
+    if not response_ids:
+        raise ValueError("После chat template обучающий ответ не содержит токенов")
+    if max_seq_length < 2:
+        raise ValueError("max_seq_length должен оставлять токены prompt и ответа")
 
-    if not any(label != -100 for label in labels):
-        labels[-1] = input_ids[-1]
+    # Ответ важнее ранней части длинного prompt: иначе все labels становятся
+    # -100 и Trainer не получает ни одного корректного обучающего target.
+    response_ids = response_ids[: max_seq_length - 1]
+    prompt_budget = max_seq_length - len(response_ids)
+    retained_prompt_ids = prompt_ids[-prompt_budget:]
+    input_ids = retained_prompt_ids + response_ids
+    attention_mask = [1] * len(input_ids)
+    labels = [-100] * len(retained_prompt_ids) + response_ids
 
     return {
         "input_ids": input_ids,

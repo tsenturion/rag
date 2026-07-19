@@ -109,18 +109,6 @@ asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["src"]
-omit = [
-  # CLI-обёртки проверяются отдельными smoke-тестами запуска и --help.
-  "src/**/cli.py",
-  "src/agent_app/orchestration/camunda_cli.py",
-  "src/agent_app/orchestration/worker_cli.py",
-  # Эти процессы требуют внешнего broker/provider либо реального обучения модели.
-  "src/agent_app/orchestration/tasks.py",
-  "src/agent_app/llm.py",
-  "src/llm_tuning/generation.py",
-  "src/llm_tuning/pipeline.py",
-  "src/llm_tuning/training.py",
-]
 
 [tool.coverage.report]
 fail_under = 80

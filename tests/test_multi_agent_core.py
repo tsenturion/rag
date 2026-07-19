@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
+
 from agent_app.config import (
     AgentAppConfig,
     AgentConfig,
@@ -39,6 +42,26 @@ class CountingLLM:
         """Гарантирует инкремент счётчика вызовов и возвращает предсказуемый ответ для тестирования взаимодействия."""
         self.calls += 1
         return "Ответ"
+
+
+class UsageReportingLLM:
+    """Возвращает фактический usage, превышающий предварительную оценку."""
+
+    def __init__(self) -> None:
+        """Создаёт счётчик выполненных provider-вызовов."""
+        self.calls = 0
+
+    def invoke(self, _messages):
+        """Имитирует дорогой ответ с provider usage metadata."""
+        self.calls += 1
+        return AIMessage(
+            content="Ответ",
+            usage_metadata={
+                "input_tokens": 80,
+                "output_tokens": 30,
+                "total_tokens": 110,
+            },
+        )
 
 
 class MultiAgentCoreTest(unittest.TestCase):
@@ -79,6 +102,58 @@ class MultiAgentCoreTest(unittest.TestCase):
             tracker.invoke(["Слишком длинный запрос"], "coordinator")
 
         self.assertEqual(llm.calls, 0)
+
+    def test_token_budget_includes_tool_schema_before_provider(self) -> None:
+        """Tool JSON Schema входит в резерв даже при коротком content сообщения."""
+
+        @tool
+        def lookup_incident(incident_id: str, include_history: bool = True) -> str:
+            """Возвращает инженерный инцидент и при необходимости его историю."""
+            return incident_id if include_history else ""
+
+        llm = CountingLLM()
+        probe = LLMCallTracker(
+            llm,
+            model="gpt-4o-mini",
+            input_cost_per_million=0.0,
+            output_cost_per_million=0.0,
+        )
+        messages = [HumanMessage(content="Найди")]
+        contract = probe._input_contract_text(messages, [lookup_incident])
+        content_only = probe._input_contract_text(messages, None)
+        self.assertGreater(
+            probe.estimate_tokens(contract),
+            probe.estimate_tokens(content_only),
+        )
+        tracker = LLMCallTracker(
+            llm,
+            model="gpt-4o-mini",
+            input_cost_per_million=0.0,
+            output_cost_per_million=0.0,
+            token_budget=probe.estimate_tokens(contract) - 1,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "Token budget исчерпан"):
+            tracker.invoke_response(messages, "tool_agent", tools=[lookup_incident])
+
+        self.assertEqual(llm.calls, 0)
+
+    def test_actual_provider_usage_cannot_silently_exceed_budget(self) -> None:
+        """Фактический usage после вызова останавливает дальнейшее выполнение."""
+        llm = UsageReportingLLM()
+        tracker = LLMCallTracker(
+            llm,
+            model="gpt-4o-mini",
+            input_cost_per_million=0.0,
+            output_cost_per_million=0.0,
+            token_budget=100,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "фактическим ответом"):
+            tracker.invoke([HumanMessage(content="Короткий запрос")], "coordinator")
+
+        self.assertEqual(llm.calls, 1)
+        self.assertEqual(tracker.snapshot().total_tokens, 110)
 
     def test_llm_calls_are_routed_to_role_profiles(self) -> None:
         """Проверяет корректную маршрутизацию вызовов LLM к профилям ролей, обеспечивая использование соответствующих моделей и провайдеров для каждого агента."""

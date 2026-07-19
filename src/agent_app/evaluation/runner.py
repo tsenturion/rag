@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from time import perf_counter
+from uuid import uuid4
 
 import mlflow
 
@@ -31,14 +32,20 @@ class RuntimeEvaluationExecutor:
         """Готовит экземпляр к запуску оценки, устанавливая режим работы и связывая с жизненным циклом тестируемого рантайма."""
         self.runtime = runtime
         self.mode = mode
+        self.run_id = str(uuid4())
+
+    def begin_run(self, run_id: str) -> None:
+        """Переключает executor на изолированное пространство памяти запуска."""
+        self.run_id = run_id
 
     def execute(self, case: EvaluationCase, *, repetition: int) -> EvaluationOutput:
         """Гарантирует получение структурированного результата оценки для одного тест-кейса с учётом выбранного режима и контроля ошибок."""
-        session_id = f"eval-{case.id}-{repetition}"
+        user_id = f"evaluation-{self.run_id}"
+        session_id = f"eval-{self.run_id}-{case.id}-{repetition}"
         started = perf_counter()
         if self.mode == "single":
             response, _ = self.runtime.ask(
-                user_id="evaluation", session_id=session_id, message=case.request
+                user_id=user_id, session_id=session_id, message=case.request
             )
             latency_ms = (perf_counter() - started) * 1000
             usage = estimate_mode_usage(
@@ -78,7 +85,7 @@ class RuntimeEvaluationExecutor:
                 guardrail_findings=[item.code for item in guardrail.findings],
             )
         result, _ = self.runtime.ask_multi(
-            user_id="evaluation", session_id=session_id, message=case.request
+            user_id=user_id, session_id=session_id, message=case.request
         )
         response = result.response
         guardrail = self.runtime.guardrails.inspect_output(response.answer)
@@ -121,6 +128,10 @@ class EvaluationRunner:
 
     def run(self, suite: EvaluationSuite) -> EvaluationReport:
         """Гарантирует воспроизводимое выполнение всей тестовой выборки с агрегацией результатов, проверкой порогов качества и экспортом отчёта."""
+        run_id = str(uuid4())
+        begin_run = getattr(self.executor, "begin_run", None)
+        if callable(begin_run):
+            begin_run(run_id)
         results = []
         for case in suite.cases:
             for repetition in range(1, self.config.evaluation.repeats + 1):
@@ -150,6 +161,7 @@ class EvaluationRunner:
             "currency_conversion": summary.currency_conversion_complete,
         }
         report = EvaluationReport(
+            run_id=run_id,
             suite_name=suite.name,
             mode=suite.mode,
             provider=self.config.agent.provider,

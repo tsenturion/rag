@@ -476,6 +476,11 @@ class ChunkSplittingStage:
         overlap_window = max(len(chunk_text), self.config.chunk_overlap * 8)
         search_from = max(0, cursor - overlap_window)
         start = source_text.find(chunk_text, search_from)
+        # Совпадение, полностью покрытое предыдущим чанком, не является span
+        # следующего результата. Это особенно важно для одинаковых абзацев:
+        # повторный find не должен снова вернуть offsets первого фрагмента.
+        while start != -1 and start + len(chunk_text) <= cursor:
+            start = source_text.find(chunk_text, start + 1)
         if start == -1:
             # Некоторые splitter нормализуют пробелы. В таком случае точный span
             # восстановить нельзя: не скрываем это и записываем fallback_strategy.

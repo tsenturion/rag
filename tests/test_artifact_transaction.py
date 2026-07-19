@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sys
 import tempfile
 import unittest
@@ -16,7 +17,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from rag_prep.config import PathConfig, PipelineConfig  # noqa: E402
 from rag_prep.stages.exporting import ExportStage  # noqa: E402
-from rag_prep.utils import artifact_set_transaction  # noqa: E402
+from rag_prep.utils import (  # noqa: E402
+    artifact_set_transaction,
+    recover_artifact_transactions,
+)
 
 
 class ArtifactTransactionTest(unittest.TestCase):
@@ -75,6 +79,36 @@ class ArtifactTransactionTest(unittest.TestCase):
 
             self._assert_old_set(targets)
             self.assertEqual(list(output_dir.glob(".artifact-set-*")), [])
+
+    def test_recovery_rolls_back_process_crash_during_commit(self) -> None:
+        """Восстанавливает весь старый набор по durable prepared journal."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            targets = self._targets(output_dir)
+            self._write_old_set(targets)
+            staging = output_dir / ".artifact-set-crashed"
+            staging.mkdir()
+            entries = []
+            for index, target in enumerate(targets):
+                backup = staging / f".backup-{index:03d}-{target.name}"
+                backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+                entries.append(
+                    {
+                        "target": str(target.resolve()),
+                        "backup": str(backup.resolve()),
+                        "existed": True,
+                    }
+                )
+                target.write_text(f"new:{target.name}", encoding="utf-8")
+            (staging / "journal.json").write_text(
+                json.dumps({"version": 1, "state": "prepared", "entries": entries}),
+                encoding="utf-8",
+            )
+
+            recover_artifact_transactions(output_dir)
+
+            self._assert_old_set(targets)
+            self.assertFalse(staging.exists())
 
     @staticmethod
     def _targets(output_dir: Path) -> list[Path]:

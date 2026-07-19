@@ -45,6 +45,11 @@ class LlamaIndexLoadingStage:
         sources = [
             self._to_source_file(path, input_dir=input_dir) for path in sorted(files)
         ]
+        if not sources:
+            raise ValueError(
+                "Входной корпус пуст: не найдено ни одного поддерживаемого файла "
+                f"в {input_dir}"
+            )
         LOGGER.info("Загружено исходных файлов: %d из %s", len(sources), input_dir)
         return sources
 

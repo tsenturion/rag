@@ -4,11 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from a2a.server.context import ServerCallContext
-from a2a.types import ListTasksRequest, Task, TaskState, TaskStatus
+from a2a.types import (
+    CancelTaskRequest,
+    ListTasksRequest,
+    Message,
+    Part,
+    Role,
+    SendMessageRequest,
+    Task,
+    TaskState,
+    TaskStatus,
+    UnsupportedOperationError,
+)
 
 from agent_app.multi_agent.protocols.a2a import (
     MultiAgentA2AHandler,
@@ -113,3 +126,82 @@ def test_a2a_list_uses_owner_scope_and_page_token() -> None:
     assert not second.next_page_token
     assert not first_ids.intersection(second_ids)
     assert first_ids | second_ids == {"alice-1", "alice-2", "alice-3"}
+
+
+def test_a2a_rejects_joined_text_over_service_limit() -> None:
+    """Проверяет лимит после объединения всех text parts до запуска LLM."""
+    called = False
+
+    def ask(**_kwargs):
+        """Фиксирует недопустимый вызов provider после ошибки валидации."""
+        nonlocal called
+        called = True
+
+    with tempfile.TemporaryDirectory() as temporary_dir:
+        handler = MultiAgentA2AHandler(
+            card=None,
+            ask=ask,
+            store=A2ATaskStore(
+                Path(temporary_dir) / "a2a.sqlite",
+                ttl_seconds=60,
+                max_tasks=10,
+            ),
+            request_max_chars=5,
+        )
+        request = SendMessageRequest(
+            message=Message(
+                message_id="message-1",
+                role=Role.ROLE_USER,
+                parts=[Part(text="abc"), Part(text="def")],
+            )
+        )
+        with pytest.raises(ValueError, match="превышает разрешённый лимит"):
+            asyncio.run(handler.on_message_send(request, _context("alice")))
+
+    assert not called
+
+
+def test_a2a_does_not_claim_running_thread_was_canceled() -> None:
+    """Не маскирует продолжающийся to_thread provider-вызов статусом canceled."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def ask(**_kwargs):
+        """Имитирует синхронный provider без механизма отмены."""
+        started.set()
+        release.wait(timeout=5)
+        raise RuntimeError("provider completed after cancellation attempt")
+
+    async def exercise(path: Path) -> Task:
+        """Пытается отменить работающую задачу и дожидается честного статуса."""
+        handler = MultiAgentA2AHandler(
+            card=None,
+            ask=ask,
+            store=A2ATaskStore(path, ttl_seconds=60, max_tasks=10),
+        )
+        request = SendMessageRequest(
+            message=Message(
+                message_id="message-2",
+                role=Role.ROLE_USER,
+                parts=[Part(text="Диагностируй инцидент")],
+            )
+        )
+        task = await handler.on_message_send(request, _context("alice"))
+        assert isinstance(task, Task)
+        await asyncio.to_thread(started.wait, 5)
+        with pytest.raises(UnsupportedOperationError, match="уже выполняется"):
+            await handler.on_cancel_task(
+                CancelTaskRequest(id=task.id),
+                _context("alice"),
+            )
+        release.set()
+        future = handler._futures[task.id]
+        await future
+        stored = handler.store.get(task.id)
+        assert stored is not None
+        return stored[0]
+
+    with tempfile.TemporaryDirectory() as temporary_dir:
+        result = asyncio.run(exercise(Path(temporary_dir) / "a2a.sqlite"))
+
+    assert result.status.state == TaskState.TASK_STATE_FAILED

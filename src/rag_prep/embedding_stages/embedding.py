@@ -23,6 +23,7 @@ from tenacity import (
 )
 
 from rag_prep.config import EmbeddingConfig
+from rag_prep.gigachat_tls import resolve_gigachat_ca_bundle
 from rag_prep.models import EmbeddedChunk, EmbeddedChunkMetadata, PreparedChunk, utc_now
 
 LOGGER = logging.getLogger(__name__)
@@ -122,6 +123,11 @@ class EmbeddingRecordMixin:
         payload = json.dumps(vector, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    def _query_vector(self, vector: list[float]) -> list[float]:
+        """Применяет к query ту же нормализацию, что и к индексируемым векторам."""
+        numeric = [float(value) for value in vector]
+        return self._normalize(numeric) if self.config.normalize else numeric
+
 
 class OpenAIEmbeddingStage(EmbeddingRecordMixin):
     """Считает OpenAI embeddings для подготовленных чанков."""
@@ -189,7 +195,7 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
         result = self._embed_texts([text])
         if len(result.vectors) != 1:
             raise ValueError("OpenAI должен вернуть ровно один query embedding")
-        return result.vectors[0]
+        return self._query_vector(result.vectors[0])
 
     def _request_embeddings(self, texts: list[str]) -> EmbeddingBatchResult:
         """Запрашивает batch и фиксирует время сразу после ответа API."""
@@ -516,6 +522,7 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
             timeout=config.timeout_seconds,
             max_retries=config.max_retries,
             verify_ssl_certs=config.gigachat_verify_ssl_certs,
+            ca_bundle_file=resolve_gigachat_ca_bundle(),
             prefix_query=config.gigachat_prefix_query,
             use_prefix_query=config.gigachat_use_prefix_query,
         )
@@ -579,7 +586,7 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
     def embed_query(self, text: str) -> list[float]:
         """Гарантирует получение embedding для запроса через GigaChat API с приведением к числовому формату."""
         vector = self.client.embed_query(text)
-        return [float(value) for value in vector]
+        return self._query_vector(vector)
 
     def _batches(self, chunks: list[PreparedChunk]) -> Iterable[list[PreparedChunk]]:
         """Разбивает входные чанки на батчи, строго соблюдая лимиты GigaChat по размеру и количеству токенов для предотвращения ошибок API."""

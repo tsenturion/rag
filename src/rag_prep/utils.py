@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+import portalocker
+
 
 def setup_logging(level: str) -> None:
     """Настраивает глобальное логирование с заданным уровнем, обеспечивая единообразие вывода сообщений в системе."""
@@ -53,6 +55,7 @@ def verify_upstream_artifact(
 ) -> dict[str, str]:
     """Проверяет вход по манифесту и возвращает связь с upstream-run."""
     resolved_input = input_path.resolve()
+    recover_artifact_transactions(resolved_input.parent)
     manifest_path = resolved_input.parent / manifest_filename
     if not manifest_path.is_file():
         raise ValueError(
@@ -130,7 +133,7 @@ def json_dump(path: Path, payload: Any) -> None:
 
 @contextmanager
 def artifact_set_transaction(targets: list[Path]) -> Iterator[dict[Path, Path]]:
-    """Гарантирует атомарную публикацию набора файлов-артефактов с откатом при ошибках и логированием неустранимых сбоев."""
+    """Публикует набор файлов с журналом восстановления после аварии процесса."""
     if not targets:
         raise ValueError("Набор артефактов не может быть пустым")
     resolved_targets = [target.resolve() for target in targets]
@@ -143,63 +146,158 @@ def artifact_set_transaction(targets: list[Path]) -> Iterator[dict[Path, Path]]:
         )
 
     parent.mkdir(parents=True, exist_ok=True)
-    staging_dir = Path(tempfile.mkdtemp(prefix=".artifact-set-", dir=parent))
-    staged = {
-        target: staging_dir / f"{index:03d}-{target.name}"
-        for index, target in enumerate(resolved_targets)
-    }
-    try:
-        yield staged
-        _commit_artifact_set(staged, staging_dir=staging_dir)
-    finally:
-        remaining_backups = list(staging_dir.glob(".backup-*"))
-        if remaining_backups:
-            logging.getLogger(__name__).critical(
-                "Не удалось полностью откатить набор артефактов; backups сохранены в %s",
-                staging_dir,
-            )
-        else:
-            shutil.rmtree(staging_dir, ignore_errors=True)
+    lock_path = parent / ".artifact-publish.lock"
+    with portalocker.Lock(str(lock_path), timeout=30):
+        _recover_artifact_transactions_unlocked(parent)
+        staging_dir = Path(tempfile.mkdtemp(prefix=".artifact-set-", dir=parent))
+        staged = {
+            target: staging_dir / f"{index:03d}-{target.name}"
+            for index, target in enumerate(resolved_targets)
+        }
+        try:
+            yield staged
+            _commit_artifact_set(staged, staging_dir=staging_dir)
+        finally:
+            if staging_dir.exists():
+                if not (staging_dir / "journal.json").exists():
+                    shutil.rmtree(staging_dir)
+                else:
+                    logging.getLogger(__name__).critical(
+                        "Незавершённая публикация сохранена для recovery: %s",
+                        staging_dir,
+                    )
+
+
+def recover_artifact_transactions(parent: Path) -> None:
+    """Восстанавливает целостный набор после прерванной публикации файлов."""
+    resolved_parent = parent.resolve()
+    if not resolved_parent.exists():
+        return
+    lock_path = resolved_parent / ".artifact-publish.lock"
+    with portalocker.Lock(str(lock_path), timeout=30):
+        _recover_artifact_transactions_unlocked(resolved_parent)
+
+
+def _recover_artifact_transactions_unlocked(parent: Path) -> None:
+    """Обрабатывает журналы транзакций под уже захваченным directory lock."""
+    for staging_dir in sorted(parent.glob(".artifact-set-*")):
+        if not staging_dir.is_dir():
+            continue
+        journal_path = staging_dir / "journal.json"
+        if not journal_path.exists():
+            # До появления durable journal целевые файлы ещё не изменяются.
+            shutil.rmtree(staging_dir)
+            continue
+        try:
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Повреждён журнал публикации артефактов: {journal_path}"
+            ) from exc
+        state = journal.get("state")
+        if state == "prepared":
+            _restore_artifact_set(journal, staging_dir=staging_dir)
+        elif state != "committed":
+            raise RuntimeError(f"Неизвестное состояние журнала артефактов: {state!r}")
+        shutil.rmtree(staging_dir)
+    _fsync_directory(parent)
 
 
 def _commit_artifact_set(staged: dict[Path, Path], *, staging_dir: Path) -> None:
-    """Гарантирует замену целевого набора файлов на подготовленные версии с восстановлением исходного состояния при сбоях."""
+    """Фиксирует набор через write-ahead journal и durable filesystem barriers."""
     missing = [path for path in staged.values() if not path.exists()]
     if missing:
         raise FileNotFoundError(f"Не все staged-артефакты созданы: {missing}")
 
-    backups: dict[Path, Path] = {}
-    installed: list[Path] = []
+    entries: list[dict[str, str | bool]] = []
+    for index, target in enumerate(staged):
+        staged_path = staged[target]
+        _fsync_file(staged_path)
+        backup = staging_dir / f".backup-{index:03d}-{target.name}"
+        existed = target.exists()
+        if existed:
+            shutil.copy2(target, backup)
+            _fsync_file(backup)
+        entries.append(
+            {
+                "target": str(target),
+                "backup": str(backup),
+                "existed": existed,
+            }
+        )
+
+    journal_path = staging_dir / "journal.json"
+    journal = {"version": 1, "state": "prepared", "entries": entries}
+    _write_durable_json(journal_path, journal)
     try:
-        for index, target in enumerate(staged):
-            if target.exists():
-                backup = staging_dir / f".backup-{index:03d}-{target.name}"
-                os.replace(target, backup)
-                backups[target] = backup
         for target, staged_path in staged.items():
             os.replace(staged_path, target)
-            installed.append(target)
-    except BaseException as original_error:
-        rollback_errors: list[OSError] = []
-        for target in reversed(installed):
-            try:
-                target.unlink(missing_ok=True)
-            except OSError as exc:
-                rollback_errors.append(exc)
-        for target, backup in backups.items():
-            if backup.exists():
-                try:
-                    os.replace(backup, target)
-                except OSError as exc:
-                    rollback_errors.append(exc)
-        if rollback_errors:
+        _fsync_directory(staging_dir.parent)
+        journal["state"] = "committed"
+        _write_durable_json(journal_path, journal)
+    except BaseException:
+        try:
+            _restore_artifact_set(journal, staging_dir=staging_dir)
+            shutil.rmtree(staging_dir)
+        except OSError as rollback_error:
             raise RuntimeError(
                 "Не удалось полностью восстановить предыдущий набор артефактов"
-            ) from original_error
+            ) from rollback_error
         raise
-    else:
-        for backup in backups.values():
-            backup.unlink(missing_ok=True)
+    shutil.rmtree(staging_dir)
+    _fsync_directory(staging_dir.parent)
+
+
+def _restore_artifact_set(
+    journal: dict[str, Any],
+    *,
+    staging_dir: Path,
+) -> None:
+    """Восстанавливает все старые цели либо удаляет ранее отсутствовавшие."""
+    for index, entry in enumerate(journal.get("entries", [])):
+        target = Path(str(entry["target"]))
+        backup = Path(str(entry["backup"]))
+        if bool(entry["existed"]):
+            if not backup.is_file():
+                raise OSError(f"Отсутствует backup артефакта: {backup}")
+            restore_temp = staging_dir / f".restore-{index:03d}-{target.name}"
+            shutil.copy2(backup, restore_temp)
+            _fsync_file(restore_temp)
+            os.replace(restore_temp, target)
+        else:
+            target.unlink(missing_ok=True)
+    _fsync_directory(staging_dir.parent)
+
+
+def _write_durable_json(path: Path, payload: dict[str, Any]) -> None:
+    """Атомарно записывает JSON и синхронизирует файл с каталогом."""
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(payload, stream, ensure_ascii=False, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    _fsync_directory(path.parent)
+
+
+def _fsync_file(path: Path) -> None:
+    """Сбрасывает содержимое файла из page cache на диск."""
+    # Windows отклоняет os.fsync для read-only CRT descriptor, поэтому файл
+    # открывается на добавление без фактической записи.
+    with path.open("ab") as stream:
+        os.fsync(stream.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    """Синхронизирует metadata каталога там, где ОС это поддерживает."""
+    if os.name != "posix":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 class atomic_text_writer:

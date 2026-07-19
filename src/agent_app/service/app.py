@@ -20,6 +20,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -29,6 +30,11 @@ from agent_app.guardrails import GuardrailPipeline
 from agent_app.guardrails.models import HumanReviewRecord, SecurityAuditEvent
 from agent_app.multi_agent.protocols.a2a import install_a2a_routes
 from agent_app.multi_agent.protocols.mcp import build_mcp_server
+from agent_app.multi_agent.sanitization import (
+    public_run_reference,
+    sanitize_comparison_report,
+    sanitize_run_result,
+)
 from agent_app.orchestration.errors import JobNotFoundError, QueueCapacityError
 from agent_app.orchestration.models import (
     JobEvent,
@@ -173,6 +179,7 @@ def create_app(
             try:
                 yield
             finally:
+                rate_limiter.close()
                 if owns_runtime:
                     app.state.runtime.close()
 
@@ -262,10 +269,32 @@ def create_app(
         ["status"],
         registry=registry,
     )
+    review_backlog = Gauge(
+        "support_agent_human_reviews_pending",
+        "Фактическое число незакрытых задач ручной проверки",
+        registry=registry,
+    )
     auth_manager = AuthManager(config.security)
+    rate_limit_redis_url = (
+        os.getenv(config.security.rate_limit_redis_url_env)
+        if config.security.rate_limit_backend == "redis"
+        else None
+    )
+    if (
+        config.security.rate_limit_enabled
+        and config.security.rate_limit_backend == "redis"
+        and not rate_limit_redis_url
+    ):
+        raise ValueError(
+            "Для security.rate_limit_backend=redis задайте переменную "
+            f"{config.security.rate_limit_redis_url_env}"
+        )
     rate_limiter = TokenBucketRateLimiter(
         requests_per_minute=config.security.rate_limit_requests_per_minute,
         burst=config.security.rate_limit_burst,
+        redis_url=rate_limit_redis_url,
+        key_prefix=config.security.rate_limit_key_prefix,
+        bucket_ttl_seconds=config.security.rate_limit_bucket_ttl_seconds,
     )
     guardrail_pipeline = GuardrailPipeline(config.guardrails)
 
@@ -357,22 +386,27 @@ def create_app(
         started = perf_counter()
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
-        elapsed = perf_counter() - started
         route_object = request.scope.get("route")
         route = getattr(route_object, "path", request.url.path)
-        request_counter.labels(request.method, route, str(response.status_code)).inc()
-        request_latency.labels(request.method, route).observe(elapsed)
-        LOGGER.info(
-            "HTTP request",
-            extra={
-                "event": "http_request",
-                "request_id": request_id,
-                "method": request.method,
-                "path": route,
-                "status": response.status_code,
-                "duration_ms": round(elapsed * 1000, 3),
-            },
-        )
+        # StreamingResponse начинает исполнять generator уже после возврата из
+        # middleware. Его метрики фиксирует сам generator после result/error.
+        if route != "/v1/chat/stream":
+            elapsed = perf_counter() - started
+            request_counter.labels(
+                request.method, route, str(response.status_code)
+            ).inc()
+            request_latency.labels(request.method, route).observe(elapsed)
+            LOGGER.info(
+                "HTTP request",
+                extra={
+                    "event": "http_request",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": route,
+                    "status": response.status_code,
+                    "duration_ms": round(elapsed * 1000, 3),
+                },
+            )
         if response.status_code in {
             status.HTTP_401_UNAUTHORIZED,
             status.HTTP_403_FORBIDDEN,
@@ -634,6 +668,7 @@ def create_app(
             session_id=payload.session_id,
             message=message,
         )
+        result = sanitize_run_result(result, guardrail_pipeline)
         answer, guardrail_action, review_id = inspect_answer(
             request,
             prompt=message,
@@ -654,7 +689,7 @@ def create_app(
             **result.response.model_dump(mode="python"),
             request_id=request.state.request_id,
             duration_ms=duration_ms,
-            run_dir=result.run_dir,
+            run_dir=public_run_reference(result.run_dir),
             guardrail_action=guardrail_action,
             review_id=review_id,
         )
@@ -685,6 +720,10 @@ def create_app(
             expected_terms=payload.expected_terms,
             expected_tools=payload.expected_tools,
             require_citations=payload.require_citations,
+        )
+        report = sanitize_comparison_report(report, guardrail_pipeline)
+        report = report.model_copy(
+            update={"run_dir": public_run_reference(report.run_dir)}
         )
         return MultiAgentCompareResponse(
             **report.model_dump(mode="python"),
@@ -851,39 +890,70 @@ def create_app(
         _validate_message_size(payload.message, config)
         message = inspect_request(request, payload)
 
+        request_id = request.state.request_id
+
         def events():
             """Гарантирует потоковую передачу статуса и результата диалога для интерактивных клиентов с учётом аудита и метрик."""
-            yield _sse("started", {"request_id": request.state.request_id})
-            result, duration_ms = request.app.state.runtime.ask(
-                user_id=payload.user_id,
-                session_id=payload.session_id,
-                message=message,
-            )
-            answer, guardrail_action, review_id = inspect_answer(
-                request,
-                prompt=message,
-                answer=result.answer,
-                user_id=payload.user_id,
-                session_id=payload.session_id,
-            )
-            result = result.model_copy(
-                update={
-                    "answer": answer,
-                    "citations": _sanitize_citations(result.citations),
-                }
-            )
-            response = ChatResponse(
-                **result.model_dump(mode="python"),
-                request_id=request.state.request_id,
-                duration_ms=duration_ms,
-                guardrail_action=guardrail_action,
-                review_id=review_id,
-            )
-            retrieval_status = (
-                result.retrieval.status if result.retrieval else "not_used"
-            )
-            retrieval_counter.labels(retrieval_status).inc()
-            yield _sse("result", response.model_dump(mode="json"))
+            stream_started = perf_counter()
+            stream_status = "200"
+            try:
+                yield _sse("started", {"request_id": request_id})
+                result, duration_ms = request.app.state.runtime.ask(
+                    user_id=payload.user_id,
+                    session_id=payload.session_id,
+                    message=message,
+                )
+                answer, guardrail_action, review_id = inspect_answer(
+                    request,
+                    prompt=message,
+                    answer=result.answer,
+                    user_id=payload.user_id,
+                    session_id=payload.session_id,
+                )
+                result = result.model_copy(
+                    update={
+                        "answer": answer,
+                        "citations": _sanitize_citations(result.citations),
+                    }
+                )
+                response = ChatResponse(
+                    **result.model_dump(mode="python"),
+                    request_id=request_id,
+                    duration_ms=duration_ms,
+                    guardrail_action=guardrail_action,
+                    review_id=review_id,
+                )
+                retrieval_status = (
+                    result.retrieval.status if result.retrieval else "not_used"
+                )
+                retrieval_counter.labels(retrieval_status).inc()
+                yield _sse("result", response.model_dump(mode="json"))
+            except Exception:
+                stream_status = "500"
+                LOGGER.exception("Ошибка выполнения SSE-запроса %s", request_id)
+                yield _sse(
+                    "error",
+                    {
+                        "request_id": request_id,
+                        "code": "stream_execution_failed",
+                        "message": "Не удалось выполнить запрос агента.",
+                    },
+                )
+            finally:
+                elapsed = perf_counter() - stream_started
+                request_counter.labels("POST", "/v1/chat/stream", stream_status).inc()
+                request_latency.labels("POST", "/v1/chat/stream").observe(elapsed)
+                LOGGER.info(
+                    "HTTP SSE request",
+                    extra={
+                        "event": "http_request",
+                        "request_id": request_id,
+                        "method": "POST",
+                        "path": "/v1/chat/stream",
+                        "status": stream_status,
+                        "duration_ms": round(elapsed * 1000, 3),
+                    },
+                )
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -1062,8 +1132,15 @@ def create_app(
         },
         dependencies=[Depends(require_permission(Permission.METRICS_READ))],
     )
-    def metrics() -> Response:
+    def metrics(request: Request) -> Response:
         """Гарантирует предоставление актуальных метрик Prometheus для мониторинга состояния сервиса через HTTP."""
+        review_store = getattr(request.app.state.runtime, "review_store", None)
+        # Облегчённые runtime-адаптеры используются в тестах и интеграциях,
+        # которым human review не нужен. Реальный SupportApplicationRuntime
+        # всегда предоставляет store и публикует фактический backlog.
+        review_backlog.set(
+            review_store.count(status="pending") if review_store is not None else 0
+        )
         return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
     if config.multi_agent.enabled and config.multi_agent.protocols.a2a_enabled:

@@ -6,8 +6,10 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any
+from typing import Any, Iterator
 
 from agent_app.config import AgentAppConfig
 from agent_app.currency import CBRCurrencyConverter
@@ -33,6 +35,14 @@ from agent_app.tools.mcp_external import ExternalMCPToolManager
 from agent_app.tools.code_runner import code_runner_status
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _SessionLockEntry:
+    """Связывает lock с числом активных операций конкретной сессии."""
+
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    references: int = 0
 
 
 class SupportApplicationRuntime:
@@ -66,7 +76,15 @@ class SupportApplicationRuntime:
         self.external_tools = self.external_mcp_manager.start()
         self._runners: OrderedDict[tuple[str, str], AgentRunner] = OrderedDict()
         self._cache_lock = threading.RLock()
-        self._execution_lock = threading.RLock()
+        self._session_locks: dict[tuple[str, str], _SessionLockEntry] = {}
+        # Один accelerator и один локальный model object нельзя безопасно вызывать
+        # конкурентно. Удалённые провайдеры этой блокировкой не ограничиваются.
+        self._local_execution_lock = threading.RLock()
+        self._initialization_lock = threading.RLock()
+        self._lifecycle = threading.Condition(threading.RLock())
+        self._active_requests = 0
+        self._closing = False
+        self._closed = False
         self.multi_agent_runtime: MultiAgentRuntime | None = None
         self.orchestration_service: OrchestrationService | None = None
         if self._llm is None:
@@ -80,7 +98,10 @@ class SupportApplicationRuntime:
         """Гарантирует выполнение запроса пользователя к агенту с учётом синхронизации и возвратом времени отклика."""
         started = perf_counter()
         with traced("agent.ask", mode="single", user_id=user_id, session_id=session_id):
-            with self._execution_lock:
+            with self._request_scope(
+                (user_id, session_id),
+                serialize_local=self.config.agent.provider == "local",
+            ):
                 runner = self._runner(user_id=user_id, session_id=session_id)
                 response = runner.ask(message)
         return response, round((perf_counter() - started) * 1000, 3)
@@ -91,7 +112,10 @@ class SupportApplicationRuntime:
         """Гарантирует параллельную обработку запроса несколькими агентами с контролем синхронизации и возвратом времени выполнения."""
         started = perf_counter()
         with traced("agent.ask", mode="multi", user_id=user_id, session_id=session_id):
-            with self._execution_lock:
+            with self._request_scope(
+                (user_id, session_id),
+                serialize_local=self._multi_uses_local_llm(),
+            ):
                 runtime = self._require_multi_agent()
                 result = runtime.ask(
                     user_id=user_id,
@@ -124,7 +148,10 @@ class SupportApplicationRuntime:
                 )
             ]
         )
-        with self._execution_lock:
+        with self._request_scope(
+            (user_id, session_id),
+            serialize_local=self._multi_uses_local_llm(),
+        ):
             report = self._require_multi_agent().compare(
                 suite,
                 user_id=user_id,
@@ -166,22 +193,23 @@ class SupportApplicationRuntime:
     def delete_session(self, *, user_id: str, session_id: str) -> DeleteSessionResponse:
         """Гарантирует полное удаление пользовательской сессии и связанных с ней ресурсов из всех подсистем, предотвращая утечки памяти и конфликт идентификаторов."""
         key = (user_id, session_id)
-        with self._cache_lock:
-            runner = self._runners.pop(key, None)
-        deleted = self.memory_store.clear_session(
-            user_id=user_id, session_id=session_id
-        )
-        if runner is not None:
-            runner.short_term.clear()
-            runner.close()
-        checkpoint_deleted = (
-            self.multi_agent_runtime.clear_session(
-                user_id=user_id,
-                session_id=session_id,
+        with self._request_scope(key, serialize_local=False):
+            with self._cache_lock:
+                runner = self._runners.pop(key, None)
+            deleted = self.memory_store.clear_session(
+                user_id=user_id, session_id=session_id
             )
-            if self.multi_agent_runtime is not None
-            else False
-        )
+            if runner is not None:
+                runner.short_term.clear()
+                runner.close()
+            checkpoint_deleted = (
+                self.multi_agent_runtime.clear_session(
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                if self.multi_agent_runtime is not None
+                else False
+            )
         return DeleteSessionResponse(
             user_id=user_id,
             session_id=session_id,
@@ -268,10 +296,19 @@ class SupportApplicationRuntime:
 
     def close(self) -> None:
         """Дожидается активного запроса и затем закрывает общие LLM/SQLite-ресурсы."""
-        # Отмена asyncio.to_thread не останавливает уже запущенный sync LLM-вызов.
-        # Тот же lock используется в ask/ask_multi: shutdown не может очистить
-        # registry или закрыть checkpointer, пока фоновый поток обращается к ним.
-        with self._execution_lock:
+        with self._lifecycle:
+            if self._closed:
+                return
+            if self._closing:
+                while not self._closed:
+                    self._lifecycle.wait()
+                return
+            self._closing = True
+            # Запросы разных сессий выполняются параллельно, поэтому shutdown
+            # ожидает счётчик, а не захватывает один execution lock.
+            while self._active_requests:
+                self._lifecycle.wait()
+        try:
             with self._cache_lock:
                 runners = list(self._runners.values())
                 self._runners.clear()
@@ -288,6 +325,10 @@ class SupportApplicationRuntime:
             self.review_store.close()
             if self._owns_rag:
                 self.rag_runtime.close()
+        finally:
+            with self._lifecycle:
+                self._closed = True
+                self._lifecycle.notify_all()
 
     def _runner(self, *, user_id: str, session_id: str) -> AgentRunner:
         """Гарантирует наличие и актуальность AgentRunner для указанной сессии, автоматически инициализируя LLM и управляя кэшированием."""
@@ -312,67 +353,88 @@ class SupportApplicationRuntime:
                 external_tools=self.external_tools,
             )
             self._runners[key] = runner
-            self._evict_runners()
             return runner
 
-    def _evict_runners(self) -> None:
-        """Поддерживает ограничение размера кэша сессий, гарантируя своевременное освобождение памяти при превышении лимита."""
-        while len(self._runners) > self.config.service.session_cache_size:
-            _, runner = self._runners.popitem(last=False)
+    def _evict_idle_runners(self) -> None:
+        """Удаляет только неиспользуемые LRU-runner, не закрывая активную сессию."""
+        evicted: list[AgentRunner] = []
+        with self._cache_lock:
+            while len(self._runners) > self.config.service.session_cache_size:
+                idle_key = next(
+                    (
+                        key
+                        for key in self._runners
+                        if (entry := self._session_locks.get(key)) is None
+                        or entry.references == 0
+                    ),
+                    None,
+                )
+                if idle_key is None:
+                    break
+                evicted.append(self._runners.pop(idle_key))
+                entry = self._session_locks.get(idle_key)
+                if entry is not None and entry.references == 0:
+                    self._session_locks.pop(idle_key, None)
+        for runner in evicted:
             runner.close()
 
     def _initialize_llm(self) -> None:
         """Гарантирует попытку инициализации LLM с сохранением диагностической информации об ошибках для последующего анализа."""
-        try:
-            self._llm = build_llm(self.config.agent)
-            self._llm_error = None
-        except Exception as exc:
-            self._llm = None
-            self._llm_error = redact_secrets(str(exc))[:500]
-            LOGGER.exception("Не удалось инициализировать LLM")
+        with self._initialization_lock:
+            if self._llm is not None:
+                return
+            try:
+                self._llm = build_llm(self.config.agent)
+                self._llm_error = None
+            except Exception as exc:
+                self._llm = None
+                self._llm_error = redact_secrets(str(exc))[:500]
+                LOGGER.exception("Не удалось инициализировать LLM")
 
     def _initialize_multi_agent(self) -> None:
         """Гарантирует корректную инициализацию multi-agent среды только при доступности LLM и необходимости по конфигурации."""
-        if (
-            not self.config.multi_agent.enabled
-            or self._llm is None
-            or self.multi_agent_runtime is not None
-        ):
-            return
-        try:
-            self.multi_agent_runtime = MultiAgentRuntime(
-                self.config,
-                llm=self._llm,
-                rag_runtime=self.rag_runtime,
-                incident_store=self.incident_store,
-                external_tools=self.external_tools,
-                currency_converter=self.currency_converter,
-            )
-            self._multi_agent_error = None
-        except Exception as exc:
-            self.multi_agent_runtime = None
-            self._multi_agent_error = redact_secrets(str(exc))[:500]
-            LOGGER.exception("Не удалось инициализировать LLM-профили multi-agent")
+        with self._initialization_lock:
+            if (
+                not self.config.multi_agent.enabled
+                or self._llm is None
+                or self.multi_agent_runtime is not None
+            ):
+                return
+            try:
+                self.multi_agent_runtime = MultiAgentRuntime(
+                    self.config,
+                    llm=self._llm,
+                    rag_runtime=self.rag_runtime,
+                    incident_store=self.incident_store,
+                    external_tools=self.external_tools,
+                    currency_converter=self.currency_converter,
+                )
+                self._multi_agent_error = None
+            except Exception as exc:
+                self.multi_agent_runtime = None
+                self._multi_agent_error = redact_secrets(str(exc))[:500]
+                LOGGER.exception("Не удалось инициализировать LLM-профили multi-agent")
 
     def _initialize_orchestration(self) -> None:
         """Гарантирует инициализацию сервиса оркестрации только при выполнении всех зависимостей и корректной конфигурации."""
-        if (
-            not self.config.orchestration.enabled
-            or self.orchestration_service is not None
-        ):
-            return
-        if self.config.orchestration.backend == "inline":
-            self._initialize_multi_agent()
-            if self.multi_agent_runtime is None:
+        with self._initialization_lock:
+            if (
+                not self.config.orchestration.enabled
+                or self.orchestration_service is not None
+            ):
                 return
-        try:
-            self.orchestration_service = OrchestrationService(
-                self.config,
-                executor_factory=callback_executor(self._orchestration_ask),
-            )
-        except Exception:
-            self.orchestration_service = None
-            LOGGER.exception("Не удалось инициализировать orchestration service")
+            if self.config.orchestration.backend == "inline":
+                self._initialize_multi_agent()
+                if self.multi_agent_runtime is None:
+                    return
+            try:
+                self.orchestration_service = OrchestrationService(
+                    self.config,
+                    executor_factory=callback_executor(self._orchestration_ask),
+                )
+            except Exception:
+                self.orchestration_service = None
+                LOGGER.exception("Не удалось инициализировать orchestration service")
 
     def _orchestration_ask(
         self,
@@ -390,7 +452,7 @@ class SupportApplicationRuntime:
             else self.config.agent
         )
         if profile is not None and profile.provider == "local":
-            with self._execution_lock:
+            with self._local_execution_lock:
                 return runtime.ask_role(
                     user_id=user_id,
                     session_id=session_id,
@@ -402,6 +464,48 @@ class SupportApplicationRuntime:
             session_id=session_id,
             message=message,
             role=role,
+        )
+
+    @contextmanager
+    def _request_scope(
+        self,
+        key: tuple[str, str],
+        *,
+        serialize_local: bool,
+    ) -> Iterator[None]:
+        """Изолирует одну сессию и учитывает активный вызов в lifecycle runtime."""
+        with self._lifecycle:
+            if self._closing or self._closed:
+                raise RuntimeError("Runtime уже завершает работу")
+            self._active_requests += 1
+        with self._cache_lock:
+            entry = self._session_locks.setdefault(key, _SessionLockEntry())
+            entry.references += 1
+        try:
+            with entry.lock:
+                if serialize_local:
+                    with self._local_execution_lock:
+                        yield
+                else:
+                    yield
+        finally:
+            with self._cache_lock:
+                entry.references -= 1
+                if entry.references == 0 and key not in self._runners:
+                    self._session_locks.pop(key, None)
+            self._evict_idle_runners()
+            with self._lifecycle:
+                self._active_requests -= 1
+                if self._active_requests == 0:
+                    self._lifecycle.notify_all()
+
+    def _multi_uses_local_llm(self) -> bool:
+        """Определяет, может ли выбранная маршрутизация обратиться к local LLM."""
+        if self.config.agent.provider == "local":
+            return True
+        return any(
+            profile.provider == "local"
+            for profile in self.config.multi_agent.llm_profiles.values()
         )
 
     def _require_multi_agent(self) -> MultiAgentRuntime:

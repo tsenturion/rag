@@ -126,6 +126,35 @@ def test_whole_document_mode_marks_exact_and_estimated_offsets(
     assert "оценочные offsets" in caplog.text
 
 
+def test_repeated_split_text_advances_to_next_source_occurrence() -> None:
+    """Одинаковые результаты splitter получают разные монотонные source offsets."""
+    fragment = "Повторяемый фрагмент содержит достаточно слов для чанка."
+    text = f"{fragment} {fragment}"
+    stage = _stage(
+        preserve_section_boundaries=False,
+        preserve_block_boundaries=False,
+    )
+
+    class _RepeatedSplitter:
+        """Возвращает два текстово одинаковых, но позиционно разных чанка."""
+
+        def split_text(self, _text: str) -> list[str]:
+            """Имитирует повторяющиеся фрагменты исходного документа."""
+            return [fragment, fragment]
+
+    stage.splitter = _RepeatedSplitter()
+    chunks = stage.run([_document(text)], run_id="repeated-run")
+
+    assert [chunk.metadata.chunk_start_char for chunk in chunks] == [
+        0,
+        len(fragment) + 1,
+    ]
+    assert all(
+        text[item.metadata.chunk_start_char : item.metadata.chunk_end_char] == item.text
+        for item in chunks
+    )
+
+
 def test_span_overlap_and_quality_helpers_cover_boundary_cases() -> None:
     """Проверяет trimming, пересечение spans, overlap и признаки шумного текста."""
     stage = _stage(chunk_overlap=12)

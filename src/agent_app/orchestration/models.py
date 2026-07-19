@@ -259,6 +259,7 @@ class JobEvent(BaseModel):
         "failed",
         "cancelled",
         "expired",
+        "lease_lost",
     ]
     status: JobStatus
     message: str

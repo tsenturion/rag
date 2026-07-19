@@ -5,5 +5,5 @@ agent:
   local_device: auto
   local_dtype: auto
   local_files_only: true
-  trust_remote_code: true
+  trust_remote_code: false
   low_cpu_mem_usage: true

@@ -20,7 +20,7 @@ chunking:
   min_chunk_tokens: 20
   max_chunk_tokens: 280
   min_quality_score: 0.2
-  fail_on_validation_error: false
+  fail_on_validation_error: true
 
 logging:
   level: INFO

@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
@@ -25,6 +27,13 @@ from llm_tuning.modeling import LocalCausalModelLoader  # noqa: E402
 
 class FineTuningModelResolutionTest(unittest.TestCase):
     """Проверяет корректность разрешения путей моделей и загрузки токенизаторов в процессе настройки тонкой настройки моделей."""
+
+    def test_nested_training_typo_is_rejected(self) -> None:
+        """Не игнорирует неизвестный гиперпараметр во вложенной секции."""
+        with self.assertRaises(ValidationError):
+            FineTuningPipelineConfig.model_validate(
+                {"training": {"learning_reate": 0.001}}
+            )
 
     def test_local_model_path_is_resolved_independently_from_cwd(self) -> None:
         """Проверяет, что локальный путь к модели разрешается относительно конфигурационного файла независимо от текущей рабочей директории."""

@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Any
+from uuid import uuid4
 
 from agent_app.config import AgentAppConfig
 from agent_app.orchestration.engine import OrchestrationEngine, StepExecutor
@@ -47,14 +48,36 @@ class JobRunner:
         self.config = config
         self.store = store
         self.executor = executor
+        self._claim_tokens: dict[str, str] = {}
 
     def run(self, job: OrchestrationJob) -> JobRecord:
         """Проводит задание по плану с учётом дедлайна, отмены, лимитов параллелизма и политики ошибок."""
-        record = self.store.get(job.id) or JobRecord(job=job)
+        record = self.store.get(job.id)
+        if record is None:
+            candidate = JobRecord(job=job)
+            self.store.create_if_capacity(candidate, max_pending=2**31 - 1)
+            record = self.store.get(job.id) or candidate
         if record.status.terminal:
             return record
         if job.expired:
+            if record.status == JobStatus.RUNNING:
+                # Активная попытка сама завершит CAS. Duplicate delivery не имеет
+                # права отзывать claim другого worker только из-за deadline.
+                return record
             return self._finish(record, JobStatus.EXPIRED, "Deadline задания истёк")
+
+        claim_token = uuid4().hex
+        claimed = self.store.claim_run(
+            job.id,
+            claim_token,
+            lease_seconds=self.config.orchestration.slot_lease_seconds,
+        )
+        if claimed is None:
+            # Повторная delivery не должна выполнять side effects второй раз. Пока
+            # другой worker владеет claim, возвращаем наблюдаемое состояние.
+            return self.store.get(job.id) or record
+        record = claimed
+        self._claim_tokens[job.id] = claim_token
 
         providers = self._required_providers(job)
         acquired_slots: list[str] = []
@@ -65,14 +88,14 @@ class JobRunner:
             slot_name = f"provider:{provider}"
             if self.store.acquire_slot(
                 slot_name,
-                job.id,
+                claim_token,
                 limit=limit,
                 lease_seconds=self.config.orchestration.slot_lease_seconds,
             ):
                 acquired_slots.append(slot_name)
                 continue
             for acquired in reversed(acquired_slots):
-                self.store.release_slot(acquired, job.id)
+                self.store.release_slot(acquired, claim_token)
             raise TransientOrchestrationError(
                 f"Достигнут лимит параллелизма provider={provider}: {limit}"
             )
@@ -80,7 +103,7 @@ class JobRunner:
         heartbeat_stop = threading.Event()
         heartbeat = threading.Thread(
             target=self._renew_slots,
-            args=(acquired_slots, job.id, heartbeat_stop),
+            args=(acquired_slots, job.id, claim_token, heartbeat_stop),
             name=f"orchestration-lease-{job.id}",
             daemon=True,
         )
@@ -88,12 +111,6 @@ class JobRunner:
 
         engine: OrchestrationEngine | None = None
         try:
-            record.status = JobStatus.RUNNING
-            record.attempts += 1
-            record.started_at = record.started_at or utc_now()
-            record.updated_at = utc_now()
-            record.error = None
-            self.store.save(record)
             self.store.append_event(
                 JobEvent(
                     job_id=job.id,
@@ -120,7 +137,18 @@ class JobRunner:
             record.error = result.error
             record.finished_at = utc_now() if result.status.terminal else None
             record.updated_at = utc_now()
-            self.store.save(record)
+            saved = self.store.compare_and_save(
+                record,
+                expected_statuses={JobStatus.RUNNING},
+                expected_attempt=record.attempts,
+                claim_token=claim_token,
+                release_claim=True,
+            )
+            self._claim_tokens.pop(job.id, None)
+            if not saved:
+                # Отмена или новый владелец stale-attempt имеют приоритет над
+                # результатом worker, утратившего право записи.
+                return self.store.get(job.id) or record
             self._record_result_events(record)
             return record
         finally:
@@ -130,7 +158,7 @@ class JobRunner:
                     args=(
                         engine,
                         acquired_slots,
-                        job.id,
+                        claim_token,
                         heartbeat_stop,
                         heartbeat,
                     ),
@@ -140,7 +168,7 @@ class JobRunner:
             else:
                 self._release_slots(
                     acquired_slots,
-                    job.id,
+                    claim_token,
                     heartbeat_stop,
                     heartbeat,
                 )
@@ -173,17 +201,37 @@ class JobRunner:
     def _renew_slots(
         self,
         slot_names: list[str],
-        token: str,
+        job_id: str,
+        claim_token: str,
         stop: threading.Event,
     ) -> None:
-        """Продлевает lease до окончания задания и не допускает тихой потери слота."""
+        """Продлевает run claim и provider lease до окончания попытки."""
         lease_seconds = self.config.orchestration.slot_lease_seconds
         interval = max(0.2, lease_seconds / 3)
         while not stop.wait(interval):
+            if not self.store.renew_run_claim(
+                job_id,
+                claim_token,
+                lease_seconds=lease_seconds,
+            ):
+                current = self.store.get(job_id)
+                if current is None or not current.status.terminal:
+                    self.store.append_event(
+                        JobEvent(
+                            job_id=job_id,
+                            kind="lease_lost",
+                            status=JobStatus.RUNNING,
+                            message="Потерян lease текущей попытки выполнения",
+                        )
+                    )
+                    return
+                # Engine мог вернуть TIMED_OUT раньше синхронного внешнего вызова.
+                # Run claim уже не нужен для terminal record, но provider-slot
+                # удерживается до фактического завершения фонового thread.
             for slot_name in slot_names:
                 if not self.store.renew_slot(
                     slot_name,
-                    token,
+                    claim_token,
                     lease_seconds=lease_seconds,
                 ):
                     # Потеря lease означает, что лимит параллелизма больше нельзя
@@ -191,7 +239,7 @@ class JobRunner:
                     # фиксируем проблему и не захватываем слот заново в обход очереди.
                     self.store.append_event(
                         JobEvent(
-                            job_id=token,
+                            job_id=job_id,
                             kind="lease_lost",
                             status=JobStatus.RUNNING,
                             message=f"Потерян lease ресурса {slot_name}",
@@ -228,10 +276,20 @@ class JobRunner:
     def mark_retry(self, job_id: str, error: str, *, countdown: int) -> JobRecord:
         """Гарантирует перевод задания в состояние повторной попытки с фиксацией причины и времени следующего запуска."""
         record = self._require(job_id)
+        claim_token = self._claim_tokens.pop(job_id, None)
+        expected_statuses = {JobStatus.RUNNING} if claim_token else {JobStatus.FAILED}
         record.status = JobStatus.RETRYING
         record.error = error[:1000]
         record.updated_at = utc_now()
-        self.store.save(record)
+        saved = self.store.compare_and_save(
+            record,
+            expected_statuses=expected_statuses,
+            expected_attempt=record.attempts,
+            claim_token=claim_token,
+            release_claim=True,
+        )
+        if not saved:
+            return self._require(job_id)
         self.store.append_event(
             JobEvent(
                 job_id=job_id,
@@ -245,7 +303,13 @@ class JobRunner:
 
     def mark_failed(self, job_id: str, error: str) -> JobRecord:
         """Гарантирует перевод задания в финальное состояние ошибки с фиксацией причины сбоя."""
-        return self._finish(self._require(job_id), JobStatus.FAILED, error)
+        record = self._require(job_id)
+        return self._finish(
+            record,
+            JobStatus.FAILED,
+            error,
+            claim_token=self._claim_tokens.pop(job_id, None),
+        )
 
     def _record_result_events(self, record: JobRecord) -> None:
         """Фиксирует в хранилище полную историю событий выполнения задания, чтобы обеспечить аудит и трассировку всех этапов и пересчётов результата."""
@@ -303,13 +367,30 @@ class JobRunner:
             )
         )
 
-    def _finish(self, record: JobRecord, status: JobStatus, error: str) -> JobRecord:
+    def _finish(
+        self,
+        record: JobRecord,
+        status: JobStatus,
+        error: str,
+        *,
+        claim_token: str | None = None,
+    ) -> JobRecord:
         """Сохраняет финальный статус задания и добавляет соответствующее событие в журнал выполнения."""
+        original_status = record.status
+        original_attempt = record.attempts
         record.status = status
         record.error = error[:1000]
         record.updated_at = utc_now()
         record.finished_at = utc_now()
-        self.store.save(record)
+        saved = self.store.compare_and_save(
+            record,
+            expected_statuses={original_status},
+            expected_attempt=original_attempt,
+            claim_token=claim_token,
+            release_claim=True,
+        )
+        if not saved:
+            return self._require(record.job.id)
         kind = "expired" if status == JobStatus.EXPIRED else "failed"
         self.store.append_event(
             JobEvent(
@@ -363,19 +444,15 @@ class OrchestrationService:
             if existing is not None:
                 return JobSubmission(record=existing, deduplicated=True)
 
-        counts = self.store.counts()
-        pending = sum(
-            counts.get(status.value, 0)
-            for status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.RETRYING}
-        )
-        if pending >= self.config.orchestration.max_pending_jobs:
+        record = JobRecord(job=job)
+        if not self.store.create_if_capacity(
+            record,
+            max_pending=self.config.orchestration.max_pending_jobs,
+        ):
             raise QueueCapacityError(
                 "Очередь достигла max_pending_jobs="
                 f"{self.config.orchestration.max_pending_jobs}"
             )
-
-        record = JobRecord(job=job)
-        self.store.save(record)
         self.store.append_event(
             JobEvent(
                 job_id=job.id,
@@ -402,9 +479,7 @@ class OrchestrationService:
                     f"Не удалось отправить задание в broker: {exc}",
                 )
                 raise
-            record.task_id = task_id
-            record.updated_at = utc_now()
-            self.store.save(record)
+            record = self.store.set_task_id(job.id, task_id) or record
         else:
             record = JobRunner(
                 self.config,
@@ -462,7 +537,18 @@ class OrchestrationService:
         record.finished_at = utc_now()
         record.updated_at = utc_now()
         record.error = "Задание отменено пользователем"
-        self.store.save(record)
+        saved = self.store.compare_and_save(
+            record,
+            expected_statuses={
+                JobStatus.QUEUED,
+                JobStatus.RUNNING,
+                JobStatus.RETRYING,
+            },
+            expected_attempt=record.attempts,
+            release_claim=True,
+        )
+        if not saved:
+            return self.get(job_id)
         self.store.append_event(
             JobEvent(
                 job_id=job_id,
@@ -543,7 +629,14 @@ class OrchestrationService:
         record.error = error[:1000]
         record.updated_at = utc_now()
         record.finished_at = utc_now()
-        self.store.save(record)
+        saved = self.store.compare_and_save(
+            record,
+            expected_statuses={JobStatus.QUEUED},
+            expected_attempt=record.attempts,
+            release_claim=True,
+        )
+        if not saved:
+            return
         self.store.append_event(
             JobEvent(
                 job_id=record.job.id,

@@ -73,6 +73,7 @@ class AgentRunner:
             session_id=self.session_id,
             max_chars=config.agent.max_summary_chars,
         )
+        self._restore_short_term()
         self.llm = llm if llm is not None else build_llm(config.agent)
         self._owns_rag_runtime = rag_runtime is None and config.rag.enabled
         self.rag_runtime = (
@@ -142,6 +143,7 @@ class AgentRunner:
                 memory_before=memory_before,
                 memory_after=memory_before,
             )
+            self._remember_turn(message, answer)
             return AgentResponse(
                 answer=answer,
                 user_id=self.user_id,
@@ -242,25 +244,7 @@ class AgentRunner:
                     f"Причина: {reason}."
                 )
 
-        self.short_term.add(HumanMessage(content=message), AIMessage(content=answer))
-        try:
-            summarized_messages = self.summary.summarize_if_needed(
-                llm=self.llm,
-                messages=self.short_term.snapshot(),
-                max_history_messages=self.config.agent.max_history_messages,
-            )
-        except Exception:
-            LOGGER.exception(
-                "Не удалось обновить summary memory; возвращается готовый ответ, "
-                "а short-term history обрезается до последних полных ходов"
-            )
-            self.short_term.messages = self.summary.recent_messages(
-                self.short_term.snapshot(),
-                self.config.agent.max_history_messages,
-            )
-        else:
-            if len(summarized_messages) != len(self.short_term.messages):
-                self.short_term.messages = summarized_messages
+        self._remember_turn(message, answer)
 
         memory_after = self.store.list_memories(
             user_id=self.user_id,
@@ -287,6 +271,54 @@ class AgentRunner:
             citations=citations,
             retrieval=retrieval,
             trace=trace,
+        )
+
+    def _remember_turn(self, message: str, answer: str) -> None:
+        """Добавляет полный ход, применяет summary policy и сохраняет остаток в SQLite."""
+        self.short_term.add(HumanMessage(content=message), AIMessage(content=answer))
+        try:
+            summarized_messages = self.summary.summarize_if_needed(
+                llm=self.llm,
+                messages=self.short_term.snapshot(),
+                max_history_messages=self.config.agent.max_history_messages,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Не удалось обновить summary memory; возвращается готовый ответ, "
+                "а short-term history обрезается до последних полных ходов"
+            )
+            self.short_term.messages = self.summary.recent_messages(
+                self.short_term.snapshot(),
+                self.config.agent.max_history_messages,
+            )
+        else:
+            if len(summarized_messages) != len(self.short_term.messages):
+                self.short_term.messages = summarized_messages
+        self.store.save_conversation_history(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            messages=[
+                {
+                    "role": "user" if isinstance(item, HumanMessage) else "assistant",
+                    "content": str(item.content),
+                }
+                for item in self.short_term.snapshot()
+                if isinstance(item, (HumanMessage, AIMessage))
+            ],
+        )
+
+    def _restore_short_term(self) -> None:
+        """Восстанавливает последние полные ходы после eviction или перезапуска."""
+        restored: list[BaseMessage] = []
+        for item in self.store.load_conversation_history(
+            user_id=self.user_id,
+            session_id=self.session_id,
+        ):
+            message_type = HumanMessage if item["role"] == "user" else AIMessage
+            restored.append(message_type(content=item["content"]))
+        self.short_term.messages = self.summary.recent_messages(
+            restored,
+            self.short_term.max_messages,
         )
 
     def list_memory(self) -> list[dict[str, object]]:

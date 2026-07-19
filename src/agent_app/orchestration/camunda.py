@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
+from datetime import datetime, timezone
+import os
+from pathlib import Path
 from typing import Any
 
 from camunda_orchestration_sdk import (
@@ -101,7 +105,30 @@ class CamundaAgentWorker:
                     callback,
                     execution_strategy="async",
                 )
-            await client.run_workers()
+            heartbeat = asyncio.create_task(self._health_heartbeat())
+            try:
+                await client.run_workers()
+            finally:
+                heartbeat.cancel()
+                with suppress(asyncio.CancelledError):
+                    await heartbeat
+                self._health_path().unlink(missing_ok=True)
+
+    async def _health_heartbeat(self) -> None:
+        """Обновляет признак живого event loop, используемый healthcheck контейнера."""
+        path = self._health_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            path.write_text(
+                datetime.now(timezone.utc).isoformat(),
+                encoding="utf-8",
+            )
+            await asyncio.sleep(5)
+
+    @staticmethod
+    def _health_path() -> Path:
+        """Разрешает путь heartbeat без привязки к рабочему каталогу процесса."""
+        return Path(os.getenv("CAMUNDA_WORKER_HEALTH_FILE", "/tmp/camunda-worker.health"))
 
     def close(self) -> None:
         """Гарантирует корректное освобождение ресурсов сервиса оркестрации при владении им."""

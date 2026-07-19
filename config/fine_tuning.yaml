@@ -17,7 +17,7 @@ model:
   model_id: data/models/hf/Qwen2.5-1.5B-Instruct
   fallback_model_id: Qwen/Qwen2.5-0.5B-Instruct
   tokenizer_id: null
-  trust_remote_code: true
+  trust_remote_code: false
   max_seq_length: 1024
   device: auto
   dtype: auto

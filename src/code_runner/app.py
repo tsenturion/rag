@@ -89,6 +89,7 @@ def execute(
 ) -> ExecutionResponse:
     """Гарантирует безопасное и изолированное выполнение пользовательского Python-кода с контролем ресурсов и валидацией."""
     _require_api_key(supplied_key)
+    _require_resource_isolation()
     violation = _validate_code(payload.code)
     if violation is not None:
         return ExecutionResponse(
@@ -172,6 +173,27 @@ def _require_api_key(supplied: str | None) -> None:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Некорректный code runner key.",
         )
+
+
+def _require_resource_isolation() -> None:
+    """Запрещает direct execution на Windows без непереносимых resource limits.
+
+    Переменная обхода предназначена только для локальных unit-тестов политики
+    AST/runtime. Рабочий контур запускается в Linux-контейнере, где действуют и
+    POSIX RLIMIT, и ограничения Docker на память, CPU, PID и файловую систему.
+    """
+    if os.name == "posix":
+        return
+    if os.getenv("CODE_RUNNER_ALLOW_UNSAFE_WINDOWS_TESTS") == "1":
+        return
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            "Прямое выполнение кода на Windows отключено: платформа не "
+            "предоставляет используемые sandbox resource limits. Запустите "
+            "code-runner через Docker Compose."
+        ),
+    )
 
 
 def _validate_code(code: str) -> str | None:

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from time import perf_counter
 from typing import Any, Callable
 
 import tiktoken
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from agent_app.currency import CBRCurrencyConverter, CurrencyConversionResult
 from agent_app.multi_agent.models import UsageMetrics
@@ -77,7 +79,7 @@ class LLMCallTracker:
         )
         cost_currency = route.cost_currency if route is not None else self.cost_currency
         serialize = route.serialize_calls if route is not None else self.serialize_calls
-        input_text = "\n".join(str(getattr(item, "content", item)) for item in messages)
+        input_text = self._input_contract_text(messages, tools)
         reserved_tokens = (
             self.estimate_tokens(input_text, model=model) + max_output_tokens
         )
@@ -122,10 +124,11 @@ class LLMCallTracker:
                 response = target.invoke(messages)
             duration_ms = (perf_counter() - started) * 1000
             content = self._content(response)
+            output_contract = self._output_contract_text(response, content)
             input_tokens, output_tokens, estimated = self._tokens(
                 response,
                 input_text=input_text,
-                output_text=content,
+                output_text=output_contract,
                 model=model,
             )
             cost = (input_tokens * input_cost + output_tokens * output_cost) / 1_000_000
@@ -147,7 +150,19 @@ class LLMCallTracker:
             raise
         with self._lock:
             self._inflight_reserved_tokens -= reserved_tokens
-            self._usage = self._usage.add(delta)
+            updated_usage = self._usage.add(delta)
+            self._usage = updated_usage
+            if (
+                self.token_budget is not None
+                and updated_usage.total_tokens + self._inflight_reserved_tokens
+                > self.token_budget
+            ):
+                raise RuntimeError(
+                    f"Token budget превышен фактическим ответом роли {role}: "
+                    f"used={updated_usage.total_tokens} "
+                    f"inflight={self._inflight_reserved_tokens} "
+                    f"limit={self.token_budget}"
+                )
         return response
 
     def snapshot(self) -> UsageMetrics:
@@ -202,6 +217,60 @@ class LLMCallTracker:
             return len(encoding.encode(text))
         except Exception:
             return max(1, len(text) // 4)
+
+    @staticmethod
+    def _input_contract_text(messages: list[Any], tools: list[Any] | None) -> str:
+        """Сериализует сообщения и tool schemas как фактический входной контракт."""
+        message_payloads: list[dict[str, Any]] = []
+        for item in messages:
+            payload: dict[str, Any] = {
+                "role": getattr(item, "type", item.__class__.__name__),
+                "content": getattr(item, "content", item),
+            }
+            tool_calls = getattr(item, "tool_calls", None)
+            if tool_calls:
+                payload["tool_calls"] = tool_calls
+            tool_call_id = getattr(item, "tool_call_id", None)
+            if tool_call_id:
+                payload["tool_call_id"] = tool_call_id
+            name = getattr(item, "name", None)
+            if name:
+                payload["name"] = name
+            message_payloads.append(payload)
+
+        tool_payloads: list[Any] = []
+        for tool in tools or []:
+            try:
+                tool_payloads.append(convert_to_openai_tool(tool))
+            except (TypeError, ValueError):
+                tool_payloads.append(
+                    {
+                        "name": getattr(tool, "name", tool.__class__.__name__),
+                        "description": getattr(tool, "description", ""),
+                        "schema": str(getattr(tool, "args_schema", "")),
+                    }
+                )
+        # add_generation_prompt отражает служебную часть chat template. JSON-ключи
+        # намеренно входят в оценку и не дают считать только видимый content.
+        return json.dumps(
+            {
+                "messages": message_payloads,
+                "tools": tool_payloads,
+                "add_generation_prompt": True,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    @staticmethod
+    def _output_contract_text(response: Any, content: str) -> str:
+        """Учитывает аргументы tool calls, даже когда текст ответа пуст."""
+        payload: dict[str, Any] = {"content": content}
+        tool_calls = getattr(response, "tool_calls", None)
+        if tool_calls:
+            payload["tool_calls"] = tool_calls
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
     def _invoke_lock(self, llm: Any) -> threading.RLock:
         """Гарантирует эксклюзивный доступ к вызовам LLM для конкретного экземпляра, предотвращая гонки при параллельных обращениях."""

@@ -33,10 +33,10 @@ groups:
           description: За последние пять минут заблокирован небезопасный запрос.
 
       - alert: SupportAgentHumanReviewBacklog
-        expr: increase(support_agent_human_reviews_total{status="pending"}[30m]) > 10
+        expr: max(support_agent_human_reviews_pending) > 10
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: Растёт очередь human review
-          description: За 30 минут создано более десяти задач ручной проверки.
+          summary: Накопилась очередь human review
+          description: Более десяти задач ручной проверки остаются в статусе pending.

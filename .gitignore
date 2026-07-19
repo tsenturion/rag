@@ -41,6 +41,7 @@ data/evaluation/
 data/fine_tuning/reports/
 data/fine_tuning/runs/
 data/models/
+data/certs/
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/sample.txt

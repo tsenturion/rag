@@ -110,6 +110,7 @@ class EvaluationCaseResult(BaseModel):
     roles_ok: bool
     matched_expected_facts: list[str] = Field(default_factory=list)
     matched_forbidden_facts: list[str] = Field(default_factory=list)
+    unsupported_claims: list[str] = Field(default_factory=list)
 
 
 class EvaluationSummary(BaseModel):

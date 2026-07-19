@@ -12,14 +12,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri
 
 
-class RunConfig(BaseModel):
+class StrictConfigModel(BaseModel):
+    """Запрещает неизвестные поля во вложенных настройках fine-tuning."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RunConfig(StrictConfigModel):
     """Гарантирует валидацию и воспроизводимость базовых параметров запуска обучения и оценки."""
 
     name: str = "local_llm_fine_tuning"
     seed: int = 42
 
 
-class FineTuningPathConfig(BaseModel):
+class FineTuningPathConfig(StrictConfigModel):
     """Гарантирует валидацию и согласованность путей к данным, результатам и отчётам для всех этапов обучения."""
 
     train_jsonl: Path = Path("data/fine_tuning/train.jsonl")
@@ -33,13 +39,13 @@ class FineTuningPathConfig(BaseModel):
     manifest_filename: str = "manifest.json"
 
 
-class LocalModelConfig(BaseModel):
+class LocalModelConfig(StrictConfigModel):
     """Базовая локальная модель, tokenizer и параметры размещения на устройстве."""
 
     model_id: str = "Qwen/Qwen2.5-1.5B-Instruct"
     fallback_model_id: str | None = "Qwen/Qwen2.5-0.5B-Instruct"
     tokenizer_id: str | None = None
-    trust_remote_code: bool = True
+    trust_remote_code: bool = False
     max_seq_length: int = Field(default=1024, ge=128)
     device: Literal["auto", "xpu", "cpu", "cuda"] = "auto"
     dtype: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
@@ -48,7 +54,7 @@ class LocalModelConfig(BaseModel):
     hub_disable_symlink_warning: bool = True
 
 
-class PeFTConfig(BaseModel):
+class PeFTConfig(StrictConfigModel):
     """Параметры LoRA/QLoRA-адаптера и целевые линейные слои модели."""
 
     method: Literal["lora", "qlora"] = "lora"
@@ -84,7 +90,7 @@ class PeFTConfig(BaseModel):
         return normalized
 
 
-class FineTuningTrainConfig(BaseModel):
+class FineTuningTrainConfig(StrictConfigModel):
     """Гиперпараметры Trainer, checkpoints и мониторинга обучения."""
 
     learning_rate: float = Field(default=2e-4, gt=0)
@@ -114,7 +120,7 @@ class FineTuningTrainConfig(BaseModel):
     run_evaluation_after_train: bool = True
 
 
-class GenerationConfig(BaseModel):
+class GenerationConfig(StrictConfigModel):
     """Гарантирует, что параметры генерации текста для локального fine-tuning LLM валидированы и соответствуют ожидаемым ограничениям подсистемы."""
 
     max_new_tokens: int = Field(default=220, ge=1)
@@ -123,7 +129,7 @@ class GenerationConfig(BaseModel):
     do_sample: bool = False
 
 
-class FineTuningEvaluationConfig(BaseModel):
+class FineTuningEvaluationConfig(StrictConfigModel):
     """Гарантирует воспроизводимую и контролируемую конфигурацию оценки качества fine-tuning с учётом ограничений на примеры и критерии."""
 
     max_examples: int | None = Field(default=None, ge=1)
@@ -132,7 +138,7 @@ class FineTuningEvaluationConfig(BaseModel):
     fail_on_failed_criteria: bool = False
 
 
-class LoggingConfig(BaseModel):
+class LoggingConfig(StrictConfigModel):
     """Гарантирует корректную настройку логирования и интеграцию с MLflow для отслеживания экспериментов fine-tuning."""
 
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -141,7 +147,7 @@ class LoggingConfig(BaseModel):
     mlflow_experiment: str = "local-llm-fine-tuning"
 
 
-class FineTuningPipelineConfig(BaseModel):
+class FineTuningPipelineConfig(StrictConfigModel):
     """Строгий корневой контракт воспроизводимого PEFT-запуска."""
 
     model_config = ConfigDict(extra="forbid")

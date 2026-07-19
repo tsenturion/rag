@@ -15,6 +15,7 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
 from agent_app.config import AgentConfig
+from rag_prep.gigachat_tls import resolve_gigachat_ca_bundle
 
 TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 JSON_TOOL_CALL_RE = re.compile(
@@ -71,6 +72,7 @@ def _build_gigachat_llm(config: AgentConfig) -> Any:
         timeout=config.timeout_seconds,
         max_retries=config.max_retries,
         verify_ssl_certs=config.gigachat_verify_ssl_certs,
+        ca_bundle_file=resolve_gigachat_ca_bundle(),
         profanity_check=config.gigachat_profanity_check,
     )
 
@@ -113,9 +115,18 @@ class LocalTransformersChatModel:
         import torch
 
         prompt_text = self._format_prompt(messages)
-        encoded = self.tokenizer(
-            prompt_text, return_tensors="pt", add_special_tokens=False
-        )
+        previous_truncation_side = getattr(self.tokenizer, "truncation_side", "right")
+        self.tokenizer.truncation_side = "left"
+        try:
+            encoded = self.tokenizer(
+                prompt_text,
+                return_tensors="pt",
+                add_special_tokens=False,
+                truncation=True,
+                max_length=self._input_token_limit(),
+            )
+        finally:
+            self.tokenizer.truncation_side = previous_truncation_side
         encoded = {key: value.to(self.device) for key, value in encoded.items()}
 
         generate_kwargs: dict[str, Any] = {
@@ -137,6 +148,19 @@ class LocalTransformersChatModel:
             skip_special_tokens=False,
         ).strip()
         return self._to_ai_message(generated)
+
+    def _input_token_limit(self) -> int:
+        """Резервирует место под ответ в пределах контекстного окна модели."""
+        model_limit = getattr(self.model.config, "max_position_embeddings", None)
+        if not isinstance(model_limit, int) or model_limit <= 0:
+            return self.config.max_input_tokens
+        available = model_limit - self.config.max_new_tokens
+        if available < 1:
+            raise ValueError(
+                "max_new_tokens не оставляет места для входа в контекстном окне "
+                f"локальной модели ({model_limit} токенов)"
+            )
+        return min(self.config.max_input_tokens, available)
 
     def bind_tools(self, tools: list[Any]) -> "LocalTransformersChatModel":
         """Обеспечивает, что только поддерживаемые инструменты будут доступны для вызова в процессе генерации ответов."""

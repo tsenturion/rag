@@ -81,6 +81,17 @@ class HumanReviewStore:
             rows = self._connection.execute(sql, params).fetchall()
         return [HumanReviewRecord.model_validate(dict(row)) for row in rows]
 
+    def count(self, *, status: str | None = None) -> int:
+        """Возвращает фактическое число заявок, включая накопленные до перезапуска."""
+        sql = "SELECT COUNT(*) FROM human_reviews"
+        params: list[object] = []
+        if status is not None:
+            sql += " WHERE status = ?"
+            params.append(status)
+        with self._lock:
+            row = self._connection.execute(sql, params).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def decide(
         self, review_id: str, *, approved: bool, reviewer_id: str, comment: str | None
     ) -> HumanReviewRecord | None:

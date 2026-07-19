@@ -16,6 +16,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from agent_app.config import AgentRagConfig  # noqa: E402
+from agent_app.rag.context import RagContextBuilder  # noqa: E402
+from agent_app.rag.models import RagRetrievedChunk  # noqa: E402
 from agent_app.rag.runtime import OnlineRagRuntime  # noqa: E402
 from rag_prep.config import EmbeddingConfig, VectorStoreConfig  # noqa: E402
 
@@ -173,6 +175,32 @@ class OnlineRagTest(unittest.TestCase):
         self.assertFalse(readiness.ready)
         self.assertEqual(result.status, "unavailable")
         self.assertIn("Размер коллекции", result.error)
+
+    def test_context_budget_counts_separators_between_sources(self) -> None:
+        """Итоговый контекст вместе с разделителями не превышает token budget."""
+        builder = RagContextBuilder(
+            max_tokens=200,
+            excerpt_chars=200,
+            tokenizer_model="cl100k_base",
+        )
+        chunks = [
+            RagRetrievedChunk(
+                point_id=str(index),
+                chunk_id=f"chunk-{index}",
+                text=" ".join(["диагностика"] * 100),
+                source=f"source-{index}.txt",
+                section="Регламент",
+                position=index,
+                score=1.0,
+            )
+            for index in range(2)
+        ]
+
+        context, citations, used_tokens = builder.build(chunks)
+
+        self.assertLessEqual(used_tokens, 200)
+        self.assertEqual(used_tokens, len(builder.encoding.encode(context)))
+        self.assertEqual(len(citations), 1)
 
     @staticmethod
     def _config() -> AgentRagConfig:

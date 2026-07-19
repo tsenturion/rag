@@ -35,6 +35,7 @@ services:
       - multi_agent_data:/app/data/multi_agent
       - mlruns_data:/app/mlruns
       - ./data/models:/app/data/models:ro
+      - ./data/certs:/app/data/certs:ro
     networks:
       - default
       - code_runner_internal
@@ -144,6 +145,7 @@ services:
       - multi_agent_data:/app/data/multi_agent
       - mlruns_data:/app/mlruns
       - ./data/models:/app/data/models:ro
+      - ./data/certs:/app/data/certs:ro
     networks:
       - default
       - code_runner_internal
@@ -328,6 +330,7 @@ services:
       - multi_agent_data:/app/data/multi_agent
       - mlruns_data:/app/mlruns
       - ./data/models:/app/data/models:ro
+      - ./data/certs:/app/data/certs:ro
     networks:
       - default
       - code_runner_internal
@@ -339,7 +342,15 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      disable: true
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; p='/tmp/camunda-worker.health'; sys.exit(0 if os.path.isfile(p) and time.time()-os.path.getmtime(p)<20 else 1)"
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
 
 volumes:
   qdrant_data:

@@ -18,9 +18,17 @@ from code_runner.sandbox import SafeModule, _inplacevar, _safe_import, execute, 
 class CodeRunnerTest(unittest.TestCase):
     """Проверяет безопасность и корректность выполнения кода в изолированной среде, включая авторизацию и ограничение ресурсов."""
 
+    @staticmethod
+    def _test_environment() -> dict[str, str]:
+        """Разрешает subprocess только для unit-тестов ограниченного runtime."""
+        return {
+            "CODE_RUNNER_API_KEY": "test-key",
+            "CODE_RUNNER_ALLOW_UNSAFE_WINDOWS_TESTS": "1",
+        }
+
     def test_executes_safe_code_and_rejects_dangerous_import(self) -> None:
         """Проверяет, что безопасный код выполняется успешно, а попытки импортировать запрещённые модули отклоняются с соответствующей ошибкой."""
-        with patch.dict(os.environ, {"CODE_RUNNER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, self._test_environment()):
             with TestClient(app) as client:
                 success = client.post(
                     "/v1/execute",
@@ -41,7 +49,7 @@ class CodeRunnerTest(unittest.TestCase):
 
     def test_requires_internal_api_key(self) -> None:
         """Проверяет, что доступ к выполнению кода требует корректного внутреннего API-ключа, обеспечивая безопасность вызовов."""
-        with patch.dict(os.environ, {"CODE_RUNNER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, self._test_environment()):
             with TestClient(app) as client:
                 response = client.post(
                     "/v1/execute",
@@ -54,7 +62,7 @@ class CodeRunnerTest(unittest.TestCase):
     def test_rejects_private_attribute_escape_from_allowed_module(self) -> None:
         """Проверяет запрет обхода import-политики через внутренние объекты разрешённого модуля."""
         code = 'import re\nprint(re._compiler.sys.modules["os"].getcwd())'
-        with patch.dict(os.environ, {"CODE_RUNNER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, self._test_environment()):
             with TestClient(app) as client:
                 response = client.post(
                     "/v1/execute",
@@ -69,7 +77,7 @@ class CodeRunnerTest(unittest.TestCase):
     def test_safe_module_proxy_blocks_public_transitive_module_reference(self) -> None:
         """Проверяет обход через statistics.sys, который AST сам по себе не видит."""
         code = 'import statistics\nprint(statistics.sys.modules["os"].getcwd())'
-        with patch.dict(os.environ, {"CODE_RUNNER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, self._test_environment()):
             with TestClient(app) as client:
                 response = client.post(
                     "/v1/execute",
@@ -84,7 +92,7 @@ class CodeRunnerTest(unittest.TestCase):
 
     def test_timeout_stops_infinite_loop(self) -> None:
         """Проверяет, что выполнение кода прерывается по таймауту, предотвращая бесконечные циклы и зависания."""
-        with patch.dict(os.environ, {"CODE_RUNNER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, self._test_environment()):
             with TestClient(app) as client:
                 response = client.post(
                     "/v1/execute",
@@ -100,7 +108,7 @@ class CodeRunnerTest(unittest.TestCase):
 
     def test_large_output_is_bounded(self) -> None:
         """Проверяет, что вывод выполнения кода ограничивается заданным максимальным размером, предотвращая переполнение буфера."""
-        with patch.dict(os.environ, {"CODE_RUNNER_API_KEY": "test-key"}):
+        with patch.dict(os.environ, self._test_environment()):
             with TestClient(app) as client:
                 response = client.post(
                     "/v1/execute",
@@ -114,6 +122,24 @@ class CodeRunnerTest(unittest.TestCase):
         payload = response.json()
         self.assertEqual(response.status_code, 200)
         self.assertLessEqual(len(payload["stdout"]) + len(payload["stderr"]), 500)
+
+    @unittest.skipUnless(os.name == "nt", "Проверка относится к Windows")
+    def test_direct_windows_execution_is_disabled_by_default(self) -> None:
+        """Не запускает код на Windows без контейнерной границы ресурсов."""
+        with patch.dict(
+            os.environ,
+            {"CODE_RUNNER_API_KEY": "test-key"},
+            clear=True,
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/execute",
+                    headers={"X-Code-Runner-Key": "test-key"},
+                    json={"code": "print(1)"},
+                )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("Docker Compose", response.json()["detail"])
 
 
 def test_restricted_runtime_exposes_only_explicit_module_api() -> None:

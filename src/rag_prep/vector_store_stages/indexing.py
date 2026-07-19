@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from qdrant_client import QdrantClient
 from qdrant_client import models as qdrant_models
@@ -167,9 +167,41 @@ class QdrantIndexingStage:
                     )
             LOGGER.info("Создана коллекция Qdrant %s", self.config.collection_name)
             return
+        self._validate_existing_collection(client)
         LOGGER.info(
             "Используется существующая коллекция Qdrant %s", self.config.collection_name
         )
+
+    def _validate_existing_collection(self, client: QdrantClient) -> None:
+        """Сверяет схему существующей коллекции до upsert и удаления точек."""
+        collection = client.get_collection(self.config.collection_name)
+        vectors = collection.config.params.vectors
+        if isinstance(vectors, Mapping):
+            names = ", ".join(sorted(str(name) for name in vectors)) or "нет"
+            raise ValueError(
+                "Существующая коллекция использует named vectors, а pipeline "
+                f"ожидает один безымянный vector: names={names}"
+            )
+
+        actual_size = int(vectors.size)
+        expected_distance = qdrant_distance(self.config.distance)
+        actual_distance = vectors.distance
+        mismatches: list[str] = []
+        if actual_size != self.config.vector_size:
+            mismatches.append(
+                f"vector_size actual={actual_size} expected={self.config.vector_size}"
+            )
+        if actual_distance != expected_distance:
+            mismatches.append(
+                "distance "
+                f"actual={actual_distance.value} expected={expected_distance.value}"
+            )
+        if mismatches:
+            raise ValueError(
+                "Схема существующей коллекции Qdrant несовместима с конфигурацией; "
+                "до исправления конфигурации или recreate_collection=true данные "
+                "не изменены: " + "; ".join(mismatches)
+            )
 
     def _close_embedded_collection_before_delete(self, client: QdrantClient) -> None:
         """Закрывает SQLite storage embedded Qdrant до удаления каталога на Windows.

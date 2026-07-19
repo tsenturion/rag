@@ -14,8 +14,14 @@ from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
 from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri
 
 
+class StrictConfigModel(BaseModel):
+    """Запрещает неизвестные поля во всех вложенных секциях конфигурации."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # Базовый single-agent runtime и его общие зависимости.
-class AgentConfig(BaseModel):
+class AgentConfig(StrictConfigModel):
     """Провайдер, модель и пределы одного агентного LLM runtime."""
 
     provider: Literal["openai", "local", "gigachat"]
@@ -23,6 +29,7 @@ class AgentConfig(BaseModel):
     adapter_path: Path | None = None
     temperature: float = 0.0
     max_new_tokens: int = Field(default=220, ge=1)
+    max_input_tokens: int = Field(default=4096, ge=128)
     max_history_messages: int = Field(default=12, ge=2)
     max_summary_chars: int = Field(default=2500, ge=200)
     timeout_seconds: float = Field(default=60.0, gt=0)
@@ -34,15 +41,15 @@ class AgentConfig(BaseModel):
     local_device: Literal["auto", "xpu", "cuda", "cpu"] = "auto"
     local_dtype: Literal["auto", "bf16", "fp16", "fp32"] = "auto"
     local_files_only: bool = True
-    trust_remote_code: bool = True
+    trust_remote_code: bool = False
     low_cpu_mem_usage: bool = True
     gigachat_auth_key_env: str = "GIGACHAT_AUTH_KEY"
     gigachat_scope: str = "GIGACHAT_API_PERS"
-    gigachat_verify_ssl_certs: bool = False
+    gigachat_verify_ssl_certs: bool = True
     gigachat_profanity_check: bool | None = None
 
 
-class MemoryConfig(BaseModel):
+class MemoryConfig(StrictConfigModel):
     """Гарантирует воспроизводимую и валидируемую конфигурацию хранилища пользовательских данных агента."""
 
     sqlite_path: Path = Path("data/agent/memory.sqlite")
@@ -51,7 +58,7 @@ class MemoryConfig(BaseModel):
     search_limit: int = Field(default=5, ge=1)
 
 
-class WeatherConfig(BaseModel):
+class WeatherConfig(StrictConfigModel):
     """Гарантирует валидируемую конфигурацию доступа к погодному API с предсказуемыми параметрами."""
 
     api_key_env: str = "OPENWEATHER_API_KEY"
@@ -61,14 +68,14 @@ class WeatherConfig(BaseModel):
     timeout_seconds: float = Field(default=10.0, gt=0)
 
 
-class AgentLoggingConfig(BaseModel):
+class AgentLoggingConfig(StrictConfigModel):
     """Гарантирует согласованную настройку уровня и формата логирования для всех подсистем."""
 
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     json_format: bool = False
 
 
-class AgentRagConfig(BaseModel):
+class AgentRagConfig(StrictConfigModel):
     """Retrieval-профиль агента с согласованными embedding и vector store."""
 
     enabled: bool = False
@@ -99,7 +106,7 @@ class AgentRagConfig(BaseModel):
         return self
 
 
-class ExternalMCPServerConfig(BaseModel):
+class ExternalMCPServerConfig(StrictConfigModel):
     """Безопасное подключение одного внешнего MCP-сервера и allowlist tools."""
 
     name: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")
@@ -155,7 +162,7 @@ class ExternalMCPServerConfig(BaseModel):
         return self
 
 
-class AgentToolsConfig(BaseModel):
+class AgentToolsConfig(StrictConfigModel):
     """Определяет набор инструментов агента и гарантирует уникальность имён внешних MCP-серверов для предотвращения конфликтов при интеграции."""
 
     enabled: list[str] = Field(default_factory=list)
@@ -173,7 +180,7 @@ class AgentToolsConfig(BaseModel):
         return self
 
 
-class FileToolsConfig(BaseModel):
+class FileToolsConfig(StrictConfigModel):
     """Sandbox-пределы файловых tools внутри выделенной workspace."""
 
     enabled: bool = False
@@ -211,7 +218,7 @@ class FileToolsConfig(BaseModel):
         return normalized
 
 
-class CodeRunnerConfig(BaseModel):
+class CodeRunnerConfig(StrictConfigModel):
     """Гарантирует корректную интеграцию с внешним сервисом исполнения кода, включая валидацию URL и контроль лимитов на размер и время выполнения."""
 
     enabled: bool = False
@@ -231,7 +238,7 @@ class CodeRunnerConfig(BaseModel):
         return normalized
 
 
-class AgentServiceConfig(BaseModel):
+class AgentServiceConfig(StrictConfigModel):
     """Обеспечивает воспроизводимую и безопасную конфигурацию сетевого API агента с контролем числа воркеров, лимитов запросов и CORS."""
 
     host: str = "127.0.0.1"
@@ -254,7 +261,7 @@ class AgentServiceConfig(BaseModel):
         return normalized
 
 
-class AgentSecurityConfig(BaseModel):
+class AgentSecurityConfig(StrictConfigModel):
     """Аутентификация, RBAC и привязка запросов к user scope."""
 
     require_api_key: bool = False
@@ -271,9 +278,13 @@ class AgentSecurityConfig(BaseModel):
     rate_limit_enabled: bool = True
     rate_limit_requests_per_minute: int = Field(default=60, ge=1, le=100_000)
     rate_limit_burst: int = Field(default=10, ge=1, le=10_000)
+    rate_limit_backend: Literal["memory", "redis"] = "memory"
+    rate_limit_redis_url_env: str = "ORCHESTRATION_REDIS_URL"
+    rate_limit_key_prefix: str = "rag-support:rate-limit"
+    rate_limit_bucket_ttl_seconds: int = Field(default=3600, ge=60, le=604_800)
 
 
-class GuardrailsConfig(BaseModel):
+class GuardrailsConfig(StrictConfigModel):
     """Гарантирует включение и настройку механизмов защиты от prompt injection, аудита и модерации вывода для повышения безопасности."""
 
     enabled: bool = True
@@ -284,7 +295,7 @@ class GuardrailsConfig(BaseModel):
     review_sqlite_path: Path = Path("data/agent/human_reviews.sqlite")
 
 
-class ObservabilityConfig(BaseModel):
+class ObservabilityConfig(StrictConfigModel):
     """Параметры OTLP export и автоматического инструментирования."""
 
     enabled: bool = False
@@ -305,7 +316,7 @@ class ObservabilityConfig(BaseModel):
         return normalized
 
 
-class EvaluationConfig(BaseModel):
+class EvaluationConfig(StrictConfigModel):
     """Определяет параметры автоматической оценки качества агента и гарантирует корректную интеграцию с MLflow для отслеживания экспериментов."""
 
     output_dir: Path = Path("data/evaluation/runs")
@@ -324,7 +335,7 @@ class EvaluationConfig(BaseModel):
     mlflow_experiment: str = "rag-agent-quality"
 
 
-class CurrencyConversionConfig(BaseModel):
+class CurrencyConversionConfig(StrictConfigModel):
     """Настраивает получение официальных курсов валют Банка России.
 
     Конвертация нужна для сопоставимого отображения расходов разных LLM:
@@ -353,7 +364,7 @@ class CurrencyConversionConfig(BaseModel):
 
 
 # Роли, протоколы и бюджеты мультиагентного runtime.
-class MultiAgentCostConfig(BaseModel):
+class MultiAgentCostConfig(StrictConfigModel):
     """Фиксирует контракт расчёта стоимости токенов для мультиагентных сценариев, обеспечивая прозрачность биллинга."""
 
     input_cost_per_million: float = Field(default=0.0, ge=0.0)
@@ -381,7 +392,7 @@ class MultiAgentLLMProfileConfig(AgentConfig):
         return _normalize_currency_code(value)
 
 
-class MultiAgentProtocolConfig(BaseModel):
+class MultiAgentProtocolConfig(StrictConfigModel):
     """Определяет включённые протоколы взаимодействия между агентами и гарантирует корректность URL-путей для RPC и REST."""
 
     a2a_enabled: bool = True
@@ -403,7 +414,7 @@ class MultiAgentProtocolConfig(BaseModel):
         return value.rstrip("/") or "/"
 
 
-class MultiAgentConfig(BaseModel):
+class MultiAgentConfig(StrictConfigModel):
     """Границы декомпозиции, маршрутизация ролей и коммуникационные протоколы."""
 
     enabled: bool = False
@@ -487,7 +498,7 @@ class MultiAgentConfig(BaseModel):
         return self
 
 
-class CamundaConfig(BaseModel):
+class CamundaConfig(StrictConfigModel):
     """Гарантирует корректную интеграцию с Camunda BPMN-оркестратором, включая параметры процессов и тайминги воркеров."""
 
     enabled: bool = False
@@ -502,7 +513,7 @@ class CamundaConfig(BaseModel):
     job_type_verify: str = "verify-support-result"
 
 
-class OrchestrationConfig(BaseModel):
+class OrchestrationConfig(StrictConfigModel):
     """Очереди, leases, backpressure и retry распределённого выполнения."""
 
     enabled: bool = False
@@ -565,7 +576,7 @@ class OrchestrationConfig(BaseModel):
         return self
 
 
-class AgentAppConfig(BaseModel):
+class AgentAppConfig(StrictConfigModel):
     """Корневой строгий контракт всех подсистем агентного сервиса."""
 
     model_config = ConfigDict(extra="forbid")

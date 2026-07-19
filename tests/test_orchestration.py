@@ -121,6 +121,32 @@ class SlowExecutor:
         )
 
 
+class BlockingExecutor:
+    """Удерживает шаг, чтобы воспроизводить конкурентную delivery и отмену."""
+
+    def __init__(self):
+        """Создаёт события начала и разрешения завершить единственный вызов."""
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def execute(self, step, job, context):
+        """Фиксирует side effect и ожидает явного разрешения теста."""
+        del job, context
+        with self._lock:
+            self.calls += 1
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise TimeoutError("Тест не разрешил завершить blocking executor")
+        return StepResult(
+            step_id=step.id,
+            status=StepStatus.COMPLETED,
+            assigned_role=step.assigned_role,
+            output="Единственный результат",
+        )
+
+
 def _job(pattern: OrchestrationPattern, **updates) -> OrchestrationJob:
     """Создаёт предсказуемое задание оркестрации с базовыми параметрами для проверки логики обработки сценариев."""
     values = {
@@ -434,6 +460,93 @@ class OrchestrationServiceTest(unittest.TestCase):
         self.assertEqual(first.status, JobStatus.COMPLETED)
         self.assertEqual(second.status, JobStatus.COMPLETED)
         self.assertEqual(executor.calls, ["diagnostics_agent"])
+
+    def test_two_workers_cannot_execute_same_job_concurrently(self) -> None:
+        """Атомарный claim допускает ровно один side effect при двойной delivery."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config = _config(Path(temporary_dir))
+            store = InMemoryJobStore()
+            executor = BlockingExecutor()
+            job = _job(OrchestrationPattern.SEQUENTIAL)
+            store.save(JobRecord(job=job))
+            results: list[JobRecord] = []
+            first = threading.Thread(
+                target=lambda: results.append(
+                    JobRunner(config, store, executor).run(job)
+                )
+            )
+            first.start()
+            self.assertTrue(executor.started.wait(timeout=2))
+
+            duplicate = JobRunner(config, store, executor).run(job)
+            executor.release.set()
+            first.join(timeout=5)
+            final = store.get(job.id)
+
+        self.assertEqual(duplicate.status, JobStatus.RUNNING)
+        self.assertEqual(executor.calls, 1)
+        self.assertFalse(first.is_alive())
+        self.assertEqual(results[0].status, JobStatus.COMPLETED)
+        self.assertIsNotNone(final)
+        self.assertEqual(final.status, JobStatus.COMPLETED)
+
+    def test_cancellation_wins_over_late_worker_completion(self) -> None:
+        """CAS не позволяет завершившемуся worker перезаписать CANCELLED."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            config = _config(Path(temporary_dir))
+            store = InMemoryJobStore()
+            executor = BlockingExecutor()
+            service = OrchestrationService(
+                config,
+                store=store,
+                executor_factory=lambda: executor,
+            )
+            job = _job(OrchestrationPattern.SEQUENTIAL)
+            submissions = []
+            worker = threading.Thread(
+                target=lambda: submissions.append(service.submit(job))
+            )
+            worker.start()
+            self.assertTrue(executor.started.wait(timeout=2))
+
+            cancelled = service.cancel(job.id)
+            executor.release.set()
+            worker.join(timeout=5)
+            final = service.get(job.id)
+            service.close()
+
+        self.assertEqual(cancelled.status, JobStatus.CANCELLED)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(submissions[0].record.status, JobStatus.CANCELLED)
+        self.assertEqual(final.status, JobStatus.CANCELLED)
+        self.assertEqual(executor.calls, 1)
+
+    def test_capacity_reservation_is_atomic_between_submitters(self) -> None:
+        """Параллельные submitters не превышают max_pending_jobs."""
+        store = InMemoryJobStore()
+        barrier = threading.Barrier(3)
+        outcomes: list[bool] = []
+
+        def create(record: JobRecord) -> None:
+            """Одновременно пытается занять единственное место очереди."""
+            barrier.wait(timeout=2)
+            outcomes.append(store.create_if_capacity(record, max_pending=1))
+
+        threads = [
+            threading.Thread(
+                target=create,
+                args=(JobRecord(job=_job(OrchestrationPattern.SEQUENTIAL)),),
+            )
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait(timeout=2)
+        for thread in threads:
+            thread.join(timeout=2)
+
+        self.assertCountEqual(outcomes, [True, False])
+        self.assertEqual(store.counts()[JobStatus.QUEUED.value], 1)
 
     def test_backpressure_rejects_full_store(self) -> None:
         """Проверяет, что сервис отклоняет новые задачи с ошибкой при достижении максимального количества ожидающих заданий, обеспечивая защиту от перегрузки."""

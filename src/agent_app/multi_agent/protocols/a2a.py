@@ -52,7 +52,12 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from starlette.requests import Request
 
 from agent_app.config import AgentAppConfig
+from agent_app.guardrails import GuardrailPipeline
 from agent_app.multi_agent.models import MultiAgentRunResult
+from agent_app.multi_agent.sanitization import (
+    public_run_reference,
+    sanitize_run_result,
+)
 from agent_app.multi_agent.roles import default_role_definitions
 from agent_app.multi_agent.protocols.a2a_store import A2ATaskStore
 from agent_app.service.auth import Principal
@@ -113,11 +118,23 @@ def build_agent_card(config: AgentAppConfig, *, base_url: str) -> AgentCard:
 class MultiAgentA2AHandler(RequestHandler):
     """Обеспечивает потокобезопасную маршрутизацию и обработку запросов межагентного взаимодействия с сохранением задач и их статусов."""
 
-    def __init__(self, card: AgentCard, ask: A2AAsk, store: A2ATaskStore):
-        """Гарантирует готовность экземпляра к потокобезопасной обработке задач и сообщений в рамках межагентного взаимодействия."""
+    def __init__(
+        self,
+        card: AgentCard,
+        ask: A2AAsk,
+        store: A2ATaskStore,
+        guardrails: GuardrailPipeline | None = None,
+        *,
+        request_max_chars: int = 20_000,
+    ):
+        """Настраивает хранилище задач, guardrails и предел итогового A2A-текста."""
         self.card = card
         self.ask = ask
         self.store = store
+        self.guardrails = guardrails
+        if request_max_chars < 1:
+            raise ValueError("request_max_chars должен быть положительным")
+        self.request_max_chars = request_max_chars
         self._futures: dict[str, asyncio.Task[None]] = {}
 
     async def on_message_send(
@@ -131,6 +148,11 @@ class MultiAgentA2AHandler(RequestHandler):
         ).strip()
         if not text:
             raise ValueError("A2A message не содержит текстовую часть")
+        if len(text) > self.request_max_chars:
+            raise ValueError(
+                "Собранный текст A2A message превышает разрешённый лимит: "
+                f"{len(text)} > {self.request_max_chars} символов"
+            )
         metadata = (
             MessageToDict(params.message.metadata) if params.message.metadata else {}
         )
@@ -217,7 +239,13 @@ class MultiAgentA2AHandler(RequestHandler):
         params: CancelTaskRequest,
         context: ServerCallContext,
     ) -> Task | None:
-        """Отменяет owner-scoped задачу и запрещает фоновому run сохранить ответ."""
+        """Отменяет только ещё не начатую owner-scoped задачу.
+
+        Синхронный provider/tool вызов выполняется в отдельном потоке и не имеет
+        переносимого механизма принудительной остановки. Поэтому работающая
+        задача не помечается отменённой: такой статус скрывал бы продолжающиеся
+        расходы и побочные действия.
+        """
         stored = self.store.get(params.id)
         if stored is None:
             return None
@@ -231,6 +259,10 @@ class MultiAgentA2AHandler(RequestHandler):
             TaskState.TASK_STATE_REJECTED,
         }:
             return _copy_task(task)
+        if task.status.state != TaskState.TASK_STATE_SUBMITTED:
+            raise UnsupportedOperationError(
+                "A2A-задача уже выполняется и не поддерживает безопасную отмену"
+            )
         task.status.state = TaskState.TASK_STATE_CANCELED
         task.status.timestamp.CopyFrom(_timestamp())
         self.store.save(task, owner_id=owner)
@@ -265,7 +297,14 @@ class MultiAgentA2AHandler(RequestHandler):
                 session_id=session_id,
                 message=text,
             )
+            if self.guardrails is not None:
+                # Runtime уже очищает результат до экспорта. Повторная проверка
+                # защищает A2A-границу и при пользовательской реализации ask.
+                result = sanitize_run_result(result, self.guardrails)
         except asyncio.CancelledError:
+            # cancel() используется только до запуска provider-вызова. Если
+            # coroutine всё же отменена снаружи во время to_thread(), мы не
+            # публикуем ложное конечное состояние: поток завершит вызов сам.
             return
         except Exception as exc:
             current = self.store.get(task_id)
@@ -408,7 +447,7 @@ class MultiAgentA2AHandler(RequestHandler):
             ),
             artifacts=[artifact],
             history=[request, response_message],
-            metadata=_struct({"run_dir": result.run_dir or ""}),
+            metadata=_struct({"run_dir": public_run_reference(result.run_dir) or ""}),
         )
 
     @staticmethod
@@ -498,6 +537,8 @@ def install_a2a_routes(
             ttl_seconds=config.multi_agent.protocols.a2a_task_ttl_seconds,
             max_tasks=config.multi_agent.protocols.a2a_max_tasks,
         ),
+        GuardrailPipeline(config.guardrails),
+        request_max_chars=config.service.request_max_chars,
     )
     context_builder = PrincipalContextBuilder()
     add_a2a_routes_to_fastapi(

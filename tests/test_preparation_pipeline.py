@@ -31,6 +31,15 @@ from rag_prep.stages.structuring import LlamaIndexStructuringStage  # noqa: E402
 class PreparationPipelineTest(unittest.TestCase):
     """Проверяет корректность обработки данных в подготовительном пайплайне, включая загрузку, очистку, нормализацию, дедупликацию и структурирование документов."""
 
+    def test_empty_input_corpus_is_rejected(self) -> None:
+        """Не публикует успешный запуск подготовки без исходных документов."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            input_dir = Path(temporary_dir) / "raw"
+            input_dir.mkdir()
+
+            with self.assertRaisesRegex(ValueError, "Входной корпус пуст"):
+                LlamaIndexLoadingStage(LoaderConfig()).run(input_dir)
+
     def test_csv_passes_loading_cleaning_normalization_dedup_and_structuring(
         self,
     ) -> None:
@@ -81,6 +90,33 @@ class PreparationPipelineTest(unittest.TestCase):
                 documents[0].metadata.origin_element_ids, [raw[0].element_id]
             )
             self.assertGreater(documents[0].metadata.sentence_count or 0, 0)
+
+    def test_semicolon_csv_is_detected_without_flattening_columns(self) -> None:
+        """Стандартный CSV Sniffer распознаёт распространённый русский delimiter ';'."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            input_dir = Path(temporary_dir) / "raw"
+            input_dir.mkdir()
+            csv_path = input_dir / "knowledge.csv"
+            csv_path.write_text(
+                "Раздел;Название;Описание\n"
+                "Поддержка;Сброс пароля;Инженер проверяет личность.\n",
+                encoding="utf-8",
+            )
+            source = LlamaIndexLoadingStage(LoaderConfig())._to_source_file(
+                csv_path,
+                input_dir=input_dir,
+            )
+
+            rows = UnstructuredParsingStage(
+                ParserConfig(), default_section="Полный документ"
+            )._parse_csv_source(source)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            rows[0].metadata["csv_columns"],
+            ["Раздел", "Название", "Описание"],
+        )
+        self.assertIn("Описание: Инженер проверяет личность.", rows[0].text)
 
 
 if __name__ == "__main__":
