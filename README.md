@@ -139,7 +139,7 @@ JSON, JSONL и manifest сначала полностью формируются
 Посмотреть запуски, параметры, метрики и артефакты в MLflow UI можно из корня проекта:
 
 ```powershell
-mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port 5000
+mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port 5000 --workers 1
 ```
 
 Интерфейс будет доступен на `http://127.0.0.1:5000`. Команда запускает долгоживущий локальный сервер MLflow и работает до `Ctrl+C`; открывать интерфейс нужно в браузере, а следующие команды выполнять во втором терминале.
