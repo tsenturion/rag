@@ -2,7 +2,7 @@ name: Проверка качества
 
 on:
   push:
-    branches: [main]
+    branches: [main, multi-agent]
   pull_request:
   workflow_dispatch:
 
