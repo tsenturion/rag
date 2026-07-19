@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     """Запускает командный интерфейс и возвращает код завершения."""
+    _configure_stdio()
     args = build_parser().parse_args()
 
     # Evaluation runtime включает MLflow, LLM и vector store, поэтому он нужен
@@ -50,6 +52,14 @@ def main() -> int:
         runtime.close()
     print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return 0 if report.quality_gate.passed else 1
+
+
+def _configure_stdio() -> None:
+    """Сохраняет Unicode из ответов LLM при выводе отчёта в Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 if __name__ == "__main__":

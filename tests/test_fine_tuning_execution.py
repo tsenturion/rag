@@ -224,9 +224,7 @@ def test_training_stage_runs_trainer_and_saves_adapter(tmp_path: Path) -> None:
         @staticmethod
         def train(**_kwargs):
             """Возвращает измеримые метрики завершённого обучающего шага."""
-            return SimpleNamespace(
-                metrics={"train_loss": 0.5, "train_runtime": 1.2}
-            )
+            return SimpleNamespace(metrics={"train_loss": 0.5, "train_runtime": 1.2})
 
         @staticmethod
         def evaluate():
@@ -254,7 +252,10 @@ def test_training_stage_runs_trainer_and_saves_adapter(tmp_path: Path) -> None:
                 trainable_ratio=0.1,
             ),
         ),
-        patch("llm_tuning.training.SupervisedChatDataset", side_effect=lambda x, *_a, **_k: x),
+        patch(
+            "llm_tuning.training.SupervisedChatDataset",
+            side_effect=lambda x, *_a, **_k: x,
+        ),
         patch("llm_tuning.training.DataCollatorForCausalLM", return_value="collator"),
     ):
         result = stage.run(run_id="training-run")
@@ -333,7 +334,9 @@ def test_fine_tuning_pipeline_orchestrates_all_public_modes(tmp_path: Path) -> N
     )
     pipeline.comparer = SimpleNamespace(compare=Mock(return_value=comparison))
     pipeline.exporter = SimpleNamespace(
-        write_evaluation=Mock(side_effect=lambda _report, filename: tmp_path / filename),
+        write_evaluation=Mock(
+            side_effect=lambda _report, filename: tmp_path / filename
+        ),
         write_comparison=Mock(return_value=tmp_path / "comparison.json"),
         write_manifest=Mock(return_value=export),
         load_evaluation_report=Mock(side_effect=[baseline, tuned]),

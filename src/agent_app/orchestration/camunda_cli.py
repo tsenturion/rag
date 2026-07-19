@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from agent_app.cli_formatting import RussianHelpFormatter, add_russian_help
@@ -61,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     """Запускает командный интерфейс и возвращает код завершения."""
+    _configure_stdio()
     args = build_parser().parse_args()
     config = load_agent_config(Path(args.config))
     if not config.orchestration.camunda.enabled:
@@ -85,6 +87,14 @@ def main() -> int:
         return 0
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def _configure_stdio() -> None:
+    """Сохраняет Unicode в BPMN payload и ответах агента на Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 if __name__ == "__main__":

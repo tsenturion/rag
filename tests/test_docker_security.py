@@ -58,9 +58,9 @@ def test_feature_branch_release_cannot_publish_latest() -> None:
 
 def test_docker_smoke_supplies_all_readiness_secrets() -> None:
     """Не позволяет чистому CI runner скрыто зависеть от локального файла .env."""
-    workflow = (
-        PROJECT_ROOT / ".github" / "workflows" / "quality.yaml"
-    ).read_text(encoding="utf-8")
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "quality.yaml").read_text(
+        encoding="utf-8"
+    )
 
     for name in (
         "SUPPORT_SERVICE_API_KEY",

@@ -128,7 +128,9 @@ class CamundaAgentWorker:
     @staticmethod
     def _health_path() -> Path:
         """Разрешает путь heartbeat без привязки к рабочему каталогу процесса."""
-        return Path(os.getenv("CAMUNDA_WORKER_HEALTH_FILE", "/tmp/camunda-worker.health"))
+        return Path(
+            os.getenv("CAMUNDA_WORKER_HEALTH_FILE", "/tmp/camunda-worker.health")
+        )
 
     def close(self) -> None:
         """Гарантирует корректное освобождение ресурсов сервиса оркестрации при владении им."""

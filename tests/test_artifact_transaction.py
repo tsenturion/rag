@@ -110,6 +110,18 @@ class ArtifactTransactionTest(unittest.TestCase):
             self._assert_old_set(targets)
             self.assertFalse(staging.exists())
 
+    def test_recovery_does_not_write_to_consistent_input_directory(self) -> None:
+        """Не создаёт lock при чтении готового артефакта без recovery-журналов."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            (output_dir / "manifest.json").write_text("{}", encoding="utf-8")
+
+            with patch(
+                "rag_prep.utils.portalocker.Lock",
+                side_effect=AssertionError("lock не должен создаваться"),
+            ):
+                recover_artifact_transactions(output_dir)
+
     @staticmethod
     def _targets(output_dir: Path) -> list[Path]:
         """Проверяет, что список целевых файлов для транзакции воспроизводим и соответствует ожидаемой структуре выходных артефактов."""

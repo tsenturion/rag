@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from rag_prep.config import load_vector_store_config
@@ -67,6 +68,7 @@ def run_index(config_path: str | Path) -> VectorStorePipelineResult:
 
 def main() -> None:
     """Запускает командный интерфейс и возвращает код завершения."""
+    _configure_stdio()
     parser = argparse.ArgumentParser(
         description="Загрузка готовых embeddings в Qdrant без offline preprocessing stack."
     )
@@ -78,6 +80,14 @@ def main() -> None:
     args = parser.parse_args()
     result = run_index(args.config)
     print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
+
+
+def _configure_stdio() -> None:
+    """Выводит русские diagnostics и пути Qdrant в UTF-8 на Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 if __name__ == "__main__":

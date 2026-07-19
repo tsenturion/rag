@@ -81,9 +81,13 @@ def test_rag_index_runs_all_stages_with_one_qdrant_client(tmp_path: Path) -> Non
         patch.object(vector_store_cli, "qdrant_client_context", client_context),
         patch.object(vector_store_cli, "EmbeddingLoadingStage", return_value=loading),
         patch.object(vector_store_cli, "QdrantIndexingStage", return_value=indexing),
-        patch.object(vector_store_cli, "QdrantValidationStage", return_value=validating),
+        patch.object(
+            vector_store_cli, "QdrantValidationStage", return_value=validating
+        ),
         patch.object(vector_store_cli, "QdrantSearchStage", return_value=searching),
-        patch.object(vector_store_cli, "VectorStoreExportStage", return_value=exporting),
+        patch.object(
+            vector_store_cli, "VectorStoreExportStage", return_value=exporting
+        ),
     ):
         result = vector_store_cli.run_index("vector.yaml")
 

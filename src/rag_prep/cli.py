@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 
@@ -129,6 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """Запускает командный интерфейс и возвращает код завершения."""
+    _configure_stdio()
     args = build_parser().parse_args()
     command = args.command or "prepare"
 
@@ -200,6 +202,14 @@ def _configure_local_prefect_runtime() -> None:
     """Гарантирует корректную локальную работу Prefect без конфликтов с прокси и лишней телеметрии."""
     _ensure_local_prefect_no_proxy()
     _disable_prefect_events_worker()
+
+
+def _configure_stdio() -> None:
+    """Переключает Windows stdout/stderr на UTF-8 до инициализации Prefect."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def _ensure_local_prefect_no_proxy() -> None:

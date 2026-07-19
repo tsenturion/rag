@@ -173,6 +173,13 @@ def recover_artifact_transactions(parent: Path) -> None:
     resolved_parent = parent.resolve()
     if not resolved_parent.exists():
         return
+    # Downstream-контейнеры монтируют готовые входные артефакты read-only. Если
+    # журналов публикации нет, создавать lock-файл не требуется: целостность
+    # входа ниже всё равно подтверждается SHA-256 из manifest. При наличии
+    # staging-каталога восстановление остаётся обязательным и требует writable
+    # mount, чтобы незавершённый набор нельзя было принять за согласованный.
+    if not any(resolved_parent.glob(".artifact-set-*")):
+        return
     lock_path = resolved_parent / ".artifact-publish.lock"
     with portalocker.Lock(str(lock_path), timeout=30):
         _recover_artifact_transactions_unlocked(resolved_parent)

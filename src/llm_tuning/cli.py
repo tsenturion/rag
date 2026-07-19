@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from llm_tuning.config import load_fine_tuning_config
@@ -137,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """Запускает командный интерфейс и возвращает код завершения."""
+    _configure_stdio()
     args = build_parser().parse_args()
     command = args.command or "validate-data"
     config = load_fine_tuning_config(Path(args.config))
@@ -187,6 +189,14 @@ def main() -> None:
         raise ValueError(f"Неизвестная команда: {command}")
 
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _configure_stdio() -> None:
+    """Не допускает потери Unicode в отчётах и генерациях локальной модели."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def _add_simple_command(

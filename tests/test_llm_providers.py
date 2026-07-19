@@ -38,9 +38,7 @@ def test_build_llm_routes_explicit_provider(monkeypatch) -> None:
     sentinels = {provider: object() for provider in configs}
     with (
         patch("agent_app.llm._build_openai_llm", return_value=sentinels["openai"]),
-        patch(
-            "agent_app.llm._build_gigachat_llm", return_value=sentinels["gigachat"]
-        ),
+        patch("agent_app.llm._build_gigachat_llm", return_value=sentinels["gigachat"]),
         patch(
             "agent_app.llm.LocalTransformersChatModel",
             return_value=sentinels["local"],

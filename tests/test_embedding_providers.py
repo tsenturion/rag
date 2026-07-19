@@ -175,7 +175,9 @@ def test_gigachat_batches_and_preserves_chunk_mapping() -> None:
         embedded_at=utc_now(),
     )
 
-    result = stage.run([_chunk("one", "текст"), _chunk("two", "текст", 1)], run_id="giga")
+    result = stage.run(
+        [_chunk("one", "текст"), _chunk("two", "текст", 1)], run_id="giga"
+    )
 
     assert [item.metadata.id for item in result] == ["one", "two"]
     assert result[0].embedding == pytest.approx([0.6, 0.8])
