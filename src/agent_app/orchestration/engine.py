@@ -1,7 +1,14 @@
+"""Исполняющий движок для распределённой оркестрации."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+)
+import threading
 from time import perf_counter
 from typing import Protocol, TypedDict
 
@@ -26,15 +33,21 @@ from agent_app.orchestration.synchronization import QuorumCoordinator
 
 
 class StepExecutor(Protocol):
+    """Обязует реализовать выполнение отдельного шага плана с учётом результатов зависимостей, гарантируя корректное выполнение оркестрации."""
+
     def execute(
         self,
         step: PlanStep,
         job: OrchestrationJob,
         context: Mapping[str, StepResult],
-    ) -> StepResult: ...
+    ) -> StepResult:
+        """Выполняет один шаг плана с результатами его зависимостей."""
+        ...
 
 
 class OrchestrationGraphState(TypedDict):
+    """Содержит состояние выполнения оркестрационного задания, включая план, результаты шагов и синхронизацию для управления процессом."""
+
     job: OrchestrationJob
     plan: ExecutionPlan
     step_results: list[StepResult]
@@ -53,14 +66,36 @@ class OrchestrationEngine:
         max_parallelism: int = 3,
         allow_parallel: bool = True,
     ):
+        """Готовит движок оркестрации к выполнению, устанавливая планировщик, исполнителя и параметры параллелизма для управления жизненным циклом заданий."""
         self.executor = executor
         self.plan_builder = plan_builder or OrchestrationPlanBuilder()
         self.max_parallelism = max(1, max_parallelism)
         self.allow_parallel = allow_parallel
         self.quorum = QuorumCoordinator()
+        self._inflight_lock = threading.RLock()
+        self._inflight: set[Future[StepResult]] = set()
         self.graph = self._build_graph()
 
+    @property
+    def has_inflight_steps(self) -> bool:
+        """Показывает, остались ли после timeout реально выполняющиеся шаги."""
+        with self._inflight_lock:
+            return any(not future.done() for future in self._inflight)
+
+    def wait_for_inflight_steps(self) -> None:
+        """Ждёт фоновые вызовы, чтобы lease ресурсов не освобождался преждевременно."""
+        with self._inflight_lock:
+            futures = list(self._inflight)
+        for future in futures:
+            try:
+                future.result()
+            except BaseException:
+                # Ошибка уже отражена в StepResult либо серверном журнале; здесь
+                # важно лишь дождаться фактического освобождения ресурса.
+                pass
+
     def run(self, job: OrchestrationJob) -> OrchestrationResult:
+        """Оркестрирует выполнение плана задания, гарантируя корректный статус результата с учётом кворума, таймаутов и ошибок, обеспечивая итоговую сводку и метрики."""
         started = perf_counter()
         plan = self.plan_builder.build(job)
         if job.expired:
@@ -116,9 +151,11 @@ class OrchestrationEngine:
         )
 
     def _build_graph(self):
+        """Строит конечный автомат управления состояниями оркестрации, обеспечивая последовательное выполнение, синхронизацию и возможность перепланирования шагов."""
         workflow = StateGraph(OrchestrationGraphState)
 
         def execute(state: OrchestrationGraphState) -> dict[str, object]:
+            """Обеспечивает выполнение плана оркестрации с учётом текущего состояния, гарантируя обновление результатов шагов в рамках распределённого процесса."""
             return {
                 "step_results": self._execute_plan(
                     state["job"],
@@ -128,6 +165,7 @@ class OrchestrationEngine:
             }
 
         def synchronize(state: OrchestrationGraphState) -> dict[str, object]:
+            """Определяет состояние синхронизации агентов, обеспечивая достижение необходимого кворума для продолжения оркестрации согласно паттерну."""
             agent_steps = [
                 step
                 for step in state["plan"].steps
@@ -146,6 +184,7 @@ class OrchestrationEngine:
             }
 
         def route(state: OrchestrationGraphState) -> str:
+            """Принимает решение о маршрутизации процесса, гарантируя корректный переход к перепланированию или завершению на основе ошибок и ограничений ревизий."""
             if state["job"].pattern != OrchestrationPattern.DYNAMIC:
                 return "finish"
             retryable_failures = [
@@ -162,6 +201,7 @@ class OrchestrationEngine:
             return "replan" if can_replan else "finish"
 
         def replan(state: OrchestrationGraphState) -> dict[str, object]:
+            """Создаёт новую версию плана с сохранением успешных и пропущенных результатов, обеспечивая устойчивость и адаптивность оркестрации."""
             plan, revision = self.plan_builder.replan(
                 state["plan"], state["step_results"]
             )
@@ -196,6 +236,7 @@ class OrchestrationEngine:
         plan: ExecutionPlan,
         prior_results: list[StepResult],
     ) -> list[StepResult]:
+        """Обеспечивает последовательное и условное выполнение шагов плана с учётом зависимостей, таймаутов и условий, гарантируя консистентность результатов."""
         result_by_id = {result.step_id: result for result in prior_results}
         pending = [step for step in plan.steps if step.id not in result_by_id]
         while pending:
@@ -263,31 +304,52 @@ class OrchestrationEngine:
         job: OrchestrationJob,
         context: Mapping[str, StepResult],
     ) -> list[StepResult]:
-        if len(steps) == 1:
-            return [self._execute_step(steps[0], job, context)]
+        """Выполняет группу шагов параллельно с ограничением по максимальному числу потоков, обеспечивая обработку таймаутов и возврат результатов каждого шага."""
         results: list[StepResult] = []
-        with ThreadPoolExecutor(
+        pool = ThreadPoolExecutor(
             max_workers=min(self.max_parallelism, len(steps)),
             thread_name_prefix="orchestration-step",
-        ) as pool:
-            futures = {
-                step.id: (step, pool.submit(self._execute_step, step, job, context))
-                for step in steps
-            }
-            for step, future in futures.values():
-                try:
-                    results.append(future.result(timeout=step.timeout_seconds))
-                except FutureTimeoutError:
-                    future.cancel()
-                    results.append(
-                        self._failure(
-                            step,
-                            f"Timeout шага: {step.timeout_seconds} с",
-                            timed_out=True,
-                            retryable=True,
-                        )
+        )
+        submitted_at = perf_counter()
+        futures = {
+            step.id: (step, pool.submit(self._execute_step, step, job, context))
+            for step in steps
+        }
+        for step, future in futures.values():
+            try:
+                elapsed = perf_counter() - submitted_at
+                remaining = max(0.0, step.timeout_seconds - elapsed)
+                results.append(future.result(timeout=remaining))
+            except FutureTimeoutError:
+                cancelled_before_start = future.cancel()
+                if not cancelled_before_start:
+                    self._track_inflight(future)
+                results.append(
+                    self._failure(
+                        step,
+                        f"Timeout шага: {step.timeout_seconds} с",
+                        timed_out=True,
+                        # Запущенный Python thread нельзя безопасно остановить. Его
+                        # слот сохраняется до завершения, а дублирующий retry запрещён.
+                        retryable=cancelled_before_start,
                     )
+                )
+        # wait=False ограничивает latency orchestration-вызова. Незавершённые
+        # futures отслеживаются отдельно, чтобы provider lease оставался занятым.
+        pool.shutdown(wait=False, cancel_futures=True)
         return results
+
+    def _track_inflight(self, future: Future[StepResult]) -> None:
+        """Удерживает ссылку на просроченный вызов до его физического завершения."""
+        with self._inflight_lock:
+            self._inflight.add(future)
+
+        def discard(done: Future[StepResult]) -> None:
+            """Удаляет физически завершившийся вызов из набора удерживаемых работ."""
+            with self._inflight_lock:
+                self._inflight.discard(done)
+
+        future.add_done_callback(discard)
 
     def _execute_step(
         self,
@@ -295,6 +357,7 @@ class OrchestrationEngine:
         job: OrchestrationJob,
         context: Mapping[str, StepResult],
     ) -> StepResult:
+        """Выполняет отдельный шаг плана с учётом его типа и контекста, гарантируя корректный результат или детализированную ошибку с метаданными."""
         started = utc_now()
         if step.kind == "validate":
             return StepResult(
@@ -363,6 +426,7 @@ class OrchestrationEngine:
         plan: ExecutionPlan,
         results: list[StepResult],
     ) -> list[StepResult]:
+        """Определяет критические сбои среди обязательных шагов плана, влияющие на итоговый статус выполнения задания."""
         required = {step.id for step in plan.steps if step.required}
         return [
             result
@@ -373,6 +437,7 @@ class OrchestrationEngine:
 
     @staticmethod
     def _condition_matches(step: PlanStep, job: OrchestrationJob) -> bool:
+        """Определяет применимость шага плана к заданию на основе условий риска, обеспечивая выбор корректных веток исполнения."""
         if step.condition == "always":
             return True
         if step.condition == "high_risk":
@@ -387,6 +452,7 @@ class OrchestrationEngine:
         retryable: bool,
         timed_out: bool = False,
     ) -> StepResult:
+        """Формирует результат шага с ошибкой, указывая возможность повторной попытки и причину сбоя для последующего анализа и обработки."""
         return StepResult(
             step_id=step.id,
             status=StepStatus.TIMED_OUT if timed_out else StepStatus.FAILED,
@@ -398,6 +464,7 @@ class OrchestrationEngine:
 
     @staticmethod
     def _answer(results: list[StepResult]) -> str:
+        """Формирует итоговый ответ оркестрации, гарантируя возврат агрегированного результата или конкатенацию успешных выводов шагов с назначенными ролями."""
         aggregate = next(
             (
                 result.output

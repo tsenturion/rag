@@ -1,7 +1,10 @@
+"""Конфигурационные модели и загрузка настроек для агентного приложения."""
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -11,7 +14,10 @@ from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
 from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri
 
 
+# Базовый single-agent runtime и его общие зависимости.
 class AgentConfig(BaseModel):
+    """Провайдер, модель и пределы одного агентного LLM runtime."""
+
     provider: Literal["openai", "local", "gigachat"]
     model: str
     adapter_path: Path | None = None
@@ -21,6 +27,8 @@ class AgentConfig(BaseModel):
     max_summary_chars: int = Field(default=2500, ge=200)
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
+    # recursion_limit ограничивает весь LangGraph, а tool_error_retries разрешает
+    # только повторы после подтверждённой ошибки конкретного tool.
     recursion_limit: int = Field(default=12, ge=4)
     tool_error_retries: int = Field(default=1, ge=0)
     local_device: Literal["auto", "xpu", "cuda", "cpu"] = "auto"
@@ -35,6 +43,8 @@ class AgentConfig(BaseModel):
 
 
 class MemoryConfig(BaseModel):
+    """Гарантирует воспроизводимую и валидируемую конфигурацию хранилища пользовательских данных агента."""
+
     sqlite_path: Path = Path("data/agent/memory.sqlite")
     default_user_id: str = "default"
     default_session_id: str = "default"
@@ -42,6 +52,8 @@ class MemoryConfig(BaseModel):
 
 
 class WeatherConfig(BaseModel):
+    """Гарантирует валидируемую конфигурацию доступа к погодному API с предсказуемыми параметрами."""
+
     api_key_env: str = "OPENWEATHER_API_KEY"
     default_city: str = "Екатеринбург"
     default_units: Literal["standard", "metric", "imperial"] = "metric"
@@ -50,10 +62,15 @@ class WeatherConfig(BaseModel):
 
 
 class AgentLoggingConfig(BaseModel):
+    """Гарантирует согласованную настройку уровня и формата логирования для всех подсистем."""
+
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    json_format: bool = False
 
 
 class AgentRagConfig(BaseModel):
+    """Retrieval-профиль агента с согласованными embedding и vector store."""
+
     enabled: bool = False
     top_k: int = Field(default=5, ge=1, le=50)
     max_context_tokens: int = Field(default=1800, ge=128)
@@ -65,6 +82,7 @@ class AgentRagConfig(BaseModel):
 
     @model_validator(mode="after")
     def require_runtime_config_when_enabled(self) -> AgentRagConfig:
+        """Проверяет, что при включённом RAG заданы все обязательные параметры, предотвращая запуск с некорректной конфигурацией."""
         if not self.enabled:
             return self
         missing = [
@@ -82,6 +100,8 @@ class AgentRagConfig(BaseModel):
 
 
 class ExternalMCPServerConfig(BaseModel):
+    """Безопасное подключение одного внешнего MCP-сервера и allowlist tools."""
+
     name: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")
     enabled: bool = True
     required: bool = False
@@ -91,6 +111,8 @@ class ExternalMCPServerConfig(BaseModel):
     args: list[str] = Field(default_factory=list)
     cwd: Path | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    # Секреты перечисляются по именам и читаются из host env; их значения не
+    # должны попадать в YAML и экспортируемую конфигурацию.
     env_from_host: list[str] = Field(default_factory=list)
     headers: dict[str, str] = Field(default_factory=dict)
     header_env: dict[str, str] = Field(default_factory=dict)
@@ -103,6 +125,7 @@ class ExternalMCPServerConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_transport_parameters(self) -> ExternalMCPServerConfig:
+        """Проверяет согласованность и полноту параметров транспорта внешнего MCP-сервера, исключая некорректные комбинации и пропуски."""
         if self.transport == "streamable_http":
             if not self.url or not self.url.startswith(("http://", "https://")):
                 raise ValueError(
@@ -133,6 +156,8 @@ class ExternalMCPServerConfig(BaseModel):
 
 
 class AgentToolsConfig(BaseModel):
+    """Определяет набор инструментов агента и гарантирует уникальность имён внешних MCP-серверов для предотвращения конфликтов при интеграции."""
+
     enabled: list[str] = Field(default_factory=list)
     disabled: list[str] = Field(default_factory=list)
     incident_sqlite_path: Path = Path("data/agent/incidents.sqlite")
@@ -141,6 +166,7 @@ class AgentToolsConfig(BaseModel):
 
     @model_validator(mode="after")
     def require_unique_mcp_server_names(self) -> AgentToolsConfig:
+        """Проверяет, что имена всех внешних MCP-серверов уникальны, предотвращая конфликты при маршрутизации."""
         names = [server.name for server in self.mcp_servers]
         if len(names) != len(set(names)):
             raise ValueError("Имена внешних MCP-серверов должны быть уникальными")
@@ -148,6 +174,8 @@ class AgentToolsConfig(BaseModel):
 
 
 class FileToolsConfig(BaseModel):
+    """Sandbox-пределы файловых tools внутри выделенной workspace."""
+
     enabled: bool = False
     workspace_path: Path = Path("data/agent/workspace")
     allow_write: bool = False
@@ -170,6 +198,7 @@ class FileToolsConfig(BaseModel):
     @field_validator("allowed_extensions")
     @classmethod
     def normalize_extensions(cls, values: list[str]) -> list[str]:
+        """Гарантирует, что список расширений файлов приведён к единому формату и не содержит дубликатов или некорректных значений."""
         normalized = []
         for value in values:
             extension = value.strip().casefold()
@@ -183,6 +212,8 @@ class FileToolsConfig(BaseModel):
 
 
 class CodeRunnerConfig(BaseModel):
+    """Гарантирует корректную интеграцию с внешним сервисом исполнения кода, включая валидацию URL и контроль лимитов на размер и время выполнения."""
+
     enabled: bool = False
     base_url: str = "http://127.0.0.1:8010"
     api_key_env: str = "CODE_RUNNER_API_KEY"
@@ -193,6 +224,7 @@ class CodeRunnerConfig(BaseModel):
     @field_validator("base_url")
     @classmethod
     def require_http_url(cls, value: str) -> str:
+        """Гарантирует, что base_url для запуска кода всегда является корректным HTTP(S) URL без завершающего слеша."""
         normalized = value.rstrip("/")
         if not normalized.startswith(("http://", "https://")):
             raise ValueError("code_runner.base_url должен быть HTTP(S) URL")
@@ -200,33 +232,164 @@ class CodeRunnerConfig(BaseModel):
 
 
 class AgentServiceConfig(BaseModel):
+    """Обеспечивает воспроизводимую и безопасную конфигурацию сетевого API агента с контролем числа воркеров, лимитов запросов и CORS."""
+
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
     workers: int = Field(default=1, ge=1, le=16)
     request_max_chars: int = Field(default=20000, ge=100, le=1000000)
     session_cache_size: int = Field(default=256, ge=1, le=10000)
     cors_origins: list[str] = Field(default_factory=list)
+    public_base_url: str | None = None
+
+    @field_validator("public_base_url")
+    @classmethod
+    def normalize_public_base_url(cls, value: str | None) -> str | None:
+        """Нормализует внешний URL для A2A discovery за proxy или в Docker."""
+        if value is None:
+            return None
+        normalized = value.strip().rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("service.public_base_url должен быть HTTP(S) URL")
+        return normalized
 
 
 class AgentSecurityConfig(BaseModel):
+    """Аутентификация, RBAC и привязка запросов к user scope."""
+
     require_api_key: bool = False
     api_key_env: str = "SUPPORT_SERVICE_API_KEY"
+    api_key_role: Literal["viewer", "engineer", "operator", "admin", "service"] = (
+        "service"
+    )
+    jwt_enabled: bool = False
+    jwt_secret_env: str = "SUPPORT_JWT_SECRET"
+    jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
+    jwt_issuer: str = "rag-support"
+    jwt_audience: str = "rag-support-api"
+    enforce_user_scope: bool = True
+    rate_limit_enabled: bool = True
+    rate_limit_requests_per_minute: int = Field(default=60, ge=1, le=100_000)
+    rate_limit_burst: int = Field(default=10, ge=1, le=10_000)
 
 
+class GuardrailsConfig(BaseModel):
+    """Гарантирует включение и настройку механизмов защиты от prompt injection, аудита и модерации вывода для повышения безопасности."""
+
+    enabled: bool = True
+    block_prompt_injection: bool = True
+    redact_sensitive_data: bool = True
+    output_review_enabled: bool = True
+    audit_sqlite_path: Path = Path("data/agent/security_audit.sqlite")
+    review_sqlite_path: Path = Path("data/agent/human_reviews.sqlite")
+
+
+class ObservabilityConfig(BaseModel):
+    """Параметры OTLP export и автоматического инструментирования."""
+
+    enabled: bool = False
+    service_name: str = "rag-support-agent"
+    environment: str = "local"
+    otlp_http_endpoint: str = "http://127.0.0.1:4318"
+    trace_sample_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    instrument_http_clients: bool = True
+    instrument_celery: bool = True
+
+    @field_validator("otlp_http_endpoint")
+    @classmethod
+    def validate_otlp_endpoint(cls, value: str) -> str:
+        """Гарантирует, что otlp_http_endpoint для мониторинга всегда задан как HTTP(S) URL без завершающего слеша."""
+        normalized = value.rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("observability.otlp_http_endpoint должен быть HTTP(S) URL")
+        return normalized
+
+
+class EvaluationConfig(BaseModel):
+    """Определяет параметры автоматической оценки качества агента и гарантирует корректную интеграцию с MLflow для отслеживания экспериментов."""
+
+    output_dir: Path = Path("data/evaluation/runs")
+    repeats: int = Field(default=2, ge=1, le=10)
+    min_task_success_rate: float = Field(default=0.75, ge=0.0, le=1.0)
+    min_fact_f1: float = Field(default=0.70, ge=0.0, le=1.0)
+    min_consistency: float = Field(default=0.70, ge=0.0, le=1.0)
+    max_p95_latency_ms: float = Field(default=120000.0, gt=0)
+    max_average_cost: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="Максимальная средняя стоимость одного evaluation-запуска в RUB.",
+    )
+    mlflow_enabled: bool = True
+    mlflow_tracking_uri: str = "sqlite:///mlruns/mlflow.db"
+    mlflow_experiment: str = "rag-agent-quality"
+
+
+class CurrencyConversionConfig(BaseModel):
+    """Настраивает получение официальных курсов валют Банка России.
+
+    Конвертация нужна для сопоставимого отображения расходов разных LLM:
+    исходная сумма сохраняется в валюте тарифа, а рядом рассчитывается RUB.
+    """
+
+    enabled: bool = True
+    cbr_daily_rates_url: str = "https://www.cbr.ru/scripts/XML_daily.asp"
+    timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    cache_ttl_seconds: int = Field(default=43_200, ge=60, le=86_400)
+    allow_stale_on_error: bool = True
+    fail_on_error: bool = False
+
+    @field_validator("cbr_daily_rates_url")
+    @classmethod
+    def require_official_cbr_endpoint(cls, value: str) -> str:
+        """Не позволяет подменить источник курса неофициальным сервисом."""
+        normalized = value.strip()
+        parsed = urlparse(normalized)
+        if parsed.scheme != "https" or parsed.hostname not in {"cbr.ru", "www.cbr.ru"}:
+            raise ValueError(
+                "currency_conversion.cbr_daily_rates_url должен использовать "
+                "официальный HTTPS-домен cbr.ru"
+            )
+        return normalized
+
+
+# Роли, протоколы и бюджеты мультиагентного runtime.
 class MultiAgentCostConfig(BaseModel):
+    """Фиксирует контракт расчёта стоимости токенов для мультиагентных сценариев, обеспечивая прозрачность биллинга."""
+
     input_cost_per_million: float = Field(default=0.0, ge=0.0)
     output_cost_per_million: float = Field(default=0.0, ge=0.0)
+    currency: str = "RUB"
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        """Нормализует валюту тарифа к трёхбуквенному ISO-коду."""
+        return _normalize_currency_code(value)
 
 
 class MultiAgentLLMProfileConfig(AgentConfig):
+    """Гарантирует согласованность профиля LLM с политикой расчёта стоимости и параметрами мультиагентной подсистемы."""
+
     input_cost_per_million: float = Field(default=0.0, ge=0.0)
     output_cost_per_million: float = Field(default=0.0, ge=0.0)
+    currency: str = "RUB"
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        """Нормализует валюту тарифа конкретного LLM-профиля."""
+        return _normalize_currency_code(value)
 
 
 class MultiAgentProtocolConfig(BaseModel):
+    """Определяет включённые протоколы взаимодействия между агентами и гарантирует корректность URL-путей для RPC и REST."""
+
     a2a_enabled: bool = True
     a2a_rpc_path: str = "/a2a"
     a2a_rest_path: str = "/a2a/v1"
+    a2a_task_store_path: Path = Path("data/agent/a2a_tasks.sqlite")
+    a2a_task_ttl_seconds: int = Field(default=86_400, ge=60, le=2_592_000)
+    a2a_max_tasks: int = Field(default=2_000, ge=10, le=100_000)
     mcp_enabled: bool = True
     mcp_path: str = "/mcp"
     acp_legacy_enabled: bool = True
@@ -234,12 +397,15 @@ class MultiAgentProtocolConfig(BaseModel):
     @field_validator("a2a_rpc_path", "a2a_rest_path", "mcp_path")
     @classmethod
     def require_absolute_url_path(cls, value: str) -> str:
+        """Гарантирует, что путь протокола всегда абсолютный и не содержит лишних завершающих слешей."""
         if not value.startswith("/"):
             raise ValueError("Путь протокола должен начинаться с /")
         return value.rstrip("/") or "/"
 
 
 class MultiAgentConfig(BaseModel):
+    """Границы декомпозиции, маршрутизация ролей и коммуникационные протоколы."""
+
     enabled: bool = False
     planner_mode: Literal["rules", "hybrid", "llm"] = "rules"
     execution_mode: Literal["sequential", "parallel"] = "sequential"
@@ -255,6 +421,8 @@ class MultiAgentConfig(BaseModel):
     summary_enabled: bool = True
     tool_max_iterations: int = Field(default=4, ge=1, le=12)
     tool_output_max_chars: int = Field(default=12_000, ge=100, le=100_000)
+    # Обе карты используют имя роли как ключ: первая ограничивает полномочия,
+    # вторая независимо выбирает LLM-провайдера для этой роли.
     role_tool_allowlists: dict[str, list[str]] = Field(default_factory=dict)
     llm_profiles: dict[str, MultiAgentLLMProfileConfig] = Field(default_factory=dict)
     role_llm_profiles: dict[str, str] = Field(default_factory=dict)
@@ -268,6 +436,7 @@ class MultiAgentConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_budgets(self) -> MultiAgentConfig:
+        """Гарантирует согласованность лимитов и профилей ролей в multi_agent-конфигурации, предотвращая некорректные или неразрешимые настройки."""
         if self.max_delegations < self.max_tasks:
             raise ValueError(
                 "multi_agent.max_delegations не может быть меньше max_tasks"
@@ -319,6 +488,8 @@ class MultiAgentConfig(BaseModel):
 
 
 class CamundaConfig(BaseModel):
+    """Гарантирует корректную интеграцию с Camunda BPMN-оркестратором, включая параметры процессов и тайминги воркеров."""
+
     enabled: bool = False
     process_id: str = "engineer-support-process"
     process_path: Path = Path("bpmn/engineer_support.bpmn")
@@ -332,15 +503,17 @@ class CamundaConfig(BaseModel):
 
 
 class OrchestrationConfig(BaseModel):
+    """Очереди, leases, backpressure и retry распределённого выполнения."""
+
     enabled: bool = False
     backend: Literal["inline", "celery"] = "inline"
     broker_url_env: str = "ORCHESTRATION_BROKER_URL"
     result_backend_url_env: str = "ORCHESTRATION_RESULT_BACKEND_URL"
     state_store_url_env: str = "ORCHESTRATION_REDIS_URL"
-    queue_high: str = "agent.high"
-    queue_default: str = "agent.default"
-    queue_low: str = "agent.low"
-    queue_dead_letter: str = "agent.dead_letter"
+    queue_high: str = "agent.high.quorum"
+    queue_default: str = "agent.default.quorum"
+    queue_low: str = "agent.low.quorum"
+    queue_dead_letter: str = "agent.dead_letter.quorum"
     max_priority: int = Field(default=9, ge=2, le=10)
     max_pending_jobs: int = Field(default=500, ge=1, le=100_000)
     state_ttl_seconds: int = Field(default=86_400, ge=60)
@@ -355,6 +528,8 @@ class OrchestrationConfig(BaseModel):
     retry_backoff_seconds: int = Field(default=5, ge=1, le=600)
     retry_backoff_max_seconds: int = Field(default=120, ge=1, le=3600)
     retry_jitter: bool = True
+    # Отдельные лимиты не дают одному внешнему провайдеру или локальному
+    # accelerator исчерпать общую конкурентность workers.
     provider_concurrency_limits: dict[str, int] = Field(
         default_factory=lambda: {"openai": 8, "gigachat": 4, "local": 1}
     )
@@ -364,6 +539,7 @@ class OrchestrationConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_runtime_limits(self) -> OrchestrationConfig:
+        """Гарантирует согласованность временных и параллельных лимитов оркестрации, предотвращая ошибочные или опасные режимы работы."""
         if self.task_soft_time_limit_seconds >= self.task_time_limit_seconds:
             raise ValueError(
                 "orchestration.task_soft_time_limit_seconds должен быть меньше "
@@ -390,6 +566,8 @@ class OrchestrationConfig(BaseModel):
 
 
 class AgentAppConfig(BaseModel):
+    """Корневой строгий контракт всех подсистем агентного сервиса."""
+
     model_config = ConfigDict(extra="forbid")
 
     agent: AgentConfig
@@ -401,6 +579,12 @@ class AgentAppConfig(BaseModel):
     code_runner: CodeRunnerConfig = Field(default_factory=CodeRunnerConfig)
     service: AgentServiceConfig = Field(default_factory=AgentServiceConfig)
     security: AgentSecurityConfig = Field(default_factory=AgentSecurityConfig)
+    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    currency_conversion: CurrencyConversionConfig = Field(
+        default_factory=CurrencyConversionConfig
+    )
     multi_agent: MultiAgentConfig = Field(default_factory=MultiAgentConfig)
     orchestration: OrchestrationConfig = Field(default_factory=OrchestrationConfig)
     logging: AgentLoggingConfig = Field(default_factory=AgentLoggingConfig)
@@ -408,6 +592,7 @@ class AgentAppConfig(BaseModel):
     @field_validator("memory")
     @classmethod
     def validate_memory_defaults(cls, value: MemoryConfig) -> MemoryConfig:
+        """Гарантирует, что идентификаторы пользователя и сессии памяти всегда заданы и не пусты."""
         if not value.default_user_id.strip():
             raise ValueError("memory.default_user_id не может быть пустым")
         if not value.default_session_id.strip():
@@ -416,6 +601,7 @@ class AgentAppConfig(BaseModel):
 
 
 def load_agent_config(path: str | Path) -> AgentAppConfig:
+    """Создаёт полностью разрешённую и валидированную конфигурацию запуска агента, независимую от текущего рабочего каталога и переменных окружения."""
     config_path = _resolve_config_path(path)
     base_dir = _config_base_dir(config_path)
     load_dotenv(base_dir / ".env")
@@ -456,6 +642,9 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
     checkpoint_path = multi_agent.checkpoint_path
     if not checkpoint_path.is_absolute():
         checkpoint_path = base_dir / checkpoint_path
+    a2a_task_store_path = multi_agent.protocols.a2a_task_store_path
+    if not a2a_task_store_path.is_absolute():
+        a2a_task_store_path = base_dir / a2a_task_store_path
     process_path = config.orchestration.camunda.process_path
     if not process_path.is_absolute():
         process_path = base_dir / process_path
@@ -464,6 +653,13 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
         workspace_path = base_dir / workspace_path
     tracking_uri = resolve_mlflow_tracking_uri(
         multi_agent.mlflow_tracking_uri,
+        base_dir=base_dir,
+    )
+    audit_sqlite_path = _resolve_path(config.guardrails.audit_sqlite_path, base_dir)
+    review_sqlite_path = _resolve_path(config.guardrails.review_sqlite_path, base_dir)
+    evaluation_output_dir = _resolve_path(config.evaluation.output_dir, base_dir)
+    evaluation_tracking_uri = resolve_mlflow_tracking_uri(
+        config.evaluation.mlflow_tracking_uri,
         base_dir=base_dir,
     )
 
@@ -487,6 +683,9 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
                 update={
                     "output_dir": output_dir.resolve(),
                     "checkpoint_path": checkpoint_path.resolve(),
+                    "protocols": multi_agent.protocols.model_copy(
+                        update={"a2a_task_store_path": a2a_task_store_path.resolve()}
+                    ),
                     "mlflow_tracking_uri": tracking_uri,
                     "llm_profiles": llm_profiles,
                 }
@@ -498,11 +697,24 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
                     )
                 }
             ),
+            "guardrails": config.guardrails.model_copy(
+                update={
+                    "audit_sqlite_path": audit_sqlite_path,
+                    "review_sqlite_path": review_sqlite_path,
+                }
+            ),
+            "evaluation": config.evaluation.model_copy(
+                update={
+                    "output_dir": evaluation_output_dir,
+                    "mlflow_tracking_uri": evaluation_tracking_uri,
+                }
+            ),
         }
     )
 
 
 def _resolve_config_path(path: str | Path) -> Path:
+    """Гарантирует, что путь к конфигурационному файлу будет найден относительно домашней директории пользователя или корня проекта, обеспечивая воспроизводимость запуска."""
     config_path = Path(path).expanduser()
     if config_path.is_absolute() or config_path.exists():
         return config_path.resolve()
@@ -516,12 +728,19 @@ def _resolve_config_path(path: str | Path) -> Path:
 
 
 def _config_base_dir(config_path: Path) -> Path:
+    """Определяет корневую директорию проекта для поиска относительных путей, исключая вложенность в папку config."""
     if config_path.parent.name == "config":
         return config_path.parent.parent
     return config_path.parent
 
 
+def _resolve_path(path: Path, base_dir: Path) -> Path:
+    """Гарантирует, что относительный путь будет преобразован в абсолютный относительно базовой директории, исключая неоднозначность файловых ссылок."""
+    return (path if path.is_absolute() else base_dir / path).resolve()
+
+
 def _resolve_local_reference(value: str, *, base_dir: Path) -> str:
+    """Гарантирует, что строковое значение, представляющее путь, будет разрешено в абсолютный путь относительно базовой директории, если это возможно."""
     path = Path(value).expanduser()
     if path.is_absolute():
         return str(path.resolve()) if path.exists() else value
@@ -533,11 +752,20 @@ def _resolve_local_reference(value: str, *, base_dir: Path) -> str:
     return value
 
 
+def _normalize_currency_code(value: str) -> str:
+    """Проверяет ISO-подобный код валюты, используемый в тарифах LLM."""
+    normalized = value.strip().upper()
+    if len(normalized) != 3 or not normalized.isascii() or not normalized.isalpha():
+        raise ValueError("Валюта тарифа должна быть трёхбуквенным кодом, например USD")
+    return normalized
+
+
 def _resolve_agent_paths(
     config: AgentConfig,
     *,
     base_dir: Path,
 ) -> AgentConfig:
+    """Обеспечивает, что все пути к моделям и адаптерам локального провайдера приведены к абсолютным, предотвращая ошибки загрузки."""
     if config.provider != "local":
         return config
     update: dict[str, Any] = {
@@ -552,6 +780,7 @@ def _resolve_agent_paths(
 
 
 def _resolve_rag_config(config: AgentRagConfig, *, base_dir: Path) -> AgentRagConfig:
+    """Гарантирует, что все пути к моделям, env-файлам и хранилищам в RAG-конфиге приведены к абсолютным, исключая ошибки разрешения файлов."""
     if config.embedding is None or config.vector_store is None:
         return config
     embedding = config.embedding

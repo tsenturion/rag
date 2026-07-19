@@ -1,3 +1,5 @@
+"""Сохранение состояния для мультиагентной системы."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -20,6 +22,7 @@ class MultiAgentCheckpointStore:
     """Владеет SQLite checkpointer и операциями над multi-agent сессиями."""
 
     def __init__(self, path: Path):
+        """Гарантирует готовность экземпляра к потокобезопасному хранению и восстановлению чекпоинтов мультиагентных сессий с сериализацией пользовательских моделей."""
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(
@@ -43,10 +46,12 @@ class MultiAgentCheckpointStore:
 
     @property
     def saver(self) -> SqliteSaver:
+        """Гарантирует доступ к низкоуровневому API сохранения и восстановления состояния сессий через потокобезопасный сериализатор."""
         return self._saver
 
     @staticmethod
     def runnable_config(user_id: str, session_id: str) -> RunnableConfig:
+        """Создаёт уникальный идентификатор конфигурации выполнения для изоляции состояния сессии пользователя в хранилище."""
         return {
             "configurable": {
                 "thread_id": session_thread_id(user_id, session_id),
@@ -54,6 +59,7 @@ class MultiAgentCheckpointStore:
         }
 
     def history(self, *, user_id: str, session_id: str) -> list[BaseMessage]:
+        """Возвращает только валидную историю сообщений для указанной сессии, гарантируя фильтрацию по типу и целостность последовательности."""
         config = self.runnable_config(user_id, session_id)
         with self._lock:
             checkpoint = self._saver.get_tuple(config)
@@ -64,6 +70,7 @@ class MultiAgentCheckpointStore:
         return [item for item in history if isinstance(item, BaseMessage)]
 
     def clear(self, *, user_id: str, session_id: str) -> bool:
+        """Удаляет все данные сессии пользователя и сообщает, существовала ли она до очистки, обеспечивая атомарность операции."""
         thread_id = session_thread_id(user_id, session_id)
         config = self.runnable_config(user_id, session_id)
         with self._lock:
@@ -72,5 +79,6 @@ class MultiAgentCheckpointStore:
         return existed
 
     def close(self) -> None:
+        """Гарантирует корректное освобождение ресурсов и завершение работы с файловым хранилищем чекпоинтов."""
         with self._lock:
             self._connection.close()

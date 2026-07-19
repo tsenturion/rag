@@ -1,3 +1,5 @@
+"""Контракты HTTP API для HTTP-сервиса поддержки."""
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -6,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent_app.models import AgentResponse
+from agent_app.guardrails.models import HumanReviewRecord, SecurityAuditEvent
 from agent_app.multi_agent.models import (
     MultiAgentComparisonReport,
     MultiAgentResponse,
@@ -19,6 +22,8 @@ from agent_app.orchestration.models import (
 
 
 class ChatRequest(BaseModel):
+    """Валидирует и нормализует входные данные запроса к агенту, гарантируя корректность идентификаторов и содержимого сообщения для обработки."""
+
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
@@ -57,17 +62,28 @@ class ChatRequest(BaseModel):
     @field_validator("message")
     @classmethod
     def strip_message(cls, value: str) -> str:
+        """Гарантирует, что входное сообщение пользователя очищено от лишних пробелов для корректной обработки запроса."""
         return value.strip()
 
 
 class ChatResponse(AgentResponse):
+    """Гарантирует вызывающему коду воспроизводимый результат диалога с агентом с трассировкой времени, идентификатором запроса и статусом guardrail."""
+
     request_id: str = Field(description="Корреляционный идентификатор HTTP-запроса.")
     duration_ms: float = Field(
         description="Полная длительность обработки запроса в миллисекундах."
     )
+    guardrail_action: str = Field(
+        default="allow", description="Решение выходного guardrail."
+    )
+    review_id: str | None = Field(
+        default=None, description="Human-review задача, если ответ требует проверки."
+    )
 
 
 class MultiAgentChatResponse(MultiAgentResponse):
+    """Гарантирует вызывающему коду полный отчёт о запуске supervisor-графа с идентификатором запроса, временем выполнения и артефактами."""
+
     request_id: str = Field(description="Корреляционный идентификатор HTTP-запроса.")
     duration_ms: float = Field(
         description="Полная длительность supervisor-графа в миллисекундах."
@@ -76,9 +92,32 @@ class MultiAgentChatResponse(MultiAgentResponse):
         default=None,
         description="Каталог воспроизводимых артефактов запуска.",
     )
+    guardrail_action: str = "allow"
+    review_id: str | None = None
+
+
+class HumanReviewDecisionRequest(BaseModel):
+    """Обеспечивает проверку решения человека по обзору с обязательным статусом одобрения и опциональным комментарием для прозрачности."""
+
+    approved: bool
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+class HumanReviewResponse(HumanReviewRecord):
+    """Гарантирует вызывающему коду доступ к результату human-review задачи в согласованном формате."""
+
+    pass
+
+
+class SecurityAuditResponse(BaseModel):
+    """Гарантирует вызывающему коду полный список событий аудита безопасности для последующего анализа или отображения."""
+
+    events: list[SecurityAuditEvent]
 
 
 class MultiAgentCompareRequest(ChatRequest):
+    """Расширяет запрос чата для сравнения ответов нескольких агентов, гарантируя наличие критериев оценки и требований к цитированию."""
+
     expected_terms: list[str] = Field(
         default_factory=list,
         description="Термины для детерминированной оценки качества обоих режимов.",
@@ -94,6 +133,8 @@ class MultiAgentCompareRequest(ChatRequest):
 
 
 class MultiAgentCompareResponse(MultiAgentComparisonReport):
+    """Гарантирует вызывающему коду воспроизводимый отчёт о сравнении двух запусков multi-agent сценариев с идентификатором запроса и временем."""
+
     request_id: str = Field(description="Корреляционный идентификатор HTTP-запроса.")
     duration_ms: float = Field(
         description="Длительность двух запусков в миллисекундах."
@@ -101,6 +142,8 @@ class MultiAgentCompareResponse(MultiAgentComparisonReport):
 
 
 class OrchestrationJobRequest(ChatRequest):
+    """Определяет параметры задания оркестрации с валидацией приоритетов, паттернов и ограничений, обеспечивая корректное создание и управление задачами."""
+
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
@@ -166,6 +209,7 @@ class OrchestrationJobRequest(ChatRequest):
     )
 
     def to_job(self) -> OrchestrationJob:
+        """Гарантирует преобразование пользовательского запроса в формат задания для оркестрации с сохранением всех параметров и дедлайна."""
         return OrchestrationJob(
             user_id=self.user_id,
             session_id=self.session_id,
@@ -186,6 +230,8 @@ class OrchestrationJobRequest(ChatRequest):
 
 
 class SessionResponse(BaseModel):
+    """Гарантирует вызывающему коду согласованный снимок пользовательской сессии с памятью, инцидентами и историей multi-agent диалога."""
+
     user_id: str = Field(description="Владелец сессии.")
     session_id: str = Field(description="Идентификатор сессии.")
     memory: list[dict[str, Any]] = Field(
@@ -205,6 +251,8 @@ class SessionResponse(BaseModel):
 
 
 class DeleteSessionResponse(BaseModel):
+    """Гарантирует вызывающему коду подтверждение удаления пользовательской сессии с деталями по памяти и состоянию multi-agent checkpoint."""
+
     user_id: str = Field(description="Владелец очищенной сессии.")
     session_id: str = Field(description="Идентификатор очищенной сессии.")
     deleted_memory_count: int = Field(
@@ -220,6 +268,8 @@ class DeleteSessionResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    """Гарантирует вызывающему коду актуальное состояние сервиса и диагностику компонентов для health-check и мониторинга."""
+
     status: str = Field(description="Текущее состояние сервиса.")
     service: str = "engineer-support-agent"
     details: dict[str, Any] = Field(
@@ -229,6 +279,8 @@ class HealthResponse(BaseModel):
 
 
 class ApiError(BaseModel):
+    """Структурирует информацию об ошибках API, предоставляя машиночитаемый код, описание и корреляционный идентификатор для отладки."""
+
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [

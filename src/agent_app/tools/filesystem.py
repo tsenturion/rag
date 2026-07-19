@@ -1,3 +1,5 @@
+"""Безопасные файловые инструменты для инструментов агента."""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +16,8 @@ from agent_app.support.security import redact_secrets
 
 
 class ListWorkspaceInput(BaseModel):
+    """Ограничивает запросы к файловой системе каталогом workspace, гарантируя доступ только к разрешённым относительным путям."""
+
     path: str = Field(
         default=".",
         description="Относительный путь каталога внутри разрешённого workspace.",
@@ -21,10 +25,14 @@ class ListWorkspaceInput(BaseModel):
 
 
 class ReadWorkspaceFileInput(BaseModel):
+    """Обеспечивает безопасный доступ к файлам внутри workspace с гарантией корректного относительного пути."""
+
     path: str = Field(description="Относительный путь файла внутри workspace.")
 
 
 class WriteWorkspaceFileInput(BaseModel):
+    """Позволяет записывать текстовые данные в файлы workspace с контролем перезаписи для предотвращения потери данных."""
+
     path: str = Field(description="Относительный путь файла внутри workspace.")
     content: str = Field(description="Текстовое содержимое файла.")
     overwrite: bool = Field(
@@ -34,12 +42,16 @@ class WriteWorkspaceFileInput(BaseModel):
 
 
 class WorkspaceFileService:
+    """Управляет безопасным доступом к изолированному workspace с контролем разрешений, путей и ограничений на операции с файлами."""
+
     def __init__(self, config: FileToolsConfig):
+        """Гарантирует готовность к работе с workspace, создавая корневой каталог и сохраняя конфигурацию для последующих операций."""
         self.config = config
         self.root = config.workspace_path.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
     def list_files(self, path: str = ".") -> str:
+        """Возвращает список разрешённых файлов и каталогов в workspace с фильтрацией по расширениям и скрытым файлам, обеспечивая безопасность и ограничение объёма."""
         directory = self._resolve(path, require_extension=False)
         if not directory.exists():
             return self._json({"status": "not_found", "path": path})
@@ -74,6 +86,7 @@ class WorkspaceFileService:
         )
 
     def read_file(self, path: str) -> str:
+        """Загружает содержимое файла из workspace с проверкой существования, типа, размера и безопасности, возвращая результат в стандартизированном формате."""
         file_path = self._resolve(path, require_extension=True)
         if not file_path.exists():
             return self._json({"status": "not_found", "path": path})
@@ -100,6 +113,7 @@ class WorkspaceFileService:
         )
 
     def write_file(self, path: str, content: str, overwrite: bool = False) -> str:
+        """Обеспечивает атомарную запись файла в workspace с проверкой прав, размера и предотвращением записи вне корня, гарантируя целостность данных."""
         if not self.config.allow_write:
             return self._json(
                 {
@@ -149,6 +163,7 @@ class WorkspaceFileService:
         )
 
     def _resolve(self, value: str, *, require_extension: bool) -> Path:
+        """Гарантирует, что путь указывает на разрешённый файл внутри workspace без скрытых элементов, симлинков и запрещённых расширений."""
         relative = Path(value.strip() or ".")
         if relative.is_absolute():
             raise ValueError("Разрешены только относительные пути внутри workspace")
@@ -175,18 +190,22 @@ class WorkspaceFileService:
         return candidate
 
     def _extension_allowed(self, path: Path) -> bool:
+        """Гарантирует, что путь соответствует политике разрешённых расширений файлов в workspace."""
         return path.suffix.casefold() in set(self.config.allowed_extensions)
 
     @staticmethod
     def _is_hidden(path: Path) -> bool:
+        """Проверяет, что путь содержит скрытые элементы, чтобы обеспечить соблюдение политики доступа к скрытым файлам."""
         return any(part.startswith(".") for part in path.parts)
 
     @staticmethod
     def _json(payload: dict[str, Any]) -> str:
+        """Гарантирует сериализацию структуры данных в корректный JSON для обмена с инструментами агента."""
         return json.dumps(payload, ensure_ascii=False)
 
 
 def filesystem_tools(config: FileToolsConfig) -> list[StructuredTool]:
+    """Формирует набор инструментов для работы с файловой системой workspace, учитывая конфигурацию разрешений и ограничений."""
     if not config.enabled:
         return []
     service = WorkspaceFileService(config)

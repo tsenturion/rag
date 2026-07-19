@@ -1,3 +1,5 @@
+"""Публичный интерфейс для расчёта embeddings."""
+
 from rag_prep.embedding_stages.embedding import (
     GigaChatEmbeddingStage,
     LocalEmbeddingStage,

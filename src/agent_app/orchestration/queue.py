@@ -1,3 +1,5 @@
+"""Настройка очередей задач для распределённой оркестрации."""
+
 from __future__ import annotations
 
 import os
@@ -13,6 +15,7 @@ EXECUTE_JOB_TASK = "agent_app.orchestration.execute_job"
 
 
 def create_celery_app(config: OrchestrationConfig | None = None) -> Celery:
+    """Инициализирует и конфигурирует Celery-приложение с очередями и параметрами для надёжной и приоритетной обработки задач оркестрации."""
     broker_url = _env(
         config.broker_url_env if config else "ORCHESTRATION_BROKER_URL",
         "amqp://rag:rag-dev@127.0.0.1:5672//",
@@ -21,11 +24,10 @@ def create_celery_app(config: OrchestrationConfig | None = None) -> Celery:
         config.result_backend_url_env if config else "ORCHESTRATION_RESULT_BACKEND_URL",
         "redis://127.0.0.1:6379/1",
     )
-    queue_high = config.queue_high if config else "agent.high"
-    queue_default = config.queue_default if config else "agent.default"
-    queue_low = config.queue_low if config else "agent.low"
-    queue_dead = config.queue_dead_letter if config else "agent.dead_letter"
-    max_priority = config.max_priority if config else 9
+    queue_high = config.queue_high if config else "agent.high.quorum"
+    queue_default = config.queue_default if config else "agent.default.quorum"
+    queue_low = config.queue_low if config else "agent.low.quorum"
+    queue_dead = config.queue_dead_letter if config else "agent.dead_letter.quorum"
     prefetch = config.worker_prefetch_multiplier if config else 1
     soft_limit = config.task_soft_time_limit_seconds if config else 300
     hard_limit = config.task_time_limit_seconds if config else 330
@@ -39,7 +41,10 @@ def create_celery_app(config: OrchestrationConfig | None = None) -> Celery:
     task_exchange = Exchange("agent.tasks", type="direct", durable=True)
     dead_exchange = Exchange("agent.dead_letter", type="direct", durable=True)
     queue_arguments = {
-        "x-max-priority": max_priority,
+        # Quorum queues заставляют Celery использовать per-consumer QoS и не
+        # зависят от удаляемого RabbitMQ global_qos. Отдельные high/default/low
+        # очереди сохраняют трёхуровневую маршрутизацию задания.
+        "x-queue-type": "quorum",
         "x-dead-letter-exchange": dead_exchange.name,
         "x-dead-letter-routing-key": "dead",
     }
@@ -71,13 +76,13 @@ def create_celery_app(config: OrchestrationConfig | None = None) -> Celery:
                 exchange=dead_exchange,
                 routing_key="dead",
                 durable=True,
+                queue_arguments={"x-queue-type": "quorum"},
             ),
         ),
         task_default_queue=queue_default,
         task_default_exchange=task_exchange.name,
         task_default_exchange_type="direct",
         task_default_routing_key="default",
-        task_queue_max_priority=max_priority,
         task_default_priority=JobPriority.NORMAL.broker_value,
         task_inherit_parent_priority=True,
         task_serializer="json",
@@ -89,6 +94,7 @@ def create_celery_app(config: OrchestrationConfig | None = None) -> Celery:
         task_acks_on_failure_or_timeout=True,
         task_reject_on_worker_lost=True,
         worker_prefetch_multiplier=prefetch,
+        worker_detect_quorum_queues=True,
         worker_enable_prefetch_count_reduction=True,
         worker_cancel_long_running_tasks_on_connection_loss=True,
         task_track_started=True,
@@ -105,12 +111,27 @@ def create_celery_app(config: OrchestrationConfig | None = None) -> Celery:
     return app
 
 
+def declare_celery_topology(app: Celery) -> None:
+    """Объявляет exchanges и все очереди, включая не потребляемую worker DLQ."""
+    with app.connection_for_write() as connection:
+        channel = connection.channel()
+        try:
+            for queue in app.conf.task_queues:
+                queue.bind(channel).declare()
+        finally:
+            channel.close()
+
+
 class CeleryJobDispatcher:
+    """Обеспечивает управление жизненным циклом задач оркестрации через Celery, гарантируя корректную отправку, отмену и мониторинг заданий."""
+
     def __init__(self, config: OrchestrationConfig, app: Celery | None = None):
+        """Готовит диспетчер задач с конфигурацией и Celery-приложением, обеспечивая готовность к отправке и управлению задачами."""
         self.config = config
         self.app = app or create_celery_app(config)
 
     def dispatch(self, job: OrchestrationJob, config_payload: dict[str, Any]) -> str:
+        """Отправляет задачу в очередь Celery с учётом приоритета и ограничений времени, гарантируя её выполнение в распределённой системе."""
         queue, routing_key = self._route(job.priority)
         result = self.app.send_task(
             EXECUTE_JOB_TASK,
@@ -128,9 +149,11 @@ class CeleryJobDispatcher:
         return result.id
 
     def cancel(self, task_id: str) -> None:
+        """Отменяет выполнение задачи в Celery без принудительного завершения, позволяя корректно освободить ресурсы."""
         self.app.control.revoke(task_id, terminate=False)
 
     def workers(self) -> dict[str, Any]:
+        """Гарантирует получение актуального состояния всех воркеров Celery для мониторинга и диагностики распределённой очереди."""
         inspector = self.app.control.inspect(timeout=1.0)
         return {
             "ping": inspector.ping() or {},
@@ -140,6 +163,7 @@ class CeleryJobDispatcher:
         }
 
     def _route(self, priority: JobPriority) -> tuple[str, str]:
+        """Гарантирует маршрутизацию задания в очередь с нужным приоритетом согласно политике оркестрации."""
         if priority == JobPriority.HIGH:
             return self.config.queue_high, "high"
         if priority == JobPriority.LOW:
@@ -148,6 +172,7 @@ class CeleryJobDispatcher:
 
 
 def _env(name: str, default: str) -> str:
+    """Возвращает значение переменной окружения с запасным значением, обеспечивая устойчивость конфигурации к отсутствию переменных."""
     return os.getenv(name) or default
 
 

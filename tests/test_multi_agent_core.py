@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы multi_agent_core."""
+
 from __future__ import annotations
 
 import asyncio
@@ -27,16 +29,23 @@ from agent_app.multi_agent.usage import LLMCallTracker
 
 
 class CountingLLM:
+    """Обеспечивает тестовую реализацию LLM, которая отслеживает количество вызовов и возвращает предсказуемый ответ, позволяя проверять взаимодействия без внешних зависимостей."""
+
     def __init__(self):
+        """Гарантирует, что экземпляр готов отслеживать количество вызовов и не требует внешних ресурсов."""
         self.calls = 0
 
     def invoke(self, messages):
+        """Гарантирует инкремент счётчика вызовов и возвращает предсказуемый ответ для тестирования взаимодействия."""
         self.calls += 1
         return "Ответ"
 
 
 class MultiAgentCoreTest(unittest.TestCase):
+    """Проверяет корректность жизненного цикла агентов, управление бюджетом токенов и маршрутизацию вызовов LLM по профилям ролей в подсистеме multi-agent."""
+
     def test_lifecycle_rejects_invalid_transition(self) -> None:
+        """Проверяет, что система корректно отклоняет недопустимые переходы состояний жизненного цикла агента, обеспечивая целостность и предсказуемость состояний."""
         tracker = LifecycleTracker()
         tracker.transition(AgentRunState.DECOMPOSED)
 
@@ -44,6 +53,7 @@ class MultiAgentCoreTest(unittest.TestCase):
             tracker.transition(AgentRunState.COMPLETED)
 
     def test_lifecycle_allows_bounded_retry_transition(self) -> None:
+        """Проверяет, что жизненный цикл агента допускает ограниченное количество повторных переходов между состояниями без нарушения логики работы."""
         tracker = LifecycleTracker()
         tracker.transition(AgentRunState.DECOMPOSED)
         tracker.transition(AgentRunState.DELEGATED)
@@ -54,6 +64,7 @@ class MultiAgentCoreTest(unittest.TestCase):
         self.assertEqual(tracker.state, AgentRunState.DELEGATED)
 
     def test_token_budget_blocks_call_before_provider(self) -> None:
+        """Проверяет, что вызов LLM блокируется при исчерпании токен-бюджета до передачи запроса провайдеру, предотвращая лишние расходы."""
         llm = CountingLLM()
         tracker = LLMCallTracker(
             llm,
@@ -70,6 +81,7 @@ class MultiAgentCoreTest(unittest.TestCase):
         self.assertEqual(llm.calls, 0)
 
     def test_llm_calls_are_routed_to_role_profiles(self) -> None:
+        """Проверяет корректную маршрутизацию вызовов LLM к профилям ролей, обеспечивая использование соответствующих моделей и провайдеров для каждого агента."""
         default = CountingLLM()
         coordinator = CountingLLM()
         critic = CountingLLM()
@@ -134,6 +146,7 @@ class MultiAgentCoreTest(unittest.TestCase):
         self.assertEqual(routes["incident_agent"].provider, "local")
 
     def test_decomposer_assigns_multiple_specialists(self) -> None:
+        """Проверяет, что декомпозер задач распределяет подзадачи между несколькими специализированными агентами для параллельной обработки."""
         decomposer = TaskDecomposer(
             default_role_definitions(),
             max_tasks=3,
@@ -148,12 +161,26 @@ class MultiAgentCoreTest(unittest.TestCase):
             {"knowledge_agent", "diagnostics_agent", "incident_agent"},
         )
 
+    def test_sla_policy_question_always_includes_knowledge_agent(self) -> None:
+        """Проверяет, что при декомпозиции вопросов SLA всегда назначается агент знаний для обеспечения полноты и точности ответов."""
+        decomposer = TaskDecomposer(default_role_definitions(), max_tasks=3)
+
+        tasks = decomposer.decompose(
+            "Каков срок первой реакции на критический инцидент и кого уведомить?"
+        )
+
+        self.assertIn("knowledge_agent", {task.assigned_to for task in tasks})
+
     def test_message_bus_supports_deduplication_and_pubsub(self) -> None:
+        """Проверяет, что асинхронная шина сообщений обеспечивает дедупликацию, корректную маршрутизацию запросов, ответов и событий между агентами."""
+
         async def exercise():
+            """Проверяет, что асинхронная шина сообщений корректно маршрутизирует запросы, ответы и события между агентами."""
             bus = AsyncMessageBus()
             events: list[str] = []
 
             async def handler(envelope: AgentEnvelope) -> AgentEnvelope:
+                """Гарантирует формирование корректного ответа-агента с сохранением причинно-следственной связи сообщений."""
                 return AgentEnvelope(
                     correlation_id=envelope.correlation_id,
                     causation_id=envelope.message_id,
@@ -164,6 +191,7 @@ class MultiAgentCoreTest(unittest.TestCase):
                 )
 
             async def subscriber(envelope: AgentEnvelope) -> None:
+                """Гарантирует регистрацию события по публикации сообщения в шине для последующей проверки."""
                 events.append(str(envelope.payload["status"]))
 
             bus.register_agent("worker", handler)
@@ -201,10 +229,14 @@ class MultiAgentCoreTest(unittest.TestCase):
         )
 
     def test_message_timeout_goes_to_dead_letter(self) -> None:
+        """Проверяет, что при превышении таймаута обработки сообщения запрос корректно перемещается в очередь мёртвых писем для последующего анализа."""
+
         async def exercise():
+            """Проверяет, что запрос к агенту с задержкой приводит к ожидаемому исключению по таймауту."""
             bus = AsyncMessageBus()
 
             async def slow_handler(envelope: AgentEnvelope) -> AgentEnvelope:
+                """Гарантирует задержку обработки сообщения для проверки реакции системы на превышение таймаута."""
                 await asyncio.sleep(0.05)
                 return envelope
 
@@ -224,6 +256,7 @@ class MultiAgentCoreTest(unittest.TestCase):
         self.assertEqual(len(bus.dead_letters()), 1)
 
     def test_mcp_and_acp_adapters_are_available(self) -> None:
+        """Проверяет доступность адаптеров MCP и ACP для преобразования и взаимодействия между протоколами обмена сообщениями."""
         server = build_mcp_server()
         tools = asyncio.run(server.list_tools())
         names = {tool.name for tool in tools}
@@ -242,6 +275,7 @@ class MultiAgentCoreTest(unittest.TestCase):
         self.assertEqual(migrated["metadata"]["migratedFrom"], "ACP")
 
     def test_protocol_simulation_has_no_dead_letters(self) -> None:
+        """Проверяет, что при симуляции протокола отсутствуют сообщения в очереди мёртвых писем, гарантируя корректность обработки."""
         report = run_protocol_simulation()
 
         self.assertEqual(report["dead_letters"], 0)

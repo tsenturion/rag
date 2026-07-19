@@ -1,3 +1,5 @@
+"""Загрузка модели и PEFT-адаптера для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -14,22 +16,31 @@ LOGGER = logging.getLogger(__name__)
 
 
 class LocalCausalModelLoader:
+    """Отвечает за загрузку и подготовку локальной LLM с учётом PEFT, обеспечивая согласованность конфигурации и управление версиями моделей."""
+
     def __init__(self, config: FineTuningPipelineConfig):
+        """Инициализирует загрузчик модели с конфигурацией, устанавливая активный идентификатор модели и настраивая параметры загрузки из HF Hub."""
         self.config = config
         self.active_model_id = config.model.model_id
         self._configure_hf_hub_downloads()
 
     def load_tokenizer(self) -> Any:
+        """Загружает токенизатор с учётом конфигурации, обеспечивая корректное паддинг и совместимость с активной моделью."""
         from transformers import AutoTokenizer
 
-        tokenizer_id = self.config.model.tokenizer_id or self.active_model_id
+        using_fallback_model = self.active_model_id != self.config.model.model_id
+        tokenizer_id = (
+            self.active_model_id
+            if using_fallback_model
+            else self.config.model.tokenizer_id or self.active_model_id
+        )
         tokenizer, loaded_id = self._load_with_fallback(
             AutoTokenizer.from_pretrained,
             tokenizer_id,
             component_name="tokenizer",
             trust_remote_code=self.config.model.trust_remote_code,
         )
-        if self.config.model.tokenizer_id is None:
+        if self.config.model.tokenizer_id is None or using_fallback_model:
             self.active_model_id = loaded_id
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -37,6 +48,7 @@ class LocalCausalModelLoader:
         return tokenizer
 
     def load_base_model(self, device: DeviceReport | None = None) -> Any:
+        """Загружает базовую модель с учётом устройства и параметров конфигурации, гарантируя готовность к дальнейшему fine-tuning."""
         from transformers import AutoModelForCausalLM
 
         device_report = device or build_device_report(self.config.model)
@@ -62,6 +74,7 @@ class LocalCausalModelLoader:
         return model
 
     def load_model_with_adapter(self, adapter_path: Path) -> Any:
+        """Загружает базовую модель и применяет к ней адаптер PEFT, обеспечивая корректное размещение на устройстве и режим оценки."""
         from peft import PeftModel
 
         device = build_device_report(self.config.model)
@@ -72,6 +85,7 @@ class LocalCausalModelLoader:
         return model
 
     def prepare_peft_model(self, model: Any) -> Any:
+        """Гарантирует, что модель подготовлена для обучения с выбранной PEFT-методикой и корректно интегрирует LoRA-адаптер с параметрами из конфигурации."""
         from peft import (
             LoraConfig,
             TaskType,
@@ -96,6 +110,7 @@ class LocalCausalModelLoader:
         return model
 
     def _qlora_quantization_kwargs(self, device: DeviceReport) -> dict[str, Any]:
+        """Гарантирует, что параметры квантования QLoRA возвращаются только при наличии поддержки bitsandbytes и совместимого устройства, иначе выбрасывает осмысленную ошибку."""
         if importlib.util.find_spec("bitsandbytes") is None:
             raise RuntimeError(
                 "Выбран method=qlora, но пакет bitsandbytes не установлен. "
@@ -119,6 +134,7 @@ class LocalCausalModelLoader:
         }
 
     def _configure_hf_hub_downloads(self) -> None:
+        """Обеспечивает корректную настройку переменных окружения для загрузки моделей с HuggingFace Hub согласно политике конфигурации."""
         if self.config.model.hub_disable_xet:
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         if self.config.model.hub_disable_symlink_warning:
@@ -132,6 +148,7 @@ class LocalCausalModelLoader:
         component_name: str,
         **kwargs: Any,
     ) -> tuple[Any, str]:
+        """Гарантирует успешную загрузку модели или fallback-идентификатора, либо выбрасывает ошибку, если оба варианта недоступны."""
         try:
             return loader(model_id, **kwargs), model_id
         except OSError:
@@ -148,6 +165,7 @@ class LocalCausalModelLoader:
 
 
 def trainable_parameter_metrics(model: Any) -> TrainingMetrics:
+    """Вычисляет метрики обучаемых параметров модели, гарантируя точный учёт и соотношение для оценки эффективности fine-tuning."""
     trainable = 0
     total = 0
     for parameter in model.parameters():

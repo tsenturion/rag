@@ -1,3 +1,5 @@
+"""Хранилище инженерных инцидентов для инженерной поддержки."""
+
 from __future__ import annotations
 
 import json
@@ -17,10 +19,13 @@ IncidentPriority = Literal["low", "medium", "high", "critical"]
 
 
 def utc_now() -> datetime:
+    """Возвращает текущее время в UTC с информацией о часовом поясе."""
     return datetime.now(timezone.utc)
 
 
 class IncidentRecord(BaseModel):
+    """Гарантирует целостность и валидацию данных инцидента для передачи между слоями поддержки."""
+
     id: str
     user_id: str
     session_id: str
@@ -35,7 +40,10 @@ class IncidentRecord(BaseModel):
 
 
 class IncidentStore:
+    """Отвечает за хранение и управление инцидентами, гарантируя создание, обновление и безопасный доступ с валидацией данных."""
+
     def __init__(self, path: Path):
+        """Гарантирует готовность хранилища инцидентов к работе и создание необходимых директорий и таблиц."""
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
@@ -51,6 +59,7 @@ class IncidentStore:
         component: str | None = None,
         metadata: dict[str, object] | None = None,
     ) -> IncidentRecord:
+        """Гарантирует атомарное создание инцидента с валидацией и защитой от утечки секретов, либо выбрасывает ValueError при ошибке."""
         now = utc_now()
         record = IncidentRecord(
             id=str(uuid4()),
@@ -79,6 +88,7 @@ class IncidentStore:
         return record
 
     def get(self, incident_id: str, *, user_id: str) -> IncidentRecord | None:
+        """Гарантирует возврат инцидента по идентификатору и пользователю или None, если запись не найдена."""
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM incidents WHERE id = ? AND user_id = ?",
@@ -93,6 +103,7 @@ class IncidentStore:
         user_id: str,
         status: IncidentStatus,
     ) -> IncidentRecord | None:
+        """Гарантирует обновление статуса инцидента пользователя или возвращает None, если запись не найдена."""
         now = utc_now()
         with self._connect() as connection:
             cursor = connection.execute(
@@ -114,6 +125,7 @@ class IncidentStore:
         status: IncidentStatus | None = None,
         limit: int = 20,
     ) -> list[IncidentRecord]:
+        """Гарантирует получение списка инцидентов пользователя с фильтрацией по сессии, статусу и лимиту."""
         conditions = ["user_id = ?"]
         values: list[object] = [user_id]
         if session_id is not None:
@@ -133,6 +145,7 @@ class IncidentStore:
         return [self._record(row) for row in rows]
 
     def _initialize(self) -> None:
+        """Гарантирует наличие таблицы и индексов для хранения инцидентов без потери существующих данных."""
         with self._connect() as connection:
             connection.execute(
                 """
@@ -163,6 +176,7 @@ class IncidentStore:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Гарантирует безопасное подключение к базе с поддержкой транзакций и автоматическим откатом при ошибках."""
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
@@ -178,6 +192,7 @@ class IncidentStore:
 
     @staticmethod
     def _values(record: IncidentRecord) -> tuple[object, ...]:
+        """Гарантирует сериализацию инцидента в кортеж для корректной записи в базу данных."""
         return (
             record.id,
             record.user_id,
@@ -194,6 +209,7 @@ class IncidentStore:
 
     @staticmethod
     def _record(row: sqlite3.Row) -> IncidentRecord:
+        """Гарантирует преобразование строки из БД в инвариантный IncidentRecord для корректной работы подсистемы поддержки."""
         return IncidentRecord(
             id=row["id"],
             user_id=row["user_id"],

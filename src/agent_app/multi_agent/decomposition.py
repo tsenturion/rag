@@ -1,3 +1,5 @@
+"""Декомпозиция пользовательской задачи для мультиагентной системы."""
+
 from __future__ import annotations
 
 import json
@@ -13,6 +15,8 @@ PlannerMode = Literal["rules", "hybrid", "llm"]
 
 
 class TaskDecomposer:
+    """Декомпозирует запрос правилами или LLM и назначает владельца capability."""
+
     def __init__(
         self,
         definitions: list[AgentDefinition],
@@ -22,6 +26,7 @@ class TaskDecomposer:
         llm_invoke: Callable[[list[object], str], str] | None = None,
         available_tool_names: set[str] | None = None,
     ):
+        """Обеспечивает готовность декомпозиции задач с учётом ограничений по количеству, режиму планирования и доступным инструментам."""
         self.definitions = definitions
         self.max_tasks = max_tasks
         self.mode = mode
@@ -34,13 +39,17 @@ class TaskDecomposer:
         }
 
     def decompose(self, request: str) -> list[AgentTask]:
+        """Выбирает стратегию планирования и возвращает bounded набор задач."""
         rules = self._rule_tasks(request)
+        # Hybrid предпочитает детерминированные правила и расходует LLM только
+        # тогда, когда они не смогли выделить ни одной применимой задачи.
         if self.mode == "rules" or (self.mode == "hybrid" and rules):
             return self._assign(rules)
         llm_tasks = self._llm_tasks(request)
         return self._assign(llm_tasks or rules)
 
     def _rule_tasks(self, request: str) -> list[AgentTask]:
+        """Выделяет высокосигнальные capabilities без обращения к модели."""
         lower = request.casefold()
         tasks: list[AgentTask] = []
         requested_tools = self._requested_tools(request)
@@ -63,6 +72,9 @@ class TaskDecomposer:
             "база знаний",
             "заявк",
             "процедур",
+            "sla",
+            "срок",
+            "уведом",
         )
         diagnostic_markers = (
             "ошиб",
@@ -109,6 +121,7 @@ class TaskDecomposer:
         return tasks[: self.max_tasks]
 
     def _llm_tasks(self, request: str) -> list[AgentTask]:
+        """Просит planner сформировать JSON и отбрасывает неизвестные capabilities."""
         if self.llm_invoke is None:
             return []
         capabilities = sorted(self._capability_owner)
@@ -127,6 +140,8 @@ class TaskDecomposer:
         )
         payload = self._parse_json_array(content)
         tasks: list[AgentTask] = []
+        # Модель не является источником полномочий: capability и tools проходят
+        # allowlist, а число задач обрезается системным max_tasks.
         for item in payload[: self.max_tasks]:
             capability = str(item.get("capability", ""))
             if capability not in self._capability_owner:
@@ -142,6 +157,7 @@ class TaskDecomposer:
         return tasks
 
     def _assign(self, tasks: list[AgentTask]) -> list[AgentTask]:
+        """Назначает задачу зарегистрированному владельцу capability и позиции."""
         return [
             task.model_copy(
                 update={
@@ -161,6 +177,7 @@ class TaskDecomposer:
         *,
         required_tools: list[str] | None = None,
     ) -> AgentTask:
+        """Гарантирует создание корректного задания агента с явно заданными требованиями к инструментам."""
         return AgentTask(
             capability=capability,
             title=title,
@@ -169,10 +186,12 @@ class TaskDecomposer:
         )
 
     def _requested_tools(self, request: str) -> list[str]:
+        """Сопоставляет запрос только с tools, доступными текущему runtime."""
         lower = request.casefold()
         requested: list[str] = []
 
         def add(name: str, markers: tuple[str, ...]) -> None:
+            """Добавляет инструмент в список запрошенных только при совпадении маркеров и наличии в доступных, предотвращая дублирование и ошибки выбора."""
             if name in self.available_tool_names and any(
                 marker in lower for marker in markers
             ):
@@ -208,6 +227,7 @@ class TaskDecomposer:
         return list(dict.fromkeys(requested))
 
     def _valid_tool_names(self, value: object) -> list[str]:
+        """Фильтрует предложенные моделью tools по runtime allowlist."""
         if not isinstance(value, list):
             return []
         return [
@@ -218,6 +238,7 @@ class TaskDecomposer:
 
     @staticmethod
     def _parse_json_array(content: str) -> list[dict[str, object]]:
+        """Извлекает JSON-массив из ответа, возвращая безопасный пустой fallback."""
         match = re.search(r"\[[\s\S]*\]", content)
         if not match:
             return []

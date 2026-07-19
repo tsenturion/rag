@@ -1,0 +1,14 @@
+extends: support_agent_docker_openai.yaml
+
+# CI проверяет контейнер, OpenAPI, аутентификацию и guardrails без платных API-вызовов.
+rag:
+  enabled: false
+
+multi_agent:
+  enabled: false
+
+orchestration:
+  enabled: false
+
+observability:
+  enabled: false

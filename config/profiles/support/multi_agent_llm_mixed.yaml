@@ -2,13 +2,20 @@ multi_agent:
   llm_profiles:
     openai_coordination:
       provider: openai
-      model: gpt-4.1-nano
+      model: gpt-5.4-nano
+      input_cost_per_million: 0.20
+      output_cost_per_million: 1.25
+      currency: USD
       max_new_tokens: 350
       timeout_seconds: 60
       max_retries: 2
     gigachat_review:
       provider: gigachat
       model: GigaChat-2
+      # Официальный тариф GigaChat 2 Lite в рублях за 1 млн токенов.
+      input_cost_per_million: 65.0
+      output_cost_per_million: 65.0
+      currency: RUB
       max_new_tokens: 512
       timeout_seconds: 60
       max_retries: 2
@@ -18,6 +25,9 @@ multi_agent:
     local_incidents:
       provider: local
       model: data/models/hf/Qwen2.5-1.5B-Instruct
+      input_cost_per_million: 0.0
+      output_cost_per_million: 0.0
+      currency: RUB
       max_new_tokens: 384
       timeout_seconds: 120
       max_retries: 0

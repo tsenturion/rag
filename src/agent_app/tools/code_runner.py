@@ -1,3 +1,5 @@
+"""Клиент изолированного выполнения Python для инструментов агента."""
+
 from __future__ import annotations
 
 import json
@@ -13,6 +15,8 @@ from agent_app.support.security import redact_secrets
 
 
 class ExecutePythonInput(BaseModel):
+    """Обеспечивает безопасную передачу и валидацию самодостаточного Python-кода для выполнения с гарантией наличия вывода через print()."""
+
     code: str = Field(
         min_length=1,
         description=(
@@ -22,10 +26,12 @@ class ExecutePythonInput(BaseModel):
 
 
 def code_runner_tool(config: CodeRunnerConfig) -> StructuredTool | None:
+    """Гарантирует доступ к изолированному исполнению Python-кода с контролем лимитов и безопасной обработкой ошибок."""
     if not config.enabled:
         return None
 
     def execute_python(code: str) -> str:
+        """Обеспечивает безопасное удалённое выполнение Python-кода с ограничениями по размеру, таймаутом и обработкой ошибок, возвращая результат в стандартизированном формате."""
         if len(code) > config.max_code_chars:
             return _json(
                 {
@@ -77,6 +83,7 @@ def code_runner_tool(config: CodeRunnerConfig) -> StructuredTool | None:
 
 
 def code_runner_status(config: CodeRunnerConfig) -> dict[str, Any]:
+    """Гарантирует получение статуса готовности удалённого сервиса исполнения кода с диагностикой ошибок и переменных окружения."""
     if not config.enabled:
         return {"enabled": False, "ready": True, "url": config.base_url}
     api_key = os.getenv(config.api_key_env)
@@ -107,4 +114,5 @@ def code_runner_status(config: CodeRunnerConfig) -> dict[str, Any]:
 
 
 def _json(payload: dict[str, Any]) -> str:
+    """Преобразует словарь в JSON-строку с сохранением читаемости для корректного обмена данными между инструментами агента."""
     return json.dumps(payload, ensure_ascii=False)

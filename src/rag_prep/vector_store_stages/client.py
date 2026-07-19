@@ -1,3 +1,5 @@
+"""Создание и жизненный цикл внешнего клиента для индексации в Qdrant."""
+
 from __future__ import annotations
 
 import logging
@@ -16,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _make_qdrant_client(config: VectorStoreConfig) -> QdrantClient:
+    """Создаёт Qdrant-клиент; вызывать только внутри защищённого контекста."""
     if config.mode == "local":
         config.local_storage_path.mkdir(parents=True, exist_ok=True)
         LOGGER.warning(
@@ -40,10 +43,13 @@ def _make_qdrant_client(config: VectorStoreConfig) -> QdrantClient:
 
 @contextmanager
 def qdrant_client_context(config: VectorStoreConfig):
+    """Выдаёт клиент и сериализует доступ к embedded-хранилищу между процессами."""
     lock = None
     if config.mode == "local":
         config.local_storage_path.mkdir(parents=True, exist_ok=True)
         lock_path = config.local_storage_path / ".rag_prep.lock"
+        # Файл может остаться после аварийного завершения, но блокировкой является
+        # дескриптор ОС, а не наличие файла. После смерти процесса lock освобождается.
         lock = portalocker.Lock(str(lock_path), timeout=0)
         try:
             lock.acquire()
@@ -68,6 +74,7 @@ def qdrant_client_context(config: VectorStoreConfig):
 
 
 def qdrant_distance(name: str) -> qdrant_models.Distance:
+    """Преобразует имя метрики в enum Qdrant с поддержкой разных версий SDK."""
     try:
         return qdrant_models.Distance(name)
     except ValueError:
@@ -75,10 +82,14 @@ def qdrant_distance(name: str) -> qdrant_models.Distance:
 
 
 def point_id_for_chunk(collection_name: str, chunk_id: str) -> str:
+    """Строит воспроизводимый UUID точки из коллекции и идентификатора чанка."""
+    # Имя коллекции входит в namespace, поэтому одинаковые chunk_id в независимых
+    # индексах не конкурируют за одну и ту же точку.
     return str(uuid5(NAMESPACE_URL, f"qdrant:{collection_name}:{chunk_id}"))
 
 
 def qdrant_url(config: VectorStoreConfig) -> str | None:
+    """Возвращает сетевой URL Qdrant или ``None`` для embedded-режима."""
     if config.mode != "http":
         return None
     scheme = "https" if config.https else "http"

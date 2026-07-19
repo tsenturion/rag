@@ -1,3 +1,5 @@
+"""Создание и адаптация языковых моделей для агентного приложения."""
+
 from __future__ import annotations
 
 import json
@@ -22,6 +24,7 @@ JSON_TOOL_CALL_RE = re.compile(
 
 
 def build_llm(config: AgentConfig) -> Any:
+    """Гарантирует создание и возврат LLM-объекта, совместимого с выбранным провайдером и параметрами конфигурации агента."""
     if config.provider == "openai":
         return _build_openai_llm(config)
     if config.provider == "gigachat":
@@ -32,6 +35,7 @@ def build_llm(config: AgentConfig) -> Any:
 
 
 def _build_openai_llm(config: AgentConfig) -> ChatOpenAI:
+    """Гарантирует создание клиента OpenAI с параметрами из конфигурации и проверкой наличия ключа API в окружении."""
     if not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY не задан в .env или переменных окружения.")
     return ChatOpenAI(
@@ -43,6 +47,7 @@ def _build_openai_llm(config: AgentConfig) -> ChatOpenAI:
 
 
 def _build_gigachat_llm(config: AgentConfig) -> Any:
+    """Гарантирует создание клиента GigaChat с параметрами из конфигурации и безопасным получением секретов из окружения."""
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     credentials = _resolve_env_secret(
@@ -71,6 +76,7 @@ def _build_gigachat_llm(config: AgentConfig) -> Any:
 
 
 def _resolve_env_secret(env_name: str, *, provider_name: str) -> str:
+    """Гарантирует получение и валидацию секрета из переменных окружения с информативной ошибкой при отсутствии."""
     value = os.getenv(env_name)
     if value:
         return _clean_env_secret(value, env_name)
@@ -81,6 +87,7 @@ def _resolve_env_secret(env_name: str, *, provider_name: str) -> str:
 
 
 def _clean_env_secret(value: str, env_name: str) -> str:
+    """Гарантирует очистку значения секрета от лишних кавычек и префикса переменной окружения для безопасного использования."""
     cleaned = value.strip().strip("\"'")
     if "=" in cleaned and cleaned.startswith(env_name):
         cleaned = cleaned.split("=", 1)[1].strip().strip("\"'")
@@ -93,6 +100,7 @@ class LocalTransformersChatModel:
     supports_tool_calling = True
 
     def __init__(self, config: AgentConfig):
+        """Гарантирует готовность экземпляра к генерации ответов локальной LLM с учётом выбранных настроек, устройства и связанных инструментов."""
         self.config = config
         self.device = self._select_device()
         self.dtype = self._select_dtype(self.device)
@@ -101,6 +109,7 @@ class LocalTransformersChatModel:
         self.bound_tools: list[BaseTool] = []
 
     def invoke(self, messages: str | list[BaseMessage], *_args, **_kwargs) -> AIMessage:
+        """Гарантирует получение корректного AIMessage на основе истории диалога и параметров генерации, независимо от формата входных сообщений."""
         import torch
 
         prompt_text = self._format_prompt(messages)
@@ -130,10 +139,12 @@ class LocalTransformersChatModel:
         return self._to_ai_message(generated)
 
     def bind_tools(self, tools: list[Any]) -> "LocalTransformersChatModel":
+        """Обеспечивает, что только поддерживаемые инструменты будут доступны для вызова в процессе генерации ответов."""
         self.bound_tools = [tool for tool in tools if isinstance(tool, BaseTool)]
         return self
 
     def _load_tokenizer(self) -> Any:
+        """Гарантирует совместимость токенизатора с моделью и корректную обработку специальных токенов для локального запуска."""
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(
@@ -147,6 +158,7 @@ class LocalTransformersChatModel:
         return tokenizer
 
     def _load_model(self) -> Any:
+        """Гарантирует загрузку и подготовку модели для инференса с учётом адаптеров и ограничений по ресурсам, либо сообщает о невозможности запуска."""
         from transformers import AutoModelForCausalLM
 
         kwargs: dict[str, Any] = {
@@ -168,6 +180,7 @@ class LocalTransformersChatModel:
         return model
 
     def _format_prompt(self, messages: str | list[BaseMessage]) -> str:
+        """Гарантирует формирование промпта в формате, совместимом с моделью и выбранными инструментами, независимо от структуры исходных сообщений."""
         if isinstance(messages, str):
             chat_messages = [{"role": "user", "content": messages}]
         else:
@@ -195,6 +208,7 @@ class LocalTransformersChatModel:
 
     @staticmethod
     def _message_to_dict(message: BaseMessage) -> dict[str, Any]:
+        """Гарантирует преобразование сообщения в словарь с ролью и содержимым, пригодный для промпта и передачи в LLM."""
         message_type = getattr(message, "type", "")
         if isinstance(message, ToolMessage):
             return {"role": "tool", "content": str(message.content)}
@@ -217,6 +231,7 @@ class LocalTransformersChatModel:
         return payload
 
     def _to_ai_message(self, generated: str) -> AIMessage:
+        """Гарантирует восстановление структуры AIMessage с корректным извлечением вызовов инструментов из сгенерированного текста."""
         cleaned = generated.replace("<|im_end|>", "").strip()
         tool_calls = []
         for match in TOOL_CALL_RE.finditer(cleaned):
@@ -247,6 +262,7 @@ class LocalTransformersChatModel:
     def _parse_tool_call_payload(
         self, payload: dict[str, Any]
     ) -> dict[str, Any] | None:
+        """Гарантирует фильтрацию и нормализацию вызова инструмента, возвращая None для неизвестных или некорректных payload."""
         known_tools = {tool.name for tool in self.bound_tools}
         name = payload.get("name")
         arguments = payload.get("arguments", {})
@@ -268,6 +284,7 @@ class LocalTransformersChatModel:
 
     @staticmethod
     def _tool_schema(tool: BaseTool) -> dict[str, Any]:
+        """Гарантирует получение схемы аргументов инструмента в формате, пригодном для передачи в промпт или шаблон LLM."""
         schema_factory = getattr(tool.args_schema, "model_json_schema", None)
         if isinstance(tool.args_schema, type) and callable(schema_factory):
             parameters = schema_factory()
@@ -288,6 +305,7 @@ class LocalTransformersChatModel:
         }
 
     def _select_device(self) -> str:
+        """Гарантирует выбор устройства для инференса LLM согласно политике конфигурации и доступности ускорителей, обеспечивая совместимость с PyTorch."""
         import torch
 
         if self.config.local_device != "auto":
@@ -299,6 +317,7 @@ class LocalTransformersChatModel:
         return "cpu"
 
     def _select_dtype(self, device: str) -> Any:
+        """Гарантирует согласованный выбор типа данных для тензоров LLM в зависимости от устройства и политики, предотвращая несовместимость и ошибки."""
         import torch
 
         dtype = self.config.local_dtype

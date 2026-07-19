@@ -1,3 +1,5 @@
+"""Командный интерфейс индексации для RAG-конвейера."""
+
 from __future__ import annotations
 
 import argparse
@@ -20,6 +22,7 @@ from rag_prep.vector_store_stages.validation import QdrantValidationStage
 
 
 def run_index(config_path: str | Path) -> VectorStorePipelineResult:
+    """Оркестрирует полный цикл индексации и валидации эмбеддингов в векторном хранилище, гарантируя целостность и готовность результатов для последующего экспорта и анализа."""
     config = load_vector_store_config(config_path)
     setup_logging(config.logging.level)
     run_id = new_run_id()
@@ -63,6 +66,7 @@ def run_index(config_path: str | Path) -> VectorStorePipelineResult:
 
 
 def main() -> None:
+    """Запускает командный интерфейс и возвращает код завершения."""
     parser = argparse.ArgumentParser(
         description="Загрузка готовых embeddings в Qdrant без offline preprocessing stack."
     )

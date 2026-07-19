@@ -1,3 +1,5 @@
+"""Проверка выходных контрактов для чанкинга документов."""
+
 from __future__ import annotations
 
 import logging
@@ -12,10 +14,13 @@ class ChunkValidationStage:
     """Валидирует чанки до расчёта embeddings в следующем пайплайне."""
 
     def __init__(self, config: ChunkingConfig):
+        """Обеспечивает готовность экземпляра к валидации чанков с учётом заданной политики качества и ограничений."""
         self.config = config
 
     def run(self, chunks: list[PreparedChunk]) -> ChunkingValidationResult:
+        """Гарантирует обнаружение и учёт всех нарушений политики чанкинга с возможностью аварийного завершения при ошибках."""
         result = ChunkingValidationResult(
+            no_chunks_count=int(not chunks),
             empty_chunks_count=sum(1 for chunk in chunks if not chunk.text.strip()),
             undersized_chunks_count=sum(
                 1
@@ -45,10 +50,11 @@ class ChunkValidationStage:
 
         LOGGER.info(
             (
-                "Проверено чанков: %d; empty=%d undersized=%d oversized=%d "
+                "Проверено чанков: %d; no_chunks=%d empty=%d undersized=%d oversized=%d "
                 "estimated_offsets=%d missing_parent=%d missing_lineage=%d low_quality=%d"
             ),
             len(chunks),
+            result.no_chunks_count,
             result.empty_chunks_count,
             result.undersized_chunks_count,
             result.oversized_chunks_count,

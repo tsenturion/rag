@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы config_composition."""
+
 from __future__ import annotations
 
 import sys
@@ -17,7 +19,10 @@ from rag_prep.config_composition import (  # noqa: E402
 
 
 class ConfigCompositionTest(unittest.TestCase):
+    """Проверяет корректность композиции конфигураций с учётом наследования, приоритетов и циклов для обеспечения надёжной загрузки настроек."""
+
     def test_extends_deep_merges_mappings_and_replaces_lists(self) -> None:
+        """Проверяет, что при наследовании конфигураций словари сливаются рекурсивно, а списки полностью заменяются значениями потомка."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             (root / "base.yaml").write_text(
@@ -40,6 +45,7 @@ class ConfigCompositionTest(unittest.TestCase):
         )
 
     def test_later_parent_and_local_values_have_priority(self) -> None:
+        """Проверяет, что при множественном наследовании приоритет имеют значения из более поздних родителей и локальные значения."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             (root / "first.yaml").write_text("value: first\n", encoding="utf-8")
@@ -54,6 +60,7 @@ class ConfigCompositionTest(unittest.TestCase):
         self.assertEqual(result, {"value": "second", "local": True})
 
     def test_extends_cycle_is_rejected(self) -> None:
+        """Проверяет, что при обнаружении циклической зависимости в наследовании конфигураций выбрасывается ошибка."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             (root / "a.yaml").write_text("extends: b.yaml\n", encoding="utf-8")
@@ -63,6 +70,7 @@ class ConfigCompositionTest(unittest.TestCase):
                 load_composed_yaml(root / "a.yaml")
 
     def test_rag_profile_rejects_dimension_mismatch(self) -> None:
+        """Проверяет, что при применении RAG-профиля с несовпадающими размерностями эмбеддингов возникает ошибка валидации."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             (root / "profile.yaml").write_text(

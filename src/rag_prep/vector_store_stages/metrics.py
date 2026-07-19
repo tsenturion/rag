@@ -1,3 +1,5 @@
+"""Расчёт метрик для индексации в Qdrant."""
+
 from __future__ import annotations
 
 from rag_prep.config import VectorStorePipelineConfig
@@ -16,6 +18,7 @@ def build_vector_store_counts(
     validation: VectorStoreValidationResult,
     search_results: list[VectorSearchResult],
 ) -> dict[str, int | float]:
+    """Гарантирует вызывающему коду агрегированные количественные метрики состояния индекса и поиска, необходимые для мониторинга и аудита загрузки в Qdrant."""
     self_matches = sum(1 for result in search_results if result.self_match_at_1)
     self_match_returned = sum(
         1 for result in search_results if result.self_match_returned
@@ -28,6 +31,7 @@ def build_vector_store_counts(
     counts = {
         "embeddings_count": len(embedded_chunks),
         "points_upserted": index.points_upserted,
+        "stale_points_deleted": index.stale_points_deleted,
         "collection_points_count": index.collection_points_count,
         "vector_size": config.vector_store.vector_size,
         "batch_size": config.vector_store.batch_size,
@@ -42,6 +46,7 @@ def build_vector_store_counts(
         if search_results
         else 0.0,
         "count_mismatch": validation.count_mismatch,
+        "empty_embeddings_count": validation.empty_embeddings_count,
         "count_delta": validation.count_delta,
         "extra_points_count": validation.extra_points_count,
         "missing_points_count": validation.missing_points_count,
@@ -57,6 +62,14 @@ def build_vector_store_counts(
         "missing_metadata_count": validation.missing_metadata_count,
         "missing_required_metadata_count": validation.missing_required_metadata_count,
         "sampled_points_count": validation.sampled_points_count,
+        "verified_points_count": validation.verified_points_count,
+        "missing_expected_points_count": validation.missing_expected_points_count,
+        "chunk_id_mismatch_count": validation.chunk_id_mismatch_count,
+        "text_mismatch_count": validation.text_mismatch_count,
+        "identity_metadata_mismatch_count": (
+            validation.identity_metadata_mismatch_count
+        ),
+        "vector_content_mismatch_count": validation.vector_content_mismatch_count,
     }
     if unfiltered_results:
         unfiltered_self_matches = sum(
@@ -78,6 +91,7 @@ def build_vector_store_diagnostics(
     validation: VectorStoreValidationResult,
     search_results: list[VectorSearchResult],
 ) -> dict[str, object]:
+    """Гарантирует подробную диагностику ошибок и аномалий валидации и поиска, позволяя анализировать причины несоответствий при загрузке в Qdrant."""
     return {
         "validation": validation.model_dump(mode="json"),
         "search": {

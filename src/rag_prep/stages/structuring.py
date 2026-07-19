@@ -1,3 +1,5 @@
+"""Структурирование документов и lineage для подготовки документов."""
+
 from __future__ import annotations
 
 import logging
@@ -16,11 +18,13 @@ class LlamaIndexStructuringStage:
     """Создаёт Pydantic и LlamaIndex документы для следующих этапов RAG."""
 
     def __init__(self, config: StructuringConfig):
+        """Готовит экземпляр к структурированию документов с заданной политикой группировки и параметрами."""
         self.config = config
 
     def run(
         self, elements: list[ProcessedElement], run_id: str
     ) -> list[PreparedDocument]:
+        """Гарантирует получение списка подготовленных документов согласно политике группировки, с логированием итогового количества."""
         documents = (
             self._group_by_section(elements, run_id)
             if self.config.group_by_section
@@ -30,6 +34,7 @@ class LlamaIndexStructuringStage:
         return documents
 
     def to_llama_documents(self, documents: list[PreparedDocument]) -> list[Document]:
+        """Гарантирует преобразование подготовленных документов в формат, совместимый с LlamaIndex, с сохранением идентификаторов и метаданных."""
         llama_documents: list[Document] = []
         for document in documents:
             metadata = document.metadata.model_dump(mode="json")
@@ -45,6 +50,7 @@ class LlamaIndexStructuringStage:
     def _group_by_section(
         self, elements: list[ProcessedElement], run_id: str
     ) -> list[PreparedDocument]:
+        """Гарантирует группировку элементов по секциям с сохранением порядка и формированием одного документа на секцию."""
         groups: list[tuple[str, list[ProcessedElement]]] = []
         current_key: tuple[str, str] | None = None
         current_group: list[ProcessedElement] = []
@@ -71,6 +77,7 @@ class LlamaIndexStructuringStage:
     def _one_document_per_element(
         self, elements: list[ProcessedElement], run_id: str
     ) -> list[PreparedDocument]:
+        """Гарантирует создание отдельного документа для каждого элемента, обеспечивая независимость их обработки."""
         return [
             self._build_document(
                 group=[element], section=element.section, run_id=run_id
@@ -81,6 +88,7 @@ class LlamaIndexStructuringStage:
     def _build_document(
         self, group: list[ProcessedElement], section: str, run_id: str
     ) -> PreparedDocument:
+        """Гарантирует создание воспроизводимого документа с агрегированным текстом, уникальным идентификатором и полной родословной для трассировки."""
         first = group[0]
         text = "\n\n".join(element.text for element in group).strip()
         text_hash = text_sha256(text)
@@ -140,6 +148,7 @@ class LlamaIndexStructuringStage:
 
     @staticmethod
     def _first_page_number(group: list[ProcessedElement]) -> int | None:
+        """Определяет первую страницу в группе элементов для корректного упорядочивания и структурирования документа."""
         for element in group:
             page = element.metadata.get("page_number")
             if isinstance(page, int):
@@ -148,6 +157,7 @@ class LlamaIndexStructuringStage:
 
     @staticmethod
     def _section_path(group: list[ProcessedElement], section: str) -> list[str]:
+        """Извлекает путь раздела из группы элементов, обеспечивая точное позиционирование в иерархии документа."""
         for element in group:
             if element.section_path:
                 return element.section_path
@@ -155,6 +165,7 @@ class LlamaIndexStructuringStage:
 
     @staticmethod
     def _merge_extra(group: list[ProcessedElement]) -> dict[str, Any]:
+        """Объединяет дополнительные метаданные группы элементов, гарантируя консистентность и агрегирование ключевых атрибутов."""
         keys = {
             "languages",
             "file_directory",
@@ -196,6 +207,7 @@ class LlamaIndexStructuringStage:
 
     @staticmethod
     def _merge_quality(values: list[dict[str, Any]]) -> dict[str, Any]:
+        """Агрегирует показатели качества из нескольких источников, обеспечивая усреднённую и обобщённую оценку для последующей обработки."""
         numeric_keys = ["meaningful_score", "boilerplate_score", "garbage_score"]
         merged: dict[str, Any] = {}
         for key in numeric_keys:

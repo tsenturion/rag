@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы agent_cli."""
+
 from __future__ import annotations
 
 import sys
@@ -15,7 +17,10 @@ from agent_app.scenarios.models import ScenarioRunReport  # noqa: E402
 
 
 class AgentCliTest(unittest.TestCase):
+    """Проверяет корректность CLI агента, гарантируя правильное поведение при выполнении команд и обработке сценариев."""
+
     def test_failed_scenario_report_returns_nonzero_exit_code(self) -> None:
+        """Проверяет, что при провале сценария CLI агента возвращает ненулевой код выхода, обеспечивая корректную сигнализацию об ошибках."""
         report = ScenarioRunReport(
             config_path="config/agent_scenarios.yaml",
             user_id="test",
@@ -27,7 +32,10 @@ class AgentCliTest(unittest.TestCase):
         scenario_runner.write_report.return_value = Path("report.json")
 
         with (
-            patch("agent_app.cli.ScenarioRunner", return_value=scenario_runner),
+            patch(
+                "agent_app.scenarios.ScenarioRunner",
+                return_value=scenario_runner,
+            ),
             patch.object(
                 sys,
                 "argv",

@@ -1,3 +1,5 @@
+"""Загрузка входных данных для расчёта embeddings."""
+
 from __future__ import annotations
 
 import json
@@ -5,6 +7,7 @@ import logging
 from pathlib import Path
 
 from rag_prep.models import PreparedChunk
+from rag_prep.utils import verify_upstream_artifact
 
 LOGGER = logging.getLogger(__name__)
 
@@ -13,8 +16,10 @@ class ChunkLoadingStage:
     """Загружает подготовленные чанки из результата пайплайна чанкинга."""
 
     def run(self, input_jsonl: Path) -> list[PreparedChunk]:
+        """Гарантирует воспроизводимую загрузку и валидацию чанков из JSONL-файла с явной ошибкой при повреждении данных."""
         if not input_jsonl.exists():
             raise FileNotFoundError(f"Файл чанков не существует: {input_jsonl}")
+        verify_upstream_artifact(input_jsonl)
 
         chunks: list[PreparedChunk] = []
         with input_jsonl.open("r", encoding="utf-8") as file:

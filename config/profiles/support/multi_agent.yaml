@@ -22,13 +22,13 @@ multi_agent:
       - list_workspace_files
       - read_workspace_file
       - execute_python
-  cost:
-    input_cost_per_million: 0.0
-    output_cost_per_million: 0.0
   protocols:
     a2a_enabled: true
     a2a_rpc_path: /a2a
     a2a_rest_path: /a2a/v1
+    a2a_task_store_path: data/agent/a2a_tasks.sqlite
+    a2a_task_ttl_seconds: 86400
+    a2a_max_tasks: 2000
     mcp_enabled: true
     mcp_path: /mcp
     acp_legacy_enabled: true

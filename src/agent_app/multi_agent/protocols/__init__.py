@@ -1,3 +1,5 @@
+"""Публичный интерфейс для межагентных протоколов."""
+
 from agent_app.multi_agent.protocols.a2a import (
     MultiAgentA2AHandler,
     build_agent_card,

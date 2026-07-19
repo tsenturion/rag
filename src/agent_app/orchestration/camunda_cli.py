@@ -1,3 +1,5 @@
+"""Командный интерфейс Camunda для распределённой оркестрации."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,6 +17,7 @@ from agent_app.orchestration.camunda import (
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Создаёт и настраивает parser аргументов командной строки."""
     parser = argparse.ArgumentParser(
         description="Управление гибридным BPMN-процессом Camunda и агентами.",
         add_help=False,
@@ -57,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Запускает командный интерфейс и возвращает код завершения."""
     args = build_parser().parse_args()
     config = load_agent_config(Path(args.config))
     if not config.orchestration.camunda.enabled:

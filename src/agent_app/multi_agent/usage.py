@@ -1,3 +1,5 @@
+"""Учёт токенов и стоимости для мультиагентной системы."""
+
 from __future__ import annotations
 
 import threading
@@ -6,6 +8,7 @@ from typing import Any, Callable
 
 import tiktoken
 
+from agent_app.currency import CBRCurrencyConverter, CurrencyConversionResult
 from agent_app.multi_agent.models import UsageMetrics
 from agent_app.multi_agent.llm_routing import LLMRoute
 
@@ -20,15 +23,20 @@ class LLMCallTracker:
         model: str,
         input_cost_per_million: float,
         output_cost_per_million: float,
+        cost_currency: str = "RUB",
+        currency_converter: CBRCurrencyConverter | None = None,
         serialize_calls: bool = False,
         token_budget: int | None = None,
         max_output_tokens: int = 0,
         route_resolver: Callable[[str], LLMRoute] | None = None,
     ):
+        """Гарантирует потокобезопасное отслеживание использования LLM с учётом ограничений бюджета токенов и параметров маршрутизации."""
         self.llm = llm
         self.model = model
         self.input_cost_per_million = input_cost_per_million
         self.output_cost_per_million = output_cost_per_million
+        self.cost_currency = cost_currency
+        self.currency_converter = currency_converter or CBRCurrencyConverter()
         self.serialize_calls = serialize_calls
         self.token_budget = token_budget
         self.max_output_tokens = max_output_tokens
@@ -39,6 +47,7 @@ class LLMCallTracker:
         self._inflight_reserved_tokens = 0
 
     def invoke(self, messages: list[Any], role: str) -> str:
+        """Гарантирует выполнение вызова LLM с учётом политики маршрутизации и учёта использования для последующего анализа."""
         response = self.invoke_response(messages, role)
         return self._content(response)
 
@@ -49,6 +58,7 @@ class LLMCallTracker:
         *,
         tools: list[Any] | None = None,
     ) -> Any:
+        """Гарантирует атомарное резервирование токенов и корректный учёт стоимости при вызове LLM с учётом маршрутизации и ограничений бюджета в мультиагентной системе."""
         route = self.route_resolver(role) if self.route_resolver is not None else None
         llm = route.llm if route is not None else self.llm
         model = route.model if route is not None else self.model
@@ -65,6 +75,7 @@ class LLMCallTracker:
             if route is not None
             else self.output_cost_per_million
         )
+        cost_currency = route.cost_currency if route is not None else self.cost_currency
         serialize = route.serialize_calls if route is not None else self.serialize_calls
         input_text = "\n".join(str(getattr(item, "content", item)) for item in messages)
         reserved_tokens = (
@@ -118,6 +129,7 @@ class LLMCallTracker:
                 model=model,
             )
             cost = (input_tokens * input_cost + output_tokens * output_cost) / 1_000_000
+            conversion = self.currency_converter.convert(cost, cost_currency)
             delta = UsageMetrics(
                 llm_calls=1,
                 input_tokens=input_tokens,
@@ -125,6 +137,9 @@ class LLMCallTracker:
                 estimated_tokens=estimated,
                 duration_ms=round(duration_ms, 3),
                 estimated_cost=round(cost, 8),
+                estimated_cost_currency=cost_currency,
+                costs_by_currency={cost_currency: round(cost, 8)},
+                **self._conversion_fields(conversion),
             )
         except BaseException:
             with self._lock:
@@ -136,23 +151,13 @@ class LLMCallTracker:
         return response
 
     def snapshot(self) -> UsageMetrics:
+        """Гарантирует получение согласованной копии накопленной метрики использования LLM для анализа или мониторинга."""
         with self._lock:
             return self._usage.model_copy(deep=True)
 
     def delta_since(self, before: UsageMetrics) -> UsageMetrics:
-        after = self.snapshot()
-        return UsageMetrics(
-            llm_calls=after.llm_calls - before.llm_calls,
-            input_tokens=after.input_tokens - before.input_tokens,
-            output_tokens=after.output_tokens - before.output_tokens,
-            estimated_tokens=after.estimated_tokens - before.estimated_tokens,
-            tool_calls=after.tool_calls - before.tool_calls,
-            duration_ms=round(after.duration_ms - before.duration_ms, 3),
-            estimated_cost=round(
-                after.estimated_cost - before.estimated_cost,
-                8,
-            ),
-        )
+        """Вычисляет разницу метрик использования LLM между двумя моментами времени для отслеживания инкрементальных затрат."""
+        return self.snapshot().subtract(before)
 
     def _tokens(
         self,
@@ -162,6 +167,7 @@ class LLMCallTracker:
         output_text: str,
         model: str,
     ) -> tuple[int, int, int]:
+        """Гарантирует получение фактического или оценочного количества токенов ввода и вывода для корректного учёта расходов."""
         usage = getattr(response, "usage_metadata", None) or {}
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
@@ -187,6 +193,7 @@ class LLMCallTracker:
         )
 
     def estimate_tokens(self, text: str, *, model: str | None = None) -> int:
+        """Гарантирует воспроизводимую оценку числа токенов для текста с учётом модели или дефолтного кодека, даже при ошибках."""
         try:
             encoding = tiktoken.encoding_for_model(model or self.model)
         except KeyError:
@@ -197,11 +204,40 @@ class LLMCallTracker:
             return max(1, len(text) // 4)
 
     def _invoke_lock(self, llm: Any) -> threading.RLock:
+        """Гарантирует эксклюзивный доступ к вызовам LLM для конкретного экземпляра, предотвращая гонки при параллельных обращениях."""
         with self._lock:
             return self._invoke_locks.setdefault(id(llm), threading.RLock())
 
     @staticmethod
+    def _conversion_fields(conversion: CurrencyConversionResult) -> dict[str, Any]:
+        """Переносит проверяемые параметры конвертации в публичные usage-метрики."""
+        currency = conversion.source_currency
+        return {
+            "estimated_cost_rub": (
+                round(conversion.amount_rub, 8)
+                if conversion.amount_rub is not None
+                else None
+            ),
+            "exchange_rates_to_rub": (
+                {currency: conversion.rate_to_rub}
+                if conversion.rate_to_rub is not None
+                else {}
+            ),
+            "exchange_rate_dates": (
+                {currency: conversion.rate_date}
+                if conversion.rate_date is not None
+                else {}
+            ),
+            "exchange_rate_source": conversion.source_url,
+            "exchange_rate_stale": conversion.stale,
+            "currency_conversion_errors": (
+                [f"{currency}: {conversion.error}"] if conversion.error else []
+            ),
+        }
+
+    @staticmethod
     def _content(response: Any) -> str:
+        """Гарантирует получение текстового представления содержимого ответа LLM независимо от структуры объекта."""
         content = getattr(response, "content", response)
         if isinstance(content, str):
             return content
@@ -223,18 +259,24 @@ def estimate_mode_usage(
     duration_ms: float,
     input_cost_per_million: float,
     output_cost_per_million: float,
+    cost_currency: str = "RUB",
+    currency_converter: CBRCurrencyConverter | None = None,
 ) -> UsageMetrics:
+    """Гарантирует воспроизводимую оценку токенов и стоимости выполнения запроса с учётом параметров модели и числа вызовов."""
     tracker = LLMCallTracker(
         llm=None,
         model=model,
         input_cost_per_million=input_cost_per_million,
         output_cost_per_million=output_cost_per_million,
+        cost_currency=cost_currency,
+        currency_converter=currency_converter,
     )
     input_tokens = tracker.estimate_tokens(request) * max(1, llm_calls)
     output_tokens = tracker.estimate_tokens(answer)
     cost = (
         input_tokens * input_cost_per_million + output_tokens * output_cost_per_million
     ) / 1_000_000
+    conversion = tracker.currency_converter.convert(cost, cost_currency)
     return UsageMetrics(
         llm_calls=llm_calls,
         input_tokens=input_tokens,
@@ -243,4 +285,7 @@ def estimate_mode_usage(
         tool_calls=tool_calls,
         duration_ms=round(duration_ms, 3),
         estimated_cost=round(cost, 8),
+        estimated_cost_currency=cost_currency,
+        costs_by_currency={cost_currency: round(cost, 8)},
+        **tracker._conversion_fields(conversion),
     )

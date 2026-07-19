@@ -38,6 +38,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    """Лениво разрешает запрошенный атрибут."""
     if name not in {
         "RagChunkingPipeline",
         "RagEmbeddingPipeline",

@@ -1,3 +1,5 @@
+"""Сборка ограниченного контекста для онлайн-RAG."""
+
 from __future__ import annotations
 
 import tiktoken
@@ -6,6 +8,8 @@ from agent_app.rag.models import RagCitation, RagRetrievedChunk
 
 
 class RagContextBuilder:
+    """Формирует текстовый контекст с цитатами для RAG, гарантируя укладывание в заданный лимит токенов и корректную трассировку источников."""
+
     def __init__(
         self,
         *,
@@ -13,6 +17,7 @@ class RagContextBuilder:
         excerpt_chars: int,
         tokenizer_model: str,
     ):
+        """Готовит экземпляр к построению контекста с учётом лимита токенов и выбранной модели токенизации, обеспечивая устойчивость к неизвестным моделям."""
         self.max_tokens = max_tokens
         self.excerpt_chars = excerpt_chars
         try:
@@ -24,6 +29,7 @@ class RagContextBuilder:
         self,
         chunks: list[RagRetrievedChunk],
     ) -> tuple[str, list[RagCitation], int]:
+        """Гарантирует построение контекста с цитатами, не превышающего лимит токенов, и возвращает трассируемые ссылки на использованные фрагменты."""
         blocks: list[str] = []
         citations: list[RagCitation] = []
         used_tokens = 0
@@ -68,6 +74,7 @@ class RagContextBuilder:
 
     @staticmethod
     def _header(reference: str, chunk: RagRetrievedChunk) -> str:
+        """Формирует заголовок блока с уникальной ссылкой на источник и раздел, обеспечивая однозначную идентификацию цитаты."""
         source = chunk.source or "неизвестный источник"
         section = chunk.section or "без раздела"
         return (

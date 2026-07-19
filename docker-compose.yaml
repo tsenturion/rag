@@ -3,8 +3,8 @@ services:
     image: qdrant/qdrant:v1.18.0@sha256:b3063c673f3973877c038eeecc392bad5011f072ee7892b56c9a8e204a3bdea9
     restart: unless-stopped
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -25,11 +25,11 @@ services:
       - .env
     environment:
       SUPPORT_AGENT_CONFIG: ${SUPPORT_AGENT_CONFIG:?Задайте явный provider-конфиг в .env}
-      ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:-rag-dev}@rabbitmq:5672//
+      ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:?Задайте RABBITMQ_DEFAULT_PASS в .env}@rabbitmq:5672//
       ORCHESTRATION_RESULT_BACKEND_URL: redis://redis:6379/1
       ORCHESTRATION_REDIS_URL: redis://redis:6379/0
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - agent_data:/app/data/agent
       - multi_agent_data:/app/data/multi_agent
@@ -50,8 +50,6 @@ services:
       context: .
       dockerfile: Dockerfile.code-runner
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       CODE_RUNNER_API_KEY: ${CODE_RUNNER_API_KEY:?Задайте CODE_RUNNER_API_KEY в .env}
     read_only: true
@@ -94,10 +92,10 @@ services:
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-rag}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-rag-dev}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?Задайте случайный RABBITMQ_DEFAULT_PASS в .env}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -112,7 +110,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -132,7 +130,7 @@ services:
       - .env
     environment:
       SUPPORT_AGENT_CONFIG: ${SUPPORT_AGENT_CONFIG:?Задайте multi-agent Docker-конфиг в .env}
-      ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:-rag-dev}@rabbitmq:5672//
+      ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:?Задайте RABBITMQ_DEFAULT_PASS в .env}@rabbitmq:5672//
       ORCHESTRATION_RESULT_BACKEND_URL: redis://redis:6379/1
       ORCHESTRATION_REDIS_URL: redis://redis:6379/0
     command:
@@ -172,7 +170,7 @@ services:
     profiles: ["orchestration", "bpmn"]
     restart: unless-stopped
     environment:
-      ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:-rag-dev}@rabbitmq:5672//
+      ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:?Задайте RABBITMQ_DEFAULT_PASS в .env}@rabbitmq:5672//
       ORCHESTRATION_RESULT_BACKEND_URL: redis://redis:6379/1
     command:
       - celery
@@ -181,7 +179,7 @@ services:
       - flower
       - --port=5555
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -195,6 +193,79 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 5
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.153.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/jaeger:2.18.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:16686:16686"
+    environment:
+      LOG_LEVEL: info
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./observability/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - prometheus_data:/prometheus
+    secrets:
+      - support_service_api_key
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:v0.32.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["--config.file=/etc/alertmanager/alertmanager.yaml"]
+    volumes:
+      - ./observability/alertmanager.yaml:/etc/alertmanager/alertmanager.yaml:ro
+      - alertmanager_data:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # В учебном контуре используются встроенные datasource; фоновые обновления
+      # bundled plugins не нужны и не должны писать в read-only image layer.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - jaeger
 
   camunda-data-init:
     image: camunda/camunda:8.9.13
@@ -213,9 +284,9 @@ services:
     profiles: ["bpmn"]
     restart: unless-stopped
     ports:
-      - "26500:26500"
-      - "9600:9600"
-      - "8088:8080"
+      - "127.0.0.1:26500:26500"
+      - "127.0.0.1:9600:9600"
+      - "127.0.0.1:8088:8080"
     environment:
       JAVA_TOOL_OPTIONS: -XX:+PrintFlagsFinal
     mem_limit: 1g
@@ -244,7 +315,7 @@ services:
       SUPPORT_AGENT_CONFIG: ${SUPPORT_AGENT_CONFIG:?Задайте multi-agent Docker-конфиг в .env}
       CAMUNDA_REST_ADDRESS: http://camunda:8080/v2
       CAMUNDA_AUTH_STRATEGY: NONE
-      ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:-rag-dev}@rabbitmq:5672//
+      ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:?Задайте RABBITMQ_DEFAULT_PASS в .env}@rabbitmq:5672//
       ORCHESTRATION_RESULT_BACKEND_URL: redis://redis:6379/1
       ORCHESTRATION_REDIS_URL: redis://redis:6379/0
     command:
@@ -279,7 +350,14 @@ volumes:
   redis_data:
   camunda_engine:
   camunda_data:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
 
 networks:
   code_runner_internal:
     internal: true
+
+secrets:
+  support_service_api_key:
+    environment: SUPPORT_SERVICE_API_KEY

@@ -1,0 +1,3 @@
+extends:
+  - support_agent_docker_gigachat_local_embeddings.yaml
+  - profiles/support/observability_docker.yaml

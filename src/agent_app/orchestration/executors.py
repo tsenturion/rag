@@ -1,3 +1,5 @@
+"""Исполнители шагов для распределённой оркестрации."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -12,13 +14,14 @@ from agent_app.orchestration.models import (
     utc_now,
 )
 
-AskMulti = Callable[[str, str, str], MultiAgentRunResult]
+AskMulti = Callable[[str, str, str, str], MultiAgentRunResult]
 
 
 class MultiAgentStepExecutor:
     """Адаптирует существующий supervisor-граф к шагу orchestration-плана."""
 
     def __init__(self, ask: AskMulti, *, max_context_chars: int = 6000):
+        """Готовит исполнитель к работе с заданной функцией запроса и ограничением контекста, обеспечивая контроль объёма передаваемых данных."""
         self.ask = ask
         self.max_context_chars = max_context_chars
 
@@ -28,6 +31,7 @@ class MultiAgentStepExecutor:
         job: OrchestrationJob,
         context: Mapping[str, StepResult],
     ) -> StepResult:
+        """Выполняет шаг оркестрации, формируя контекст и гарантируя корректное создание результата с метаданными для последующего анализа."""
         prior = "\n\n".join(
             f"{step_id}: {result.output}"
             for step_id, result in context.items()
@@ -45,6 +49,7 @@ class MultiAgentStepExecutor:
             job.user_id,
             f"{job.session_id}:orchestration:{job.id}:{step.id}",
             prompt,
+            role,
         )
         response = result.response
         return StepResult(
@@ -66,11 +71,23 @@ class MultiAgentStepExecutor:
 
 
 def runtime_executor(config: Any) -> tuple[MultiAgentStepExecutor, Any]:
+    """Инициализирует рантайм и возвращает исполнитель с функцией запроса, обеспечивая интеграцию с многоагентной системой."""
     from agent_app.multi_agent.runtime import MultiAgentRuntime
 
     runtime = MultiAgentRuntime(config)
 
-    def ask(user_id: str, session_id: str, message: str) -> MultiAgentRunResult:
-        return runtime.ask(user_id=user_id, session_id=session_id, message=message)
+    def ask(
+        user_id: str,
+        session_id: str,
+        message: str,
+        role: str,
+    ) -> MultiAgentRunResult:
+        """Обеспечивает выполнение запроса к многоагентному рантайму, гарантируя получение результата для шага оркестрации."""
+        return runtime.ask_role(
+            user_id=user_id,
+            session_id=session_id,
+            message=message,
+            role=role,
+        )
 
     return MultiAgentStepExecutor(ask), runtime

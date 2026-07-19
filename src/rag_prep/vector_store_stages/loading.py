@@ -1,3 +1,5 @@
+"""Загрузка входных данных для индексации в Qdrant."""
+
 from __future__ import annotations
 
 import json
@@ -5,6 +7,7 @@ import logging
 from pathlib import Path
 
 from rag_prep.models import EmbeddedChunk
+from rag_prep.utils import verify_upstream_artifact
 
 LOGGER = logging.getLogger(__name__)
 
@@ -13,8 +16,10 @@ class EmbeddingLoadingStage:
     """Загружает записи embeddings, созданные пайплайном embeddings."""
 
     def run(self, input_jsonl: Path) -> list[EmbeddedChunk]:
+        """Загружает и валидирует эмбеддинги из файла, обеспечивая корректность данных и готовность к дальнейшей обработке в конвейере."""
         if not input_jsonl.exists():
             raise FileNotFoundError(f"Файл embeddings не существует: {input_jsonl}")
+        verify_upstream_artifact(input_jsonl)
 
         embedded_chunks: list[EmbeddedChunk] = []
         with input_jsonl.open("r", encoding="utf-8") as file:

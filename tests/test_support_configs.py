@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы support_configs."""
+
 from __future__ import annotations
 
 import os
@@ -27,7 +29,10 @@ from rag_prep.config import (  # noqa: E402
 
 
 class SupportProviderConfigsTest(unittest.TestCase):
+    """Проверяет корректность загрузки и совместимость конфигураций провайдеров поддержки в различных сценариях использования."""
+
     def test_service_cli_reads_config_selector_from_dotenv(self) -> None:
+        """Проверяет, что CLI-сервис корректно читает путь к конфигурационному файлу из переменной окружения .env."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             (root / ".env").write_text(
@@ -43,6 +48,7 @@ class SupportProviderConfigsTest(unittest.TestCase):
         self.assertEqual(args.config, "config/support_agent_local.yaml")
 
     def test_rag_profile_is_shared_by_all_pipeline_stages(self) -> None:
+        """Проверяет, что профиль RAG последовательно используется во всех этапах обработки данных для каждого провайдера."""
         expected = {
             "openai": ("text-embedding-3-small", 1536, "rag_chunks_openai"),
             "local": (
@@ -74,6 +80,7 @@ class SupportProviderConfigsTest(unittest.TestCase):
                 )
 
     def test_provider_selection_has_no_implicit_openai_fallback(self) -> None:
+        """Проверяет, что при отсутствии явного указания провайдера возникает ошибка валидации без автоматического выбора OpenAI по умолчанию."""
         with self.assertRaises(ValidationError):
             AgentConfig.model_validate({})
         with self.assertRaises(ValidationError):
@@ -88,6 +95,7 @@ class SupportProviderConfigsTest(unittest.TestCase):
             build_agent_parser().parse_args([])
 
     def test_service_cli_uses_provider_config_from_environment(self) -> None:
+        """Проверяет, что CLI-сервис использует конфигурацию провайдера, заданную через переменную окружения."""
         with patch.dict(
             "os.environ",
             {
@@ -104,6 +112,7 @@ class SupportProviderConfigsTest(unittest.TestCase):
         )
 
     def test_provider_presets_are_dimensionally_compatible(self) -> None:
+        """Проверяет, что предустановленные конфигурации провайдеров согласованы по размерности эмбеддингов и режимам работы."""
         expected = {
             "support_agent_openai.yaml": ("openai", "openai", 1536, "local"),
             "support_agent_docker_openai.yaml": (
@@ -166,6 +175,7 @@ class SupportProviderConfigsTest(unittest.TestCase):
                 self.assertIn("get_weather", config.tools.enabled)
 
     def test_local_presets_resolve_model_paths_from_project_root(self) -> None:
+        """Проверяет, что локальные предустановки корректно разрешают абсолютные пути к моделям относительно корня проекта."""
         for filename in (
             "support_agent_gigachat_local_embeddings.yaml",
             "support_agent_local.yaml",
@@ -187,6 +197,7 @@ class SupportProviderConfigsTest(unittest.TestCase):
         self.assertEqual(Path(local.agent.model).name, "Qwen2.5-1.5B-Instruct")
 
     def test_docker_presets_require_service_api_key(self) -> None:
+        """Проверяет, что докерные предустановки требуют обязательного наличия API-ключа сервиса для безопасности."""
         for filename in (
             "support_agent_docker_openai.yaml",
             "support_agent_docker_gigachat_openai_embeddings.yaml",
@@ -200,6 +211,39 @@ class SupportProviderConfigsTest(unittest.TestCase):
                     config.security.api_key_env,
                     "SUPPORT_SERVICE_API_KEY",
                 )
+
+    def test_observability_presets_enable_jwt_security(self) -> None:
+        """Проверяет, что single-agent observability-пресеты включают JWT, RBAC и изоляцию пользовательских данных."""
+        filenames = (
+            "support_agent_docker_openai_observability.yaml",
+            "support_agent_docker_gigachat_openai_embeddings_observability.yaml",
+            "support_agent_docker_gigachat_local_embeddings_observability.yaml",
+            "support_agent_docker_local_observability.yaml",
+        )
+
+        for filename in filenames:
+            with self.subTest(filename=filename):
+                config = load_agent_config(PROJECT_ROOT / "config" / filename)
+                self.assertTrue(config.observability.enabled)
+                self.assertTrue(config.security.jwt_enabled)
+                self.assertTrue(config.security.enforce_user_scope)
+                self.assertEqual(
+                    config.security.jwt_secret_env,
+                    "SUPPORT_JWT_SECRET",
+                )
+
+    def test_docker_smoke_preset_avoids_paid_api_calls(self) -> None:
+        """Проверяет, что конфигурация docker_smoke_preset корректно отключает платные API и включает обязательное требование API-ключа для безопасности."""
+        config = load_agent_config(
+            PROJECT_ROOT / "config" / "support_agent_docker_openai_smoke.yaml"
+        )
+
+        self.assertEqual(config.agent.provider, "openai")
+        self.assertFalse(config.rag.enabled)
+        self.assertFalse(config.multi_agent.enabled)
+        self.assertFalse(config.orchestration.enabled)
+        self.assertFalse(config.observability.enabled)
+        self.assertTrue(config.security.require_api_key)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы multi_agent_runtime."""
+
 from __future__ import annotations
 
 import json
@@ -25,9 +27,12 @@ from agent_app.multi_agent.runtime import MultiAgentRuntime
 
 
 class StubLLM:
+    """Обеспечивает базовую заглушку LLM с предсказуемым поведением для проверки взаимодействия агентов без поддержки вызова инструментов."""
+
     supports_tool_calling = False
 
     def invoke(self, messages):
+        """Проверяет, что ответы LLM соответствуют ожидаемым шаблонам для разных ролей и сценариев."""
         system = str(getattr(messages[0], "content", "")).casefold()
         if "критик" in system:
             return AIMessage(content="Противоречий и неподтверждённых фактов нет.")
@@ -42,16 +47,23 @@ class StubLLM:
 
 
 class RecordingLLM(StubLLM):
+    """Расширяет базовую заглушку LLM учётом количества вызовов для мониторинга активности и отладки."""
+
     def __init__(self):
+        """Гарантирует, что экземпляр ведёт учёт числа вызовов и готов к трассировке активности."""
         self.calls = 0
 
     def invoke(self, messages):
+        """Проверяет, что каждый вызов увеличивает счётчик и делегируется базовой реализации без потери контекста."""
         self.calls += 1
         return super().invoke(messages)
 
 
 class FakeCitationLLM(StubLLM):
+    """Обеспечивает предсказуемое поведение LLM с имитацией цитирования для проверки взаимодействия агентов с учётом роли координатора."""
+
     def invoke(self, messages):
+        """Обеспечивает предсказуемое поведение LLM-заглушки для проверки взаимодействия агентов с учётом роли координатора."""
         system = str(getattr(messages[0], "content", "")).casefold()
         if "координатор" in system:
             return AIMessage(content="Результат вычисления равен 30 [Источник 1].")
@@ -59,6 +71,7 @@ class FakeCitationLLM(StubLLM):
 
 
 def _config(root: Path) -> AgentAppConfig:
+    """Проверяет, что тестовая конфигурация среды полностью определяет поведение агентов и инструментов без внешних зависимостей."""
     return AgentAppConfig(
         agent=AgentConfig(provider="local", model="test-model"),
         memory=MemoryConfig(sqlite_path=root / "memory.sqlite"),
@@ -82,7 +95,10 @@ def _config(root: Path) -> AgentAppConfig:
 
 
 class MultiAgentRuntimeTest(unittest.TestCase):
+    """Проверяет подсистему выполнения многоагентного runtime, включая обработку ответов, использование разных LLM для ролей и корректность работы с цитатами."""
+
     def test_answer_drops_citation_marker_without_rag_citations(self) -> None:
+        """Проверяет, что при отсутствии обращений к базе знаний в ответе не содержатся маркеры цитирования и список цитат пуст."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             runner = MultiAgentRunner(
@@ -102,6 +118,7 @@ class MultiAgentRuntimeTest(unittest.TestCase):
     def test_graph_uses_different_llms_for_incident_critic_and_coordinator(
         self,
     ) -> None:
+        """Проверяет, что для ролей координатора, критика и инцидента используются разные LLM-профили, и каждый из них вызывается не менее одного раза."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             config = _config(root)
@@ -164,6 +181,7 @@ class MultiAgentRuntimeTest(unittest.TestCase):
         self.assertEqual(result.response.execution_mode, "sequential")
 
     def test_failed_specialist_is_retried_within_limits(self) -> None:
+        """Проверяет, что при временной ошибке специализированного инструмента происходит повторный вызов в пределах заданных лимитов, и задача завершается успешно без деградации."""
         calls = 0
 
         def flaky_log_analyzer(
@@ -219,6 +237,7 @@ class MultiAgentRuntimeTest(unittest.TestCase):
         self.assertFalse(result.response.degraded)
 
     def test_runtime_routes_task_and_exports_trace(self) -> None:
+        """Проверяет, что MultiAgentRuntime корректно маршрутизирует задачи, сохраняет трассировку и сообщения, а также формирует манифест с правильным количеством задач."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             runtime = MultiAgentRuntime(_config(root), llm=StubLLM())
@@ -247,6 +266,7 @@ class MultiAgentRuntimeTest(unittest.TestCase):
         self.assertTrue(trace_exists)
 
     def test_comparison_uses_same_scenario_for_both_modes(self) -> None:
+        """Проверяет, что при сравнении сценариев используется одинаковый запрос и корректно сохраняется отчёт с результатами для обоих режимов исполнения."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             runtime = MultiAgentRuntime(_config(root), llm=StubLLM())

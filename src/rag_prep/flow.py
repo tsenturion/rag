@@ -1,3 +1,5 @@
+"""Prefect-оркестрация для RAG-конвейера."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -77,6 +79,7 @@ from rag_prep.vector_store_stages import (
 
 @task(name="load_sources")
 def load_sources_task(config: PipelineConfig) -> list[SourceFile]:
+    """Гарантирует воспроизводимую загрузку исходных файлов для дальнейших стадий пайплайна с логированием объёма."""
     sources = LlamaIndexLoadingStage(config.loader).run(config.paths.input_dir)
     get_run_logger().info("Загружено источников: %d", len(sources))
     return sources
@@ -86,6 +89,7 @@ def load_sources_task(config: PipelineConfig) -> list[SourceFile]:
 def parse_documents_task(
     config: PipelineConfig, sources: list[SourceFile]
 ) -> ParseResult:
+    """Гарантирует структурированный разбор исходных файлов с логированием успешных и ошибочных случаев."""
     result = UnstructuredParsingStage(
         config.parser, default_section=config.structuring.default_section
     ).run(sources)
@@ -101,6 +105,7 @@ def parse_documents_task(
 def clean_text_task(
     config: PipelineConfig, elements: list[RawElement]
 ) -> list[ProcessedElement]:
+    """Гарантирует очистку исходных элементов от шумов и артефактов согласно политике конвейера, обеспечивая однородность входа для последующих стадий обработки."""
     cleaned = TextCleaningStage(config.cleaning).run(elements)
     get_run_logger().info("Очищено элементов: %d", len(cleaned))
     return cleaned
@@ -110,6 +115,7 @@ def clean_text_task(
 def normalize_text_task(
     config: PipelineConfig, elements: list[ProcessedElement]
 ) -> list[ProcessedElement]:
+    """Обеспечивает стандартизированное представление текста для унификации формата и повышения качества дальнейшей обработки."""
     normalized = TextNormalizationStage(config.normalization).run(elements)
     get_run_logger().info("Нормализовано элементов: %d", len(normalized))
     return normalized
@@ -119,6 +125,7 @@ def normalize_text_task(
 def deduplicate_text_task(
     config: PipelineConfig, elements: list[ProcessedElement]
 ) -> tuple[list[ProcessedElement], int, int, int]:
+    """Удаляет дублирующиеся элементы, гарантируя уникальность данных и предоставляя статистику по типам дублей для мониторинга качества."""
     result = DeduplicationStage(config.deduplication).run(elements)
     get_run_logger().info(
         "Удалено дублей: %d; exact=%d near=%d",
@@ -138,6 +145,7 @@ def deduplicate_text_task(
 def structure_documents_task(
     config: PipelineConfig, elements: list[ProcessedElement], run_id: str
 ) -> tuple[list[PreparedDocument], int]:
+    """Формирует структурированные документы из обработанных элементов, обеспечивая совместимость с LlamaIndex и отслеживание количества итоговых объектов."""
     stage = LlamaIndexStructuringStage(config.structuring)
     documents = stage.run(elements, run_id=run_id)
     llama_documents = stage.to_llama_documents(documents)
@@ -157,6 +165,7 @@ def export_documents_task(
     counts: dict[str, int],
     diagnostics: dict[str, object],
 ) -> ExportResult:
+    """Гарантирует сохранение подготовленных документов и метаданных в целевом формате, фиксируя результат экспорта для последующего использования."""
     export = ExportStage(config).run(
         documents,
         run_id=run_id,
@@ -171,6 +180,7 @@ def export_documents_task(
 def log_mlflow_task(
     config: PipelineConfig, counts: dict[str, int], export: ExportResult
 ) -> None:
+    """Фиксирует метрики и параметры подготовки данных в MLflow, обеспечивая воспроизводимость и аудит экспериментов."""
     MLflowTracker(config).log_run(counts, export)
 
 
@@ -178,6 +188,7 @@ def log_mlflow_task(
 def rag_data_preparation_flow(
     config_path: str = "config/default.yaml",
 ) -> PipelineResult:
+    """Оркестрирует полный цикл подготовки данных для RAG, гарантируя согласованность этапов, воспроизводимость и агрегированную статистику выполнения."""
     import random
 
     config = load_config(Path(config_path))
@@ -237,6 +248,7 @@ def rag_data_preparation_flow(
 def load_prepared_documents_task(
     config: ChunkingPipelineConfig,
 ) -> list[PreparedDocument]:
+    """Гарантирует корректную загрузку и валидацию подготовленных документов из внешнего источника для дальнейшей разбивки на чанки."""
     documents = PreparedDocumentLoadingStage().run(config.paths.input_jsonl)
     get_run_logger().info("Загружено подготовленных документов: %d", len(documents))
     return documents
@@ -244,9 +256,12 @@ def load_prepared_documents_task(
 
 @task(name="split_chunks")
 def split_chunks_task(
-    config: ChunkingPipelineConfig, documents: list[PreparedDocument]
+    config: ChunkingPipelineConfig,
+    documents: list[PreparedDocument],
+    run_id: str,
 ) -> list[PreparedChunk]:
-    chunks = ChunkSplittingStage(config.chunking).run(documents)
+    """Разбивает документы на чанки согласно политике сегментации, обеспечивая пригодность данных для последующего индексирования."""
+    chunks = ChunkSplittingStage(config.chunking).run(documents, run_id=run_id)
     get_run_logger().info("Создано чанков: %d", len(chunks))
     return chunks
 
@@ -255,12 +270,14 @@ def split_chunks_task(
 def validate_chunks_task(
     config: ChunkingPipelineConfig, chunks: list[PreparedChunk]
 ) -> ChunkingValidationResult:
+    """Проверяет, что чанки соответствуют требованиям качества и структуры, предоставляя детализированную статистику нарушений."""
     result = ChunkValidationStage(config.chunking).run(chunks)
     get_run_logger().info(
         (
-            "Проверены чанки: empty=%d undersized=%d oversized=%d "
+            "Проверены чанки: no_chunks=%d empty=%d undersized=%d oversized=%d "
             "estimated_offsets=%d missing_parent=%d missing_lineage=%d low_quality=%d"
         ),
+        result.no_chunks_count,
         result.empty_chunks_count,
         result.undersized_chunks_count,
         result.oversized_chunks_count,
@@ -280,6 +297,7 @@ def export_chunks_task(
     counts: dict[str, int | float],
     diagnostics: dict[str, object],
 ) -> ChunkingExportResult:
+    """Гарантирует сохранение чанков и метаданных в формате, пригодном для дальнейшей загрузки и аудита этапа чанкинга RAG-конвейера."""
     export = ChunkExportStage(config).run(
         chunks,
         run_id=run_id,
@@ -296,6 +314,7 @@ def log_chunking_mlflow_task(
     counts: dict[str, int | float],
     export: ChunkingExportResult,
 ) -> None:
+    """Фиксирует метрики и параметры этапа чанкинга в MLflow для воспроизводимости и мониторинга."""
     MLflowTracker(config).log_run(counts, export)
 
 
@@ -303,6 +322,7 @@ def log_chunking_mlflow_task(
 def rag_chunking_flow(
     config_path: str,
 ) -> ChunkingPipelineResult:
+    """Оркестрирует полный цикл подготовки чанков, обеспечивая воспроизводимость, валидацию и экспорт результатов с учётом всех инвариантов пайплайна."""
     import random
 
     config = load_chunking_config(Path(config_path))
@@ -313,7 +333,7 @@ def rag_chunking_flow(
     logger.info("Старт запуска чанкинга RAG: %s", run_id)
 
     documents = load_prepared_documents_task(config)
-    chunks = split_chunks_task(config, documents)
+    chunks = split_chunks_task(config, documents, run_id)
     validation = validate_chunks_task(config, chunks)
 
     token_counts = [chunk.metadata.chunk_token_count for chunk in chunks]
@@ -342,6 +362,7 @@ def rag_chunking_flow(
         )
         if structure_scores
         else 0.0,
+        "no_chunks_count": validation.no_chunks_count,
         "empty_chunks_count": validation.empty_chunks_count,
         "undersized_chunks_count": validation.undersized_chunks_count,
         "oversized_chunks_count": validation.oversized_chunks_count,
@@ -366,6 +387,7 @@ def rag_chunking_flow(
 
 @task(name="load_chunks")
 def load_chunks_task(config: EmbeddingPipelineConfig) -> list[PreparedChunk]:
+    """Гарантирует корректную загрузку и десериализацию чанков из внешнего источника для последующих этапов обработки."""
     chunks = ChunkLoadingStage().run(config.paths.input_jsonl)
     get_run_logger().info("Загружено чанков: %d", len(chunks))
     return chunks
@@ -377,6 +399,7 @@ def calculate_embeddings_task(
     chunks: list[PreparedChunk],
     run_id: str,
 ) -> list[EmbeddedChunk]:
+    """Обеспечивает получение embedding-представлений для всех чанков с учётом параметров пайплайна и отслеживанием числа обработанных элементов."""
     embedded_chunks = build_embedding_stage(config.embedding).run(chunks, run_id=run_id)
     get_run_logger().info("Посчитано embeddings: %d", len(embedded_chunks))
     return embedded_chunks
@@ -388,15 +411,20 @@ def validate_embeddings_task(
     chunks: list[PreparedChunk],
     embedded_chunks: list[EmbeddedChunk],
 ) -> EmbeddingValidationResult:
+    """Проверяет соответствие embedding-результатов исходным чанкам и параметрам модели, гарантируя целостность и полноту данных."""
     result = EmbeddingValidationStage(config.embedding).run(chunks, embedded_chunks)
     get_run_logger().info(
         (
-            "Проверены embeddings: count_mismatch=%d missing=%d "
+            "Проверены embeddings: empty_source=%d empty_output=%d "
+            "count_mismatch=%d missing=%d "
             "missing_ids=%d unexpected_ids=%d source_duplicate_ids=%d "
             "dimension_mismatch=%d non_finite=%d duplicate_ids=%d "
             "text_mismatch=%d metadata_mismatch=%d missing_metadata=%d "
-            "model_mismatch=%d token_limit_exceeded=%d"
+            "model_mismatch=%d provider_mismatch=%d "
+            "declared_dimension_mismatch=%d token_limit_exceeded=%d"
         ),
+        result.empty_source_chunks_count,
+        result.empty_embeddings_count,
         result.chunk_count_mismatch,
         result.missing_embeddings_count,
         result.missing_chunk_ids_count,
@@ -409,6 +437,8 @@ def validate_embeddings_task(
         result.metadata_mismatch_count,
         result.missing_metadata_count,
         result.model_mismatch_count,
+        result.provider_mismatch_count,
+        result.declared_dimension_mismatch_count,
         result.token_limit_exceeded_count,
     )
     return result
@@ -422,6 +452,7 @@ def export_embeddings_task(
     counts: dict[str, int | float],
     diagnostics: dict[str, object],
 ) -> EmbeddingExportResult:
+    """Гарантирует сохранение embedding-результатов и сопутствующих метаданных для дальнейшего использования и аудита."""
     export = EmbeddingExportStage(config).run(
         embedded_chunks,
         run_id=run_id,
@@ -438,6 +469,7 @@ def log_embedding_mlflow_task(
     counts: dict[str, int | float],
     export: EmbeddingExportResult,
 ) -> None:
+    """Фиксирует метрики и параметры этапа embedding в MLflow для отслеживания качества и воспроизводимости."""
     MLflowTracker(config).log_run(counts, export)
 
 
@@ -445,6 +477,7 @@ def log_embedding_mlflow_task(
 def rag_embeddings_flow(
     config_path: str,
 ) -> EmbeddingPipelineResult:
+    """Оркестрирует полный цикл расчёта embedding, обеспечивая валидацию, экспорт и логирование для воспроизводимого и контролируемого процесса."""
     import random
 
     config = load_embedding_config(Path(config_path))
@@ -480,6 +513,7 @@ def rag_embeddings_flow(
 def load_embedding_records_task(
     config: VectorStorePipelineConfig,
 ) -> list[EmbeddedChunk]:
+    """Гарантирует корректную загрузку embedding-записей из внешнего источника для последующей индексации или анализа."""
     embedded_chunks = EmbeddingLoadingStage().run(config.paths.input_jsonl)
     get_run_logger().info("Загружено записей embeddings: %d", len(embedded_chunks))
     return embedded_chunks
@@ -490,6 +524,7 @@ def index_qdrant_task(
     config: VectorStorePipelineConfig,
     embedded_chunks: list[EmbeddedChunk],
 ) -> VectorStoreIndexResult:
+    """Гарантирует сохранение всех переданных эмбеддингов в коллекции Qdrant и возвращает подтверждённый результат индексации."""
     index = QdrantIndexingStage(config.vector_store).run(embedded_chunks)
     get_run_logger().info(
         "Проиндексировано Qdrant points: %d в коллекции %s",
@@ -504,6 +539,7 @@ def validate_qdrant_task(
     config: VectorStorePipelineConfig,
     embedded_chunks: list[EmbeddedChunk],
 ) -> VectorStoreValidationResult:
+    """Проверяет целостность и корректность коллекции Qdrant после индексации, выявляя расхождения и ошибки."""
     validation = QdrantValidationStage(config.vector_store).run(embedded_chunks)
     get_run_logger().info(
         (
@@ -511,7 +547,9 @@ def validate_qdrant_task(
             "extra_points=%d missing_points=%d missing_vectors=%d "
             "collection_vector_size_mismatch=%d point_vector_size_mismatch=%d "
             "vector_size_mismatch=%d distance_mismatch=%d missing_payload=%d "
-            "missing_text=%d missing_metadata=%d missing_required_metadata=%d"
+            "missing_text=%d missing_metadata=%d missing_required_metadata=%d "
+            "missing_expected=%d chunk_id_mismatch=%d text_mismatch=%d "
+            "identity_metadata_mismatch=%d empty_embeddings=%d"
         ),
         validation.count_mismatch,
         validation.count_delta,
@@ -526,6 +564,11 @@ def validate_qdrant_task(
         validation.missing_text_count,
         validation.missing_metadata_count,
         validation.missing_required_metadata_count,
+        validation.missing_expected_points_count,
+        validation.chunk_id_mismatch_count,
+        validation.text_mismatch_count,
+        validation.identity_metadata_mismatch_count,
+        validation.empty_embeddings_count,
     )
     return validation
 
@@ -535,6 +578,7 @@ def search_qdrant_task(
     config: VectorStorePipelineConfig,
     embedded_chunks: list[EmbeddedChunk],
 ) -> list[VectorSearchResult]:
+    """Гарантирует выполнение поиска по коллекции Qdrant для заданных эмбеддингов и возвращает результаты поиска."""
     search_results = QdrantSearchStage(config.vector_store).run(embedded_chunks)
     get_run_logger().info(
         "Выполнено Qdrant search smoke-тестов: %d", len(search_results)
@@ -549,6 +593,7 @@ def index_validate_search_qdrant_task(
 ) -> tuple[
     VectorStoreIndexResult, VectorStoreValidationResult, list[VectorSearchResult]
 ]:
+    """Последовательно индексирует данные, проверяет коллекцию и выполняет тестовый поиск через один Qdrant-клиент."""
     with qdrant_client_context(config.vector_store) as client:
         index = QdrantIndexingStage(config.vector_store).run(
             embedded_chunks,
@@ -587,6 +632,7 @@ def export_vector_store_report_task(
     counts: dict[str, int | float],
     diagnostics: dict[str, object],
 ) -> VectorStoreExportResult:
+    """Гарантирует формирование и сохранение отчёта о состоянии коллекции векторного хранилища для последующего аудита."""
     export = VectorStoreExportStage(config).run(
         index=index,
         validation=validation,
@@ -605,6 +651,7 @@ def log_vector_store_mlflow_task(
     counts: dict[str, int | float],
     export: VectorStoreExportResult,
 ) -> None:
+    """Гарантирует регистрацию метрик и артефактов состояния коллекции в MLflow для воспроизводимости экспериментов."""
     MLflowTracker(config).log_run(counts, export)
 
 
@@ -612,6 +659,7 @@ def log_vector_store_mlflow_task(
 def rag_vector_store_flow(
     config_path: str,
 ) -> VectorStorePipelineResult:
+    """Оркестрирует полный цикл подготовки, индексации, проверки и логирования коллекции векторного хранилища с воспроизводимым результатом."""
     import random
 
     config = load_vector_store_config(Path(config_path))

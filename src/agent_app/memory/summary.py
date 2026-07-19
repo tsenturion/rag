@@ -1,3 +1,5 @@
+"""Сводная память диалога для памяти агента."""
+
 from __future__ import annotations
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -16,6 +18,7 @@ class SummaryMemory:
         session_id: str,
         max_chars: int,
     ):
+        """Готовит экземпляр к работе с памятью пользователя в рамках сессии, ограничивая объём хранимых данных максимальным числом символов."""
         self.store = store
         self.user_id = user_id
         self.session_id = session_id
@@ -23,9 +26,11 @@ class SummaryMemory:
 
     @property
     def key(self) -> str:
+        """Гарантирует уникальный идентификатор для хранения и поиска краткого резюме сессии пользователя в долговременной памяти."""
         return f"session_summary:{self.session_id}"
 
     def get(self) -> str:
+        """Возвращает последнее сохранённое резюме сессии, обеспечивая восстановление краткой памяти для продолжения диалога."""
         record = self.store.find_by_key(
             user_id=self.user_id,
             key=self.key,
@@ -35,6 +40,7 @@ class SummaryMemory:
         return record.value if record else ""
 
     def save(self, value: str) -> None:
+        """Гарантирует сохранность и обрезку резюме сессии до допустимого размера для предотвращения переполнения памяти."""
         if not value.strip():
             return
         self.store.save(
@@ -55,6 +61,7 @@ class SummaryMemory:
         messages: list[BaseMessage],
         max_history_messages: int,
     ) -> list[BaseMessage]:
+        """Обеспечивает автоматическое сжатие истории сообщений в краткое резюме при превышении лимита, сохраняя релевантный контекст для агента."""
         if len(messages) <= max_history_messages:
             return messages
 
@@ -93,6 +100,7 @@ class SummaryMemory:
         messages: list[BaseMessage],
         max_history_messages: int,
     ) -> list[BaseMessage]:
+        """Гарантирует возврат последних сообщений диалога, не превышая заданный лимит для эффективного контекста."""
         if len(messages) <= max_history_messages:
             return messages
         return messages[cls._history_split_index(messages, max_history_messages) :]
@@ -102,6 +110,7 @@ class SummaryMemory:
         messages: list[BaseMessage],
         max_history_messages: int,
     ) -> int:
+        """Определяет безопасную границу отсечения истории по последнему пользовательскому сообщению для корректного формирования резюме."""
         target = max(0, len(messages) - max_history_messages)
         for index in range(target, len(messages)):
             if isinstance(messages[index], HumanMessage):

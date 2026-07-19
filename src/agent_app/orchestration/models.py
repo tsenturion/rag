@@ -1,3 +1,5 @@
+"""Типизированные модели данных для распределённой оркестрации."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -9,10 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
+    """Возвращает текущее время в UTC с информацией о часовом поясе."""
     return datetime.now(timezone.utc)
 
 
 class OrchestrationPattern(StrEnum):
+    """Определяет способы организации выполнения задач в оркестрации, обеспечивая гибкость и адаптивность процесса."""
+
     SEQUENTIAL = "sequential"
     PARALLEL = "parallel"
     CONDITIONAL = "conditional"
@@ -21,16 +26,21 @@ class OrchestrationPattern(StrEnum):
 
 
 class JobPriority(StrEnum):
+    """Определяет уровни приоритетов заданий, обеспечивая корректное сопоставление с числовыми значениями для управления порядком обработки в брокере очередей."""
+
     LOW = "low"
     NORMAL = "normal"
     HIGH = "high"
 
     @property
     def broker_value(self) -> int:
+        """Гарантирует сопоставление приоритета задания с числовым значением для корректной работы брокера очередей."""
         return {self.LOW: 1, self.NORMAL: 5, self.HIGH: 9}[self]
 
 
 class JobStatus(StrEnum):
+    """Обозначает жизненный цикл задания, позволяя определить, когда задание завершено и ресурсы можно освободить."""
+
     QUEUED = "queued"
     RUNNING = "running"
     RETRYING = "retrying"
@@ -41,6 +51,7 @@ class JobStatus(StrEnum):
 
     @property
     def terminal(self) -> bool:
+        """Гарантирует определение финального статуса задания для корректного завершения и освобождения ресурсов."""
         return self in {
             self.COMPLETED,
             self.FAILED,
@@ -50,6 +61,8 @@ class JobStatus(StrEnum):
 
 
 class StepStatus(StrEnum):
+    """Отражает состояние отдельного шага в процессе оркестрации, влияя на логику выполнения и обработку ошибок."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -60,6 +73,8 @@ class StepStatus(StrEnum):
 
 
 class OrchestrationJob(BaseModel):
+    """Определяет контракт задания оркестрации с валидацией и нормализацией, гарантируя корректность и полноту данных для управления процессом."""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -78,6 +93,7 @@ class OrchestrationJob(BaseModel):
 
     @model_validator(mode="after")
     def normalize_and_validate(self) -> OrchestrationJob:
+        """Обеспечивает корректность и полноту ключевых полей задания, гарантируя валидный и стандартизированный формат для дальнейшей обработки в оркестрации."""
         self.user_id = self.user_id.strip()
         self.session_id = self.session_id.strip()
         self.message = self.message.strip()
@@ -89,10 +105,13 @@ class OrchestrationJob(BaseModel):
 
     @property
     def expired(self) -> bool:
+        """Определяет, истёк ли срок выполнения задания, позволяя своевременно прекращать или переназначать устаревшие задачи."""
         return self.deadline_at is not None and utc_now() >= self.deadline_at
 
 
 class PlanStep(BaseModel):
+    """Моделирует шаг плана с валидацией параметров, обеспечивая корректное описание и управление зависимостями в оркестрации."""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, max_length=100)
@@ -108,6 +127,8 @@ class PlanStep(BaseModel):
 
 
 class ExecutionPlan(BaseModel):
+    """Гарантирует непротиворечивую и воспроизводимую структуру зависимостей шагов для корректного исполнения распределённого плана."""
+
     model_config = ConfigDict(extra="forbid")
 
     version: int = Field(default=1, ge=1)
@@ -118,6 +139,7 @@ class ExecutionPlan(BaseModel):
 
     @model_validator(mode="after")
     def validate_graph(self) -> ExecutionPlan:
+        """Гарантирует отсутствие циклов и корректность зависимостей между шагами плана, обеспечивая его выполнимость и предсказуемость."""
         ids = [step.id for step in self.steps]
         if len(ids) != len(set(ids)):
             raise ValueError("Идентификаторы шагов плана должны быть уникальными")
@@ -141,6 +163,8 @@ class ExecutionPlan(BaseModel):
 
 
 class StepResult(BaseModel):
+    """Фиксирует результат выполнения шага с инвариантом однозначного статуса и полной трассировкой попыток и ошибок."""
+
     model_config = ConfigDict(extra="forbid")
 
     step_id: str
@@ -157,10 +181,13 @@ class StepResult(BaseModel):
 
     @property
     def successful(self) -> bool:
+        """Определяет успешное завершение шага, позволяя корректно интерпретировать результаты и принимать решения о дальнейшем выполнении."""
         return self.status in {StepStatus.COMPLETED, StepStatus.SKIPPED}
 
 
 class PlanRevision(BaseModel):
+    """Обеспечивает прозрачную историю изменений плана с указанием причин и затронутых ролей для аудита и отката."""
+
     from_version: int
     to_version: int
     reason: str
@@ -169,6 +196,8 @@ class PlanRevision(BaseModel):
 
 
 class SynchronizationResult(BaseModel):
+    """Гарантирует однозначную фиксацию достижения кворума и консенсуса между участниками распределённой оркестрации."""
+
     required: int = 0
     received: int = 0
     successful: int = 0
@@ -178,6 +207,8 @@ class SynchronizationResult(BaseModel):
 
 
 class OrchestrationResult(BaseModel):
+    """Гарантирует целостное описание итогового состояния задания, включая план, шаги, ревизии, синхронизацию и ошибки."""
+
     model_config = ConfigDict(extra="forbid")
 
     job_id: str
@@ -195,6 +226,8 @@ class OrchestrationResult(BaseModel):
 
 
 class JobRecord(BaseModel):
+    """Фиксирует жизненный цикл задания с полной историей статусов, попыток, результатов и ошибок для мониторинга и восстановления."""
+
     model_config = ConfigDict(extra="forbid")
 
     job: OrchestrationJob
@@ -210,6 +243,8 @@ class JobRecord(BaseModel):
 
 
 class JobEvent(BaseModel):
+    """Гарантирует последовательную и воспроизводимую фиксацию событий жизненного цикла задания для аудита и реактивных обработчиков."""
+
     model_config = ConfigDict(extra="forbid")
 
     sequence: int = Field(default=0, ge=0)
@@ -232,6 +267,8 @@ class JobEvent(BaseModel):
 
 
 class QueueStatus(BaseModel):
+    """Хранит состояние очереди заданий и информацию о рабочих процессах для мониторинга и управления распределённой оркестрацией."""
+
     backend: Literal["inline", "celery"]
     ready: bool
     status_counts: dict[str, int] = Field(default_factory=dict)
@@ -240,5 +277,7 @@ class QueueStatus(BaseModel):
 
 
 class JobSubmission(BaseModel):
+    """Передаёт зарегистрированное задание и признак повторного запроса с тем же idempotency key."""
+
     record: JobRecord
     deduplicated: bool = False

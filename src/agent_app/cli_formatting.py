@@ -1,10 +1,15 @@
+"""Форматирование справки командной строки для агентного приложения."""
+
 from __future__ import annotations
 
 import argparse
 
 
 class RussianHelpFormatter(argparse.HelpFormatter):
+    """Гарантирует отображение справки CLI на русском языке для повышения доступности."""
+
     def _format_usage(self, *args, **kwargs) -> str:
+        """Гарантирует, что строка использования в справке CLI будет на русском языке."""
         return (
             super()
             ._format_usage(*args, **kwargs)
@@ -17,6 +22,7 @@ def add_russian_help(
     *,
     positionals_title: str = "команды",
 ) -> None:
+    """Гарантирует наличие русскоязычной справки и заголовков в CLI для пользователя."""
     parser.add_argument(
         "-h",
         "--help",

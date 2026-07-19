@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы embedding_validation."""
+
 from __future__ import annotations
 
 import sys
@@ -20,6 +22,7 @@ from rag_prep.models import (  # noqa: E402
 
 
 def prepared_chunk(chunk_id: str, text: str) -> PreparedChunk:
+    """Генерирует подготовленный фрагмент с фиксированными метаданными для обеспечения стабильности тестов валидации эмбеддингов."""
     return PreparedChunk(
         text=text,
         metadata=ChunkMetadata(
@@ -46,6 +49,7 @@ def prepared_chunk(chunk_id: str, text: str) -> PreparedChunk:
 
 
 def embedded_chunk(chunk: PreparedChunk) -> EmbeddedChunk:
+    """Создаёт встроенный фрагмент с заданными эмбеддингами и метаданными для проверки корректности обработки эмбеддингов."""
     metadata = chunk.metadata.model_dump(mode="python")
     metadata.update(
         {
@@ -64,7 +68,10 @@ def embedded_chunk(chunk: PreparedChunk) -> EmbeddedChunk:
 
 
 class EmbeddingValidationTest(unittest.TestCase):
+    """Проверяет корректность валидации эмбеддингов, включая соответствие идентификаторов и метаданных, чтобы гарантировать целостность и согласованность данных."""
+
     def setUp(self) -> None:
+        """Инициализирует конфигурацию и этап валидации эмбеддингов, обеспечивая готовность тестового окружения."""
         config = EmbeddingConfig(
             provider="openai",
             model="test-embedding",
@@ -75,6 +82,7 @@ class EmbeddingValidationTest(unittest.TestCase):
         self.stage = EmbeddingValidationStage(config)
 
     def test_unrelated_embedding_ids_are_rejected(self) -> None:
+        """Проверяет, что эмбеддинги с идентификаторами, не относящимися к исходным данным, отклоняются и учитываются как ошибки валидации."""
         source = [
             prepared_chunk("source-1", "Первый"),
             prepared_chunk("source-2", "Второй"),
@@ -91,7 +99,16 @@ class EmbeddingValidationTest(unittest.TestCase):
         self.assertEqual(result.unexpected_chunk_ids_count, 2)
         self.assertEqual(result.missing_embeddings_count, 2)
 
+    def test_empty_input_and_output_are_rejected(self) -> None:
+        """Проверяет, что отсутствие исходных чанков и embeddings не маскируется нулевыми счётчиками."""
+        result = self.stage.run([], [])
+
+        self.assertTrue(result.has_errors)
+        self.assertEqual(result.empty_source_chunks_count, 1)
+        self.assertEqual(result.empty_embeddings_count, 1)
+
     def test_text_and_identity_metadata_mismatch_are_rejected(self) -> None:
+        """Проверяет, что несоответствие текста и метаданных между исходным и эмбеддингом выявляется и приводит к ошибкам валидации."""
         source = prepared_chunk("source-1", "Исходный текст")
         embedded = embedded_chunk(source)
         embedded = embedded.model_copy(
@@ -108,6 +125,27 @@ class EmbeddingValidationTest(unittest.TestCase):
         self.assertTrue(result.has_errors)
         self.assertEqual(result.text_mismatch_count, 1)
         self.assertEqual(result.metadata_mismatch_count, 1)
+
+    def test_declared_provider_and_dimensions_must_match_vector(self) -> None:
+        """Не допускает ложное происхождение вектора в downstream metadata."""
+        source = prepared_chunk("source-1", "Исходный текст")
+        embedded = embedded_chunk(source)
+        embedded = embedded.model_copy(
+            update={
+                "metadata": embedded.metadata.model_copy(
+                    update={
+                        "embedding_provider": "gigachat",
+                        "embedding_dimensions": 999,
+                    }
+                )
+            }
+        )
+
+        result = self.stage.run([source], [embedded])
+
+        self.assertTrue(result.has_errors)
+        self.assertEqual(result.provider_mismatch_count, 1)
+        self.assertEqual(result.declared_dimension_mismatch_count, 1)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы artifact_transaction."""
+
 from __future__ import annotations
 
 import os
@@ -18,7 +20,10 @@ from rag_prep.utils import artifact_set_transaction  # noqa: E402
 
 
 class ArtifactTransactionTest(unittest.TestCase):
+    """Проверяет корректность транзакционного поведения при экспорте артефактов, гарантируя сохранность предыдущего набора при ошибках записи."""
+
     def test_export_failure_keeps_previous_artifact_set(self) -> None:
+        """Проверяет, что при ошибке записи в процессе экспорта сохраняется предыдущий набор артефактов без изменений и не создаются временные файлы."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             output_dir = Path(temporary_dir)
             paths = self._targets(output_dir)
@@ -38,6 +43,7 @@ class ArtifactTransactionTest(unittest.TestCase):
             self.assertEqual(list(output_dir.glob(".artifact-set-*")), [])
 
     def test_commit_failure_rolls_back_every_target(self) -> None:
+        """Проверяет, что при сбое переименования в транзакции коммита все изменения откатываются, и предыдущий набор артефактов восстанавливается."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             output_dir = Path(temporary_dir)
             targets = self._targets(output_dir)
@@ -46,6 +52,7 @@ class ArtifactTransactionTest(unittest.TestCase):
             failed = False
 
             def failing_replace(source, destination):
+                """Имитирует сбой на втором rename транзакционного commit."""
                 nonlocal failed
                 source_path = Path(source)
                 destination_path = Path(destination)
@@ -71,6 +78,7 @@ class ArtifactTransactionTest(unittest.TestCase):
 
     @staticmethod
     def _targets(output_dir: Path) -> list[Path]:
+        """Проверяет, что список целевых файлов для транзакции воспроизводим и соответствует ожидаемой структуре выходных артефактов."""
         return [
             output_dir / "documents.json",
             output_dir / "documents.jsonl",
@@ -79,10 +87,12 @@ class ArtifactTransactionTest(unittest.TestCase):
 
     @staticmethod
     def _write_old_set(paths: list[Path]) -> None:
+        """Обеспечивает воспроизводимость тестов, записывая фиксированные данные в указанные пути для проверки корректности транзакций с артефактами."""
         for path in paths:
             path.write_text(f"old:{path.name}", encoding="utf-8")
 
     def _assert_old_set(self, paths: list[Path]) -> None:
+        """Гарантирует целостность данных, проверяя, что содержимое файлов соответствует ожидаемому состоянию после операций с артефактами."""
         for path in paths:
             self.assertEqual(path.read_text(encoding="utf-8"), f"old:{path.name}")
 

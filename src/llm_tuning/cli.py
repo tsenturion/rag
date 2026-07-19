@@ -1,3 +1,5 @@
+"""Командный интерфейс для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,7 +13,10 @@ from rag_prep.utils import setup_logging
 
 
 class RussianHelpFormatter(argparse.HelpFormatter):
+    """Гарантирует вывод справки CLI на русском языке для повышения доступности инструментов обучения."""
+
     def _format_usage(self, *args, **kwargs) -> str:
+        """Гарантирует отображение ключевого слова «использование» вместо «usage» в справке CLI."""
         return (
             super()
             ._format_usage(*args, **kwargs)
@@ -20,6 +25,7 @@ class RussianHelpFormatter(argparse.HelpFormatter):
 
 
 def _add_russian_help(parser: argparse.ArgumentParser) -> None:
+    """Гарантирует наличие русскоязычной справки и корректных заголовков для всех CLI-команд."""
     parser.add_argument(
         "-h",
         "--help",
@@ -32,6 +38,7 @@ def _add_russian_help(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Создаёт и настраивает parser аргументов командной строки."""
     parser = argparse.ArgumentParser(
         description="Локальный fine-tuning LLM через LoRA/QLoRA/PEFT.",
         add_help=False,
@@ -129,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Запускает командный интерфейс и возвращает код завершения."""
     args = build_parser().parse_args()
     command = args.command or "validate-data"
     config = load_fine_tuning_config(Path(args.config))
@@ -186,6 +194,7 @@ def _add_simple_command(
     name: str,
     help_text: str,
 ) -> None:
+    """Гарантирует регистрацию CLI-команды с русскоязычной справкой и единым стилем описания."""
     command = subparsers.add_parser(
         name,
         help=help_text,

@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы fine_tuning_reports."""
+
 from __future__ import annotations
 
 import sys
@@ -27,7 +29,10 @@ from llm_tuning.models import (  # noqa: E402
 
 
 class FineTuningReportsTest(unittest.TestCase):
+    """Проверяет изоляцию и корректность экспорта отчётов тонкой настройки по уникальным идентификаторам запусков, обеспечивая независимость данных."""
+
     def test_reports_are_isolated_by_run_id(self) -> None:
+        """Проверяет, что отчёты и манифесты для разных run_id сохраняются в отдельные директории, обеспечивая изоляцию данных между запусками."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             reports_dir = Path(temporary_dir) / "reports"
             config = FineTuningPipelineConfig(
@@ -77,6 +82,7 @@ class FineTuningReportsTest(unittest.TestCase):
             )
 
     def test_comparison_rates_use_only_common_example_ids(self) -> None:
+        """Проверяет, что при сравнении учитываются только примеры с общими example_id, корректно вычисляя показатели прохождения и улучшения."""
         baseline = self._report(
             "baseline-run",
             [("common-failed", False), ("baseline-only", True)],
@@ -101,6 +107,7 @@ class FineTuningReportsTest(unittest.TestCase):
         self.assertEqual(result.improved_examples, ["common-failed"])
 
     def test_comparison_rejects_reports_without_common_ids(self) -> None:
+        """Проверяет, что сравнение отчётов без общих example_id вызывает ошибку, предотвращая некорректный анализ."""
         with self.assertRaisesRegex(ValueError, "нет общих example_id"):
             FineTuningComparisonStage().compare(
                 run_id="comparison-run",
@@ -112,6 +119,7 @@ class FineTuningReportsTest(unittest.TestCase):
 
     @staticmethod
     def _report(run_id: str, answers: list[tuple[str, bool]]) -> EvaluationReport:
+        """Формирует отчёт об оценке качества модели на основе заданных ответов, обеспечивая проверку метрик и статистики."""
         generated = [
             GeneratedAnswer(
                 example_id=example_id,
@@ -135,6 +143,7 @@ class FineTuningReportsTest(unittest.TestCase):
 
     @staticmethod
     def _comparison(run_id: str, report_path: Path) -> ComparisonResult:
+        """Создаёт результат сравнения отчётов с фиксированными метриками для проверки логики анализа улучшений качества модели."""
         return ComparisonResult(
             run_id=run_id,
             baseline_report_path=report_path,
@@ -148,6 +157,7 @@ class FineTuningReportsTest(unittest.TestCase):
 
     @staticmethod
     def _dataset_validation() -> DatasetValidationResult:
+        """Проверяет, что результат валидации датасета соответствует ожидаемому контракту fine_tuning_reports и пригоден для регрессионного тестирования."""
         train = DatasetStats(
             path=Path("train.jsonl"),
             examples_count=1,
@@ -169,6 +179,7 @@ class FineTuningReportsTest(unittest.TestCase):
 
     @staticmethod
     def _device() -> DeviceReport:
+        """Проверяет, что отчёт об устройстве соответствует ожидаемым характеристикам окружения для fine_tuning_reports."""
         return DeviceReport(
             requested_device="cpu",
             selected_device="cpu",

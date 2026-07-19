@@ -1,3 +1,5 @@
+"""Граф состояний LangGraph для мультиагентной системы."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +23,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from agent_app.config import AgentAppConfig
+from agent_app.currency import CBRCurrencyConverter
 from agent_app.memory import SQLiteMemoryStore, SummaryMemory
 from agent_app.multi_agent.bus import AsyncMessageBus
 from agent_app.multi_agent.decomposition import TaskDecomposer
@@ -48,6 +51,7 @@ from agent_app.multi_agent.roles import (
 )
 from agent_app.multi_agent.tracking import MultiAgentTracker
 from agent_app.multi_agent.usage import LLMCallTracker
+from agent_app.guardrails import GuardrailPipeline
 from agent_app.rag.models import RagCitation
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.support.incidents import IncidentStore
@@ -72,7 +76,9 @@ class MultiAgentRunner:
         llm_registry: MultiAgentLLMRegistry | None = None,
         role_llms: dict[str, Any] | None = None,
         checkpointer: Any | None = None,
+        currency_converter: CBRCurrencyConverter | None = None,
     ):
+        """Инициализирует мультиагентный раннер с необходимыми ресурсами и зависимостями, гарантируя готовность к выполнению задач в соответствии с конфигурацией."""
         if not config.multi_agent.enabled:
             raise ValueError("Multi-agent режим отключён в конфигурации")
         self.config = config
@@ -85,6 +91,9 @@ class MultiAgentRunner:
             role_llms=role_llms,
         )
         self.llm = self.llm_registry.default_llm
+        self.currency_converter = currency_converter or CBRCurrencyConverter(
+            config.currency_conversion
+        )
         self._owns_rag = rag_runtime is None and config.rag.enabled
         self.rag_runtime = (
             rag_runtime
@@ -117,6 +126,7 @@ class MultiAgentRunner:
         self.tracker = MultiAgentTracker(config.multi_agent)
 
     def run(self, request: str) -> MultiAgentRunResult:
+        """Запускает мультиагентный процесс обработки запроса, обеспечивая контроль жизненного цикла, трекинг использования и координацию агентов с гарантией корректного выполнения и учёта ресурсов."""
         normalized = request.strip()
         if not normalized:
             raise ValueError("Запрос multi-agent системе не может быть пустым")
@@ -135,12 +145,15 @@ class MultiAgentRunner:
             output_cost_per_million=(
                 self.config.multi_agent.cost.output_cost_per_million
             ),
+            cost_currency=self.config.multi_agent.cost.currency,
+            currency_converter=self.currency_converter,
             serialize_calls=self.config.agent.provider == "local",
             token_budget=self.config.multi_agent.token_budget,
             max_output_tokens=self.config.agent.max_new_tokens,
             route_resolver=self.llm_registry.route,
         )
         definitions = self._definitions()
+        guardrails = GuardrailPipeline(self.config.guardrails)
         specialists = {
             definition.name: SpecialistAgent(
                 definition,
@@ -148,6 +161,9 @@ class MultiAgentRunner:
                 rag_runtime=self.rag_runtime,
                 llm_invoke=usage_tracker.invoke,
                 llm_invoke_response=usage_tracker.invoke_response,
+                tool_output_guardrail=(
+                    lambda value: guardrails.inspect_tool_output(value).text
+                ),
                 tool_max_iterations=self.config.multi_agent.tool_max_iterations,
                 tool_output_max_chars=(self.config.multi_agent.tool_output_max_chars),
             )
@@ -270,7 +286,131 @@ class MultiAgentRunner:
         self.tracker.log_run(result)
         return result
 
+    def run_role(self, role: str, instruction: str) -> MultiAgentRunResult:
+        """Выполняет ровно одну назначенную роль без повторной supervisor-декомпозиции."""
+        normalized = instruction.strip()
+        if not normalized:
+            raise ValueError("Инструкция роли не может быть пустой")
+        # route() одновременно валидирует имя роли и не позволяет оркестратору
+        # обратиться к неописанному LLM-профилю.
+        self.llm_registry.route(role)
+        started = perf_counter()
+        run_id = str(uuid4())
+        lifecycle = LifecycleTracker(
+            details={"run_id": run_id, "user_id": self.user_id, "direct_role": role}
+        )
+        lifecycle.transition(AgentRunState.DECOMPOSED, details={"tasks": 1})
+        lifecycle.transition(AgentRunState.DELEGATED, details={"agents": [role]})
+        lifecycle.transition(AgentRunState.RUNNING)
+        usage_tracker = LLMCallTracker(
+            self.llm,
+            model=self.config.agent.model,
+            input_cost_per_million=(
+                self.config.multi_agent.cost.input_cost_per_million
+            ),
+            output_cost_per_million=(
+                self.config.multi_agent.cost.output_cost_per_million
+            ),
+            cost_currency=self.config.multi_agent.cost.currency,
+            currency_converter=self.currency_converter,
+            serialize_calls=self.config.agent.provider == "local",
+            token_budget=self.config.multi_agent.token_budget,
+            max_output_tokens=self.config.agent.max_new_tokens,
+            route_resolver=self.llm_registry.route,
+        )
+        guardrails = GuardrailPipeline(self.config.guardrails)
+        definitions = {item.name: item for item in self._definitions()}
+        definition = definitions.get(role)
+        capability = (
+            definition.capabilities[0].name
+            if definition is not None
+            else "role_analysis"
+        )
+        task = AgentTask(
+            capability=capability,
+            title=f"Прямое задание роли {role}",
+            instruction=guardrails.inspect_context(normalized).text,
+            assigned_to=role,
+        )
+        if definition is not None:
+            specialist = SpecialistAgent(
+                definition,
+                tools=self.tools,
+                rag_runtime=self.rag_runtime,
+                llm_invoke=usage_tracker.invoke,
+                llm_invoke_response=usage_tracker.invoke_response,
+                tool_output_guardrail=(
+                    lambda value: guardrails.inspect_tool_output(value).text
+                ),
+                tool_max_iterations=self.config.multi_agent.tool_max_iterations,
+                tool_output_max_chars=self.config.multi_agent.tool_output_max_chars,
+            )
+            task_result = specialist.execute(task)
+        else:
+            try:
+                content = usage_tracker.invoke(
+                    [
+                        SystemMessage(
+                            content=(
+                                f"Ты исполняешь только роль {role}. Выполни назначенный "
+                                "шаг и не делегируй его другим агентам."
+                            )
+                        ),
+                        HumanMessage(content=task.instruction),
+                    ],
+                    role,
+                )
+                task_result = AgentTaskResult(
+                    task_id=task.id,
+                    agent_name=role,
+                    capability=capability,
+                    state=TaskExecutionState.COMPLETED,
+                    content=guardrails.inspect_output(content).text,
+                )
+            except Exception as exc:
+                LOGGER.exception("Прямой вызов роли %s завершился ошибкой", role)
+                task_result = self._failed_task(task, str(exc))
+
+        completed = task_result.state == TaskExecutionState.COMPLETED
+        if completed:
+            lifecycle.transition(AgentRunState.REVIEWING)
+            lifecycle.transition(AgentRunState.COMPLETED)
+        else:
+            lifecycle.fail(task_result.error or "Роль не выполнила задание")
+        task = task.model_copy(update={"state": task_result.state})
+        usage = usage_tracker.snapshot().model_copy(
+            update={
+                "tool_calls": len(task_result.tool_calls),
+                "duration_ms": round((perf_counter() - started) * 1000, 3),
+            }
+        )
+        response = MultiAgentResponse(
+            run_id=run_id,
+            answer=task_result.content,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            selected_agents=[role],
+            tasks=[task],
+            task_results=[task_result],
+            citations=task_result.citations,
+            review="Прямое исполнение назначенной роли без supervisor-графа.",
+            llm_routes=self.llm_registry.route_info(),
+            lifecycle=lifecycle.snapshot(),
+            usage=usage,
+            execution_mode="sequential",
+            degraded=not completed,
+        )
+        response = response.model_copy(
+            update={"quality": assess_multi_response(response)}
+        )
+        result = MultiAgentRunResult(response=response)
+        run_dir = self.exporter.export_run(result)
+        result = result.model_copy(update={"run_dir": str(run_dir)})
+        self.tracker.log_run(result)
+        return result
+
     def close(self) -> None:
+        """Освобождает владение ресурсами LLM и RAG, гарантируя корректное завершение работы и предотвращение утечек."""
         if self._owns_llm_registry:
             self.llm_registry.close()
         if self._owns_rag and self.rag_runtime is not None:
@@ -284,7 +424,10 @@ class MultiAgentRunner:
         decomposer: TaskDecomposer,
         usage_tracker: LLMCallTracker,
     ):
+        """Строит и управляет графом задач мультиагентной системы, обеспечивая последовательное разложение, делегирование и агрегацию результатов с учётом ограничений и состояния."""
+
         def decompose(state: MultiAgentGraphState) -> dict[str, object]:
+            """Разбивает исходный запрос пользователя на отдельные задачи и переводит граф в состояние декомпозиции, гарантируя корректную инициализацию мультиагентного процесса."""
             tasks = decomposer.decompose(state["request"])
             lifecycle.transition(
                 AgentRunState.DECOMPOSED,
@@ -293,6 +436,7 @@ class MultiAgentRunner:
             return {"tasks": tasks}
 
         def dispatch(state: MultiAgentGraphState) -> dict[str, object]:
+            """Организует распределение задач между агентами с учётом ограничений по делегациям и обновляет состояние системы, гарантируя учёт результатов выполнения и индикацию деградации."""
             remaining_delegations = (
                 self.config.multi_agent.max_delegations - state["delegations"]
             )
@@ -345,6 +489,7 @@ class MultiAgentRunner:
             }
 
         def review(state: MultiAgentGraphState) -> dict[str, object]:
+            """Проводит критическую оценку результатов агентов с учётом лимита токенов, обеспечивая выявление ошибок и противоречий для повышения качества итогового решения."""
             lifecycle.transition(AgentRunState.REVIEWING)
             if not state["task_results"]:
                 return {"review": "Специалисты не требовались для простого запроса."}
@@ -379,6 +524,7 @@ class MultiAgentRunner:
                 }
 
         def next_after_review(state: MultiAgentGraphState) -> str:
+            """Определяет следующий шаг мультиагентного процесса, обеспечивая повторные попытки при сбоях в рамках заданных ограничений по раундам и делегациям."""
             has_failed_tasks = any(
                 result.state
                 in {TaskExecutionState.FAILED, TaskExecutionState.TIMED_OUT}
@@ -391,6 +537,7 @@ class MultiAgentRunner:
             return "retry" if has_failed_tasks and can_retry else "done"
 
         def synthesize(state: MultiAgentGraphState) -> dict[str, object]:
+            """Формирует окончательный ответ на основе собранных данных и отзывов агентов, обеспечивая согласованность, полноту и корректность с учётом ссылок и возможной деградации."""
             citations = self._deduplicate_citations(state["task_results"])
             citation_guidance = (
                 "Сохрани только существующие ссылки [Источник N]."
@@ -466,7 +613,10 @@ class MultiAgentRunner:
         bus: AsyncMessageBus,
         run_id: str,
     ) -> list[AgentTaskResult]:
+        """Обеспечивает асинхронное выполнение задач мультиагентной системы с обработкой ошибок и таймаутов, гарантируя возврат результатов для каждого задания."""
+
         async def execute(task: AgentTask) -> AgentTaskResult:
+            """Асинхронно выполняет задачу агентом, обеспечивая обработку ошибок и таймаутов для надёжного получения результата или корректного отказа."""
             if not task.assigned_to:
                 return self._failed_task(task, "Для capability не найден агент")
             envelope = AgentEnvelope(
@@ -496,6 +646,7 @@ class MultiAgentRunner:
         return results
 
     def _definitions(self):
+        """Формирует актуальный набор ролей агентов с учётом доступных инструментов и конфигурационных ограничений, обеспечивая согласованность разрешений."""
         definitions = default_role_definitions()
         overrides = self.config.multi_agent.role_tool_allowlists
         available = {tool.name for tool in self.tools}
@@ -514,6 +665,7 @@ class MultiAgentRunner:
         return resolved
 
     def _execution_mode(self):
+        """Определяет режим выполнения мультиагентной системы, выбирая последовательный при локальных маршрутах и конфигурационный в остальных случаях, гарантируя согласованность поведения."""
         if self.llm_registry.has_local_routes:
             return "sequential"
         return self.config.multi_agent.execution_mode
@@ -526,13 +678,17 @@ class MultiAgentRunner:
         usage_tracker: LLMCallTracker,
         thread_config: RunnableConfig,
     ) -> list[BaseMessage]:
+        """Гарантирует, что история сообщений не превышает заданный лимит, при необходимости сжимая её с помощью LLM и обновляя состояние графа, чтобы избежать переполнения памяти и деградации качества диалога."""
         limit = self.config.multi_agent.max_history_messages
         if len(history) <= limit:
             return history
         if self.config.multi_agent.summary_enabled:
 
             class TrackedSummaryLLM:
+                """Передаёт вызов summary через общий счётчик usage роли coordinator."""
+
                 def invoke(_self, messages: list[BaseMessage]) -> AIMessage:
+                    """Вызывает coordinator LLM и оборачивает текст в `AIMessage`."""
                     return AIMessage(
                         content=usage_tracker.invoke(messages, "coordinator")
                     )
@@ -564,6 +720,7 @@ class MultiAgentRunner:
         return kept
 
     def _conversation_context(self, history: list[BaseMessage]) -> str:
+        """Формирует человекочитаемый контекст последних сообщений для передачи в LLM, обеспечивая согласованность диалога и корректную роль участников."""
         recent = history[-self.config.multi_agent.max_history_messages :]
         labels = {"human": "Пользователь", "ai": "Ассистент", "tool": "Tool"}
         return "\n".join(
@@ -572,8 +729,10 @@ class MultiAgentRunner:
         )
 
     def _long_term_memory_context(self) -> str:
+        """Предоставляет вызывающему коду срез долговременной памяти пользователя для поддержки персонализации и контекстуальности ответов агентов."""
         records = self.memory_store.list_memories(
             user_id=self.user_id,
+            session_id=self.session_id,
             limit=self.config.memory.search_limit,
         )
         return "\n".join(f"- {record.key}: {record.value}" for record in records)
@@ -585,6 +744,7 @@ class MultiAgentRunner:
         *,
         timed_out: bool = False,
     ) -> AgentTaskResult:
+        """Гарантирует корректное оформление результата неуспешного задания с указанием причины сбоя и статуса для последующей обработки в системе."""
         return AgentTaskResult(
             task_id=task.id,
             agent_name=task.assigned_to or "unassigned",
@@ -600,6 +760,7 @@ class MultiAgentRunner:
     def _deduplicate_citations(
         results: list[AgentTaskResult],
     ) -> list[RagCitation]:
+        """Обеспечивает уникальность ссылок на источники в итоговом ответе, исключая дублирование и сохраняя корректную атрибуцию информации."""
         citations: list[RagCitation] = []
         seen: set[str] = set()
         for result in results:
@@ -612,6 +773,7 @@ class MultiAgentRunner:
 
     @staticmethod
     def _append_sources(answer: str, citations: list[RagCitation]) -> str:
+        """Гарантирует, что к ответу будут добавлены ссылки на использованные источники в стандартизированном виде, если они ещё не присутствуют."""
         if "Источники:" in answer:
             return answer
         lines = ["", "Источники:"]
@@ -624,6 +786,7 @@ class MultiAgentRunner:
 
     @staticmethod
     def _remove_unavailable_citations(answer: str) -> str:
+        """Удаляет невалидные или отсутствующие ссылки на источники из ответа, чтобы предотвратить ввод пользователя в заблуждение."""
         cleaned = re.sub(r"\s*\[Источник\s+\d+\]", "", answer)
         cleaned = re.sub(
             r"(?ms)\n+\s*Источники:\s*\n.*\Z",
@@ -634,6 +797,7 @@ class MultiAgentRunner:
 
     @staticmethod
     def _fallback_answer(results: list[AgentTaskResult]) -> str:
+        """Гарантирует возврат осмысленного ответа пользователю даже при частичном или полном сбое агентов, агрегируя доступные результаты."""
         completed = [result.content for result in results if result.content]
         if not completed:
             return "Не удалось получить результаты специалистов."
@@ -641,6 +805,7 @@ class MultiAgentRunner:
 
     @staticmethod
     def _publish_completion(bus: AsyncMessageBus, response: MultiAgentResponse) -> None:
+        """Публикует событие завершения мультиагентного запуска в шину сообщений, обеспечивая доставку статуса и метаданных для внешних подписчиков."""
         envelope = AgentEnvelope(
             correlation_id=response.run_id,
             sender="coordinator",

@@ -1,8 +1,13 @@
+"""Регрессионные тесты для подсистемы multi_agent_service."""
+
 from __future__ import annotations
 
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
@@ -21,9 +26,12 @@ from agent_app.service.runtime import SupportApplicationRuntime
 
 
 class ServiceStubLLM:
+    """Обеспечивает предсказуемые ответы LLM-заглушки для проверки корректности обработки ролей координатора и критика в multi_agent_service."""
+
     supports_tool_calling = False
 
     def invoke(self, messages):
+        """Гарантирует возвращение предопределённых ответов LLM-заглушки для проверки корректности обработки ролей координатора и критика."""
         system = str(getattr(messages[0], "content", "")).casefold()
         if "координатор" in system:
             return AIMessage(content="HTTP 503 временный, HTTP 500 внутренний.")
@@ -33,6 +41,7 @@ class ServiceStubLLM:
 
 
 def _config(root: Path) -> AgentAppConfig:
+    """Создаёт фиксированную конфигурацию приложения агента для воспроизводимой регрессионной проверки функционала multi_agent_service."""
     return AgentAppConfig(
         agent=AgentConfig(provider="local", model="test-model"),
         memory=MemoryConfig(sqlite_path=root / "memory.sqlite"),
@@ -55,7 +64,10 @@ def _config(root: Path) -> AgentAppConfig:
 
 
 class MultiAgentServiceTest(unittest.TestCase):
+    """Проверяет корректность работы и интеграцию multi_agent_service, включая обработку HTTP-запросов и взаимодействие с API."""
+
     def test_swagger_chat_run_and_agent_card(self) -> None:
+        """Проверяет, что сервис multi_agent корректно обрабатывает чат-запросы, возвращает карточку агента и поддерживает A2A и MCP протоколы."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             runtime = SupportApplicationRuntime(_config(root), llm=ServiceStubLLM())
@@ -91,6 +103,25 @@ class MultiAgentServiceTest(unittest.TestCase):
                         },
                     },
                 )
+                a2a_task_id = a2a.json()["result"]["task"]["id"]
+                a2a_loaded = None
+                for attempt in range(50):
+                    a2a_loaded = client.post(
+                        "/a2a",
+                        headers={"A2A-Version": "1.0"},
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": f"get-{attempt}",
+                            "method": "GetTask",
+                            "params": {"id": a2a_task_id},
+                        },
+                    )
+                    loaded_result = a2a_loaded.json()["result"]
+                    loaded_task = loaded_result.get("task", loaded_result)
+                    state = loaded_task["status"]["state"]
+                    if state in {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED"}:
+                        break
+                    time.sleep(0.02)
                 mcp = client.post(
                     "/mcp/",
                     headers={"Accept": "application/json, text/event-stream"},
@@ -127,8 +158,11 @@ class MultiAgentServiceTest(unittest.TestCase):
         self.assertEqual(card.status_code, 200)
         self.assertEqual(card.json()["name"], "Инженерная мультиагентная система")
         self.assertEqual(a2a.status_code, 200)
+        self.assertIsNotNone(a2a_loaded)
         self.assertEqual(
-            a2a.json()["result"]["task"]["status"]["state"],
+            (a2a_loaded.json()["result"].get("task") or a2a_loaded.json()["result"])[
+                "status"
+            ]["state"],
             "TASK_STATE_COMPLETED",
         )
         self.assertEqual(mcp.status_code, 200)
@@ -143,6 +177,34 @@ class MultiAgentServiceTest(unittest.TestCase):
         self.assertGreaterEqual(len(session.json()["multi_agent_history"]), 2)
         self.assertTrue(deleted.json()["multi_agent_checkpoint_deleted"])
         self.assertEqual(cleared_session.json()["multi_agent_history"], [])
+
+    def test_agent_card_uses_public_base_url(self) -> None:
+        """Публикует внешний URL вместо bind-адреса контейнера."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            config = _config(root)
+            config = config.model_copy(
+                update={
+                    "service": config.service.model_copy(
+                        update={"public_base_url": "https://support.example.test"}
+                    )
+                }
+            )
+            runtime = SupportApplicationRuntime(config, llm=ServiceStubLLM())
+            # Проверяем именно YAML-настройку, не локальный env override разработчика.
+            with patch.dict(os.environ, {"SUPPORT_PUBLIC_BASE_URL": ""}):
+                app = create_app(runtime=runtime)
+            with TestClient(app) as client:
+                card = client.get("/.well-known/agent-card.json").json()
+            runtime.close()
+
+        self.assertEqual(card["documentationUrl"], "https://support.example.test/docs")
+        self.assertTrue(
+            all(
+                interface["url"].startswith("https://support.example.test/")
+                for interface in card["supportedInterfaces"]
+            )
+        )
 
 
 if __name__ == "__main__":

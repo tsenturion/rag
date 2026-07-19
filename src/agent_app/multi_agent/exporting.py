@@ -1,9 +1,12 @@
+"""Экспорт воспроизводимых артефактов для мультиагентной системы."""
+
 from __future__ import annotations
 
 import json
 import shutil
 import tempfile
 from pathlib import Path
+from uuid import UUID
 
 from agent_app.multi_agent.models import (
     MultiAgentComparisonReport,
@@ -12,10 +15,14 @@ from agent_app.multi_agent.models import (
 
 
 class MultiAgentExporter:
+    """Обеспечивает атомарную и воспроизводимую выгрузку результатов мультиагентных запусков для последующего анализа."""
+
     def __init__(self, output_dir: Path):
+        """Гарантирует готовность экземпляра к сохранению и загрузке результатов в заданном каталоге."""
         self.output_dir = output_dir
 
     def export_run(self, result: MultiAgentRunResult) -> Path:
+        """Гарантирует целостную сериализацию и сохранение всех артефактов запуска для последующего воспроизведения."""
         run_id = result.response.run_id
         return self._transactional_export(
             run_id,
@@ -37,6 +44,7 @@ class MultiAgentExporter:
         )
 
     def export_comparison(self, report: MultiAgentComparisonReport) -> Path:
+        """Гарантирует сохранность и доступность результатов сравнения запусков для анализа и аудита."""
         return self._transactional_export(
             f"comparison-{report.run_id}",
             files={"comparison.json": report.model_dump(mode="json")},
@@ -44,7 +52,18 @@ class MultiAgentExporter:
         )
 
     def load_result(self, run_id: str) -> dict[str, object] | None:
-        path = self.output_dir / run_id / "result.json"
+        """Загружает результат только по каноническому UUID внутри output_dir."""
+        try:
+            canonical_run_id = str(UUID(run_id))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("run_id должен быть каноническим UUID") from exc
+        if canonical_run_id != run_id.casefold():
+            raise ValueError("run_id должен быть каноническим UUID")
+
+        root = self.output_dir.resolve()
+        path = (root / canonical_run_id / "result.json").resolve()
+        if root not in path.parents:
+            raise ValueError("Путь результата выходит за пределы output_dir")
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
@@ -56,6 +75,7 @@ class MultiAgentExporter:
         files: dict[str, object],
         jsonl: dict[str, list[dict[str, object]]],
     ) -> Path:
+        """Гарантирует атомарное сохранение артефактов запуска мультиагентной системы, предотвращая частичные записи и обеспечивая целостность данных при ошибках."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         target = self.output_dir / name
         if target.exists():
@@ -80,6 +100,7 @@ class MultiAgentExporter:
 
     @staticmethod
     def _manifest(result: MultiAgentRunResult) -> dict[str, object]:
+        """Формирует стандартизированное описание результата запуска мультиагентной системы, обеспечивая единый интерфейс для анализа и отчётности."""
         response = result.response
         return {
             "run_id": response.run_id,

@@ -1,3 +1,5 @@
+"""Сравнение результатов для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,6 +8,8 @@ from llm_tuning.models import ComparisonResult, EvaluationReport
 
 
 class FineTuningComparisonStage:
+    """Отвечает за воспроизводимое сравнение качества моделей, гарантируя выявление улучшений и регрессий между baseline и tuned версиями."""
+
     def compare(
         self,
         *,
@@ -15,6 +19,7 @@ class FineTuningComparisonStage:
         baseline_report_path: Path,
         tuned_report_path: Path,
     ) -> ComparisonResult:
+        """Гарантирует воспроизводимое сравнение качества моделей по общим примерам с явным выявлением улучшений и регрессий."""
         baseline_by_id = {answer.example_id: answer for answer in baseline.answers}
         tuned_by_id = {answer.example_id: answer for answer in tuned.answers}
         common_ids = sorted(set(baseline_by_id) & set(tuned_by_id))
@@ -63,6 +68,7 @@ class FineTuningComparisonStage:
         regressed: list[str],
         unchanged_failed: list[str],
     ) -> str:
+        """Гарантирует формулировку итогового вывода о качестве обучения на основе метрик и наличия регрессий."""
         if delta > 0 and not regressed:
             return "Качество по проверочным критериям улучшилось без регрессий."
         if delta > 0 and regressed:

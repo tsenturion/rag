@@ -1,3 +1,5 @@
+"""Экспорт воспроизводимых артефактов для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 import json
@@ -18,7 +20,10 @@ from rag_prep.utils import json_dump
 
 
 class FineTuningExportStage:
+    """Отвечает за сохранение результатов fine-tuning, включая отчёты и манифесты, обеспечивая целостность и воспроизводимость артефактов и метаданных."""
+
     def __init__(self, config: FineTuningPipelineConfig):
+        """Готовит экземпляр к экспорту результатов, обеспечивая доступ к конфигурации пайплайна и корректное управление путями."""
         self.config = config
 
     def write_evaluation(
@@ -27,11 +32,13 @@ class FineTuningExportStage:
         *,
         filename: str,
     ) -> Path:
+        """Гарантирует атомарную запись отчёта об оценке в формате JSON в согласованное место файловой системы."""
         path = self._report_path(report.run_id, filename)
         json_dump(path, report.model_dump(mode="json"))
         return path
 
     def write_comparison(self, comparison: ComparisonResult) -> Path:
+        """Гарантирует сохранение результатов сравнения моделей в виде отчёта, пригодного для последующего анализа и автоматизации."""
         path = self._report_path(
             comparison.run_id,
             self.config.paths.comparison_report_filename,
@@ -52,6 +59,7 @@ class FineTuningExportStage:
         comparison_report_path: Path | None = None,
         diagnostics: dict[str, Any] | None = None,
     ) -> FineTuningExportResult:
+        """Гарантирует создание и сохранение манифеста запуска с полной трассировкой артефактов, параметров и диагностик для воспроизводимости."""
         manifest_path = self._report_path(
             run_id,
             self.config.paths.manifest_filename,
@@ -90,10 +98,12 @@ class FineTuningExportStage:
 
     @staticmethod
     def load_evaluation_report(path: Path) -> EvaluationReport:
+        """Гарантирует корректную загрузку и валидацию отчёта об оценке из JSON-файла для дальнейшей обработки."""
         with path.open("r", encoding="utf-8") as file:
             return EvaluationReport.model_validate(json.load(file))
 
     def _report_path(self, run_id: str, filename: str) -> Path:
+        """Гарантирует построение безопасного пути к файлу отчёта с созданием необходимых директорий и валидацией компонентов пути."""
         self._validate_path_component(run_id, name="run_id")
         self._validate_path_component(filename, name="имя отчёта")
         run_dir = self.config.paths.reports_dir / run_id
@@ -102,5 +112,6 @@ class FineTuningExportStage:
 
     @staticmethod
     def _validate_path_component(value: str, *, name: str) -> None:
+        """Обеспечивает корректность компонентов пути для безопасного экспорта fine-tuning, предотвращая ошибки и уязвимости при работе с файловой системой."""
         if not value or Path(value).name != value or value in {".", ".."}:
             raise ValueError(f"Некорректный {name}: {value!r}")

@@ -1,3 +1,5 @@
+"""Граф состояний LangGraph для агентного приложения."""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from agent_app.config import AgentAppConfig
+from agent_app.guardrails import GuardrailPipeline
 from agent_app.llm import build_llm
 from agent_app.memory import SQLiteMemoryStore, ShortTermMemory, SummaryMemory
 from agent_app.models import (
@@ -57,7 +60,9 @@ class AgentRunner:
         incident_store: IncidentStore | None = None,
         external_tools: list[BaseTool] | None = None,
     ):
+        """Гарантирует готовность экземпляра к обработке запросов пользователя с изолированной памятью, инструментами и внешними зависимостями."""
         self.config = config
+        self.guardrails = GuardrailPipeline(config.guardrails)
         self.user_id = user_id or config.memory.default_user_id
         self.session_id = session_id or config.memory.default_session_id
         self.store = SQLiteMemoryStore(config.memory.sqlite_path)
@@ -115,7 +120,12 @@ class AgentRunner:
         self.graph = self._build_graph()
 
     def ask(self, message: str) -> AgentResponse:
-        memory_before = self.store.list_memories(user_id=self.user_id, limit=200)
+        """Гарантирует получение ответа агента с учётом пользовательской истории, памяти и политик безопасности, либо информирует о невозможности выполнения запроса."""
+        memory_before = self.store.list_memories(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            limit=200,
+        )
         if self._is_secret_storage_request(message):
             answer = (
                 "Нельзя хранить API-ключи, пароли, токены и другие секреты в памяти. "
@@ -141,6 +151,7 @@ class AgentRunner:
             )
         memories = self.store.list_memories(
             user_id=self.user_id,
+            session_id=self.session_id,
             limit=self.config.memory.search_limit,
         )
         system = SystemMessage(
@@ -205,6 +216,7 @@ class AgentRunner:
         citations, retrieval = self._retrieval_from_messages(messages)
         if self._looks_like_serialized_tool_call(answer):
             answer = self._repair_serialized_tool_answer(message, messages)
+        answer = self._append_required_tool_summary(message, answer, tool_results)
         if citations:
             answer = self._append_citations(answer, citations)
         elif (
@@ -250,7 +262,11 @@ class AgentRunner:
             if len(summarized_messages) != len(self.short_term.messages):
                 self.short_term.messages = summarized_messages
 
-        memory_after = self.store.list_memories(user_id=self.user_id, limit=200)
+        memory_after = self.store.list_memories(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            limit=200,
+        )
         trace = self._trace(
             message=message,
             input_messages=input_messages,
@@ -274,18 +290,25 @@ class AgentRunner:
         )
 
     def list_memory(self) -> list[dict[str, object]]:
+        """Гарантирует возврат последних 100 воспроизводимых записей пользовательской памяти для анализа или отладки."""
         return [
             record.model_dump(mode="json")
-            for record in self.store.list_memories(user_id=self.user_id, limit=100)
+            for record in self.store.list_memories(
+                user_id=self.user_id,
+                session_id=self.session_id,
+                limit=100,
+            )
         ]
 
     def clear_session_memory(self) -> int:
+        """Гарантирует удаление всех сообщений текущей сессии пользователя из краткосрочной и долговременной памяти."""
         self.short_term.clear()
         return self.store.clear_session(
             user_id=self.user_id, session_id=self.session_id
         )
 
     def close(self) -> None:
+        """Гарантирует корректное освобождение внешних ресурсов и завершение работы зависимостей для предотвращения утечек."""
         if self._external_mcp_manager is not None:
             self._external_mcp_manager.close()
             self._external_mcp_manager = None
@@ -293,9 +316,11 @@ class AgentRunner:
             self.rag_runtime.close()
 
     def _build_graph(self):
+        """Гарантирует построение рабочей вычислительной схемы агента с поддержкой инструментов и защитой от зацикливания."""
         if not getattr(self.llm, "supports_tool_calling", True):
 
             def local_agent_node(state: AgentState) -> dict[str, list[BaseMessage]]:
+                """Вызывает локальную LLM без function-calling ветки."""
                 response = self.llm.invoke(state["messages"])
                 return {"messages": [response]}
 
@@ -305,12 +330,15 @@ class AgentRunner:
             return workflow.compile()
 
         llm_with_tools = self.llm.bind_tools(self.tools)
+        raw_tool_node = ToolNode(self.tools)
 
         def agent_node(state: AgentState) -> dict[str, list[BaseMessage]]:
+            """Гарантирует получение ответа от LLM с инструментами на основе текущего состояния сообщений агента."""
             response = llm_with_tools.invoke(state["messages"])
             return {"messages": [response]}
 
         def finalize_node(state: AgentState) -> dict[str, object]:
+            """Формирует финальное состояние с отменой незавершённых вызовов инструментов и fallback-ответом, гарантируя завершение сценария без зависаний."""
             return {
                 "messages": [
                     *self._cancel_pending_tool_calls(state["messages"]),
@@ -321,9 +349,24 @@ class AgentRunner:
                 "loop_guard_triggered": True,
             }
 
+        def tools_node(state: AgentState) -> dict[str, list[BaseMessage]]:
+            """Выполняет tools и очищает их недоверенный вывод до возврата LLM."""
+            result = raw_tool_node.invoke(state)
+            sanitized: list[BaseMessage] = []
+            for message in result.get("messages", []):
+                if not isinstance(message, ToolMessage):
+                    sanitized.append(message)
+                    continue
+                decision = self.guardrails.inspect_tool_output(str(message.content))
+                content = decision.text
+                if decision.findings:
+                    content = "[Недоверенный результат инструмента очищен]\n" + content
+                sanitized.append(message.model_copy(update={"content": content}))
+            return {"messages": sanitized}
+
         workflow = StateGraph(AgentState)
         workflow.add_node("agent", agent_node)
-        workflow.add_node("tools", ToolNode(self.tools))
+        workflow.add_node("tools", tools_node)
         workflow.add_node("finalize", finalize_node)
         workflow.add_edge(START, "agent")
         workflow.add_conditional_edges(
@@ -337,6 +380,7 @@ class AgentRunner:
 
     @staticmethod
     def _last_ai_message(messages: list[BaseMessage]) -> AIMessage | None:
+        """Гарантирует извлечение последнего сообщения агента без вызова инструментов для корректного формирования ответа."""
         for message in reversed(messages):
             if isinstance(message, AIMessage) and not getattr(
                 message, "tool_calls", None
@@ -346,6 +390,7 @@ class AgentRunner:
 
     @staticmethod
     def _tool_call_names(messages: list[BaseMessage]) -> list[str]:
+        """Гарантирует получение списка имён всех инструментов, вызванных в сообщениях, для аудита или трассировки."""
         names: list[str] = []
         for message in messages:
             for call in getattr(message, "tool_calls", []) or []:
@@ -359,6 +404,7 @@ class AgentRunner:
         user_message: str,
         messages: list[BaseMessage],
     ) -> list[str]:
+        """Гарантирует, что вызывающий получит список инструментов, явно требуемых пользователем, но ещё не вызванных в текущем диалоге."""
         requested = self._requested_tools(user_message)
         if not requested:
             return []
@@ -366,6 +412,7 @@ class AgentRunner:
         return [tool for tool in requested if tool not in called]
 
     def _requested_tools(self, user_message: str) -> list[str]:
+        """Определяет и возвращает уникальный список инструментов, которые пользователь явно или неявно запросил в сообщении, с учётом бизнес-правил и включения RAG."""
         lower = user_message.lower()
         tool_names = [tool.name for tool in self.tools]
         requested = [name for name in tool_names if name.lower() in lower]
@@ -393,6 +440,7 @@ class AgentRunner:
 
     @staticmethod
     def _requires_rag(user_message: str) -> bool:
+        """Гарантирует определение необходимости поиска в базе знаний или runbook на основе маркеров в пользовательском сообщении."""
         lower = user_message.lower()
         markers = (
             "ошиб",
@@ -418,6 +466,7 @@ class AgentRunner:
         return any(marker in lower for marker in markers)
 
     def _route_after_agent(self, state: AgentState) -> str:
+        """Направляет tool calls на выполнение либо завершает повторяющийся цикл."""
         messages = state["messages"]
         if not messages:
             return END
@@ -431,6 +480,7 @@ class AgentRunner:
         return "tools"
 
     def _should_finalize_tool_loop(self, messages: list[BaseMessage]) -> bool:
+        """Обнаруживает повтор сигнатуры и превышение общего бюджета tools."""
         current = messages[-1]
         for current_call in getattr(current, "tool_calls", []) or []:
             signature = self._tool_call_signature(current_call)
@@ -454,6 +504,9 @@ class AgentRunner:
         messages: list[BaseMessage],
         previous_calls: list[dict[str, object]],
     ) -> bool:
+        """Разрешает ограниченный повтор только после подтверждённой ошибки tool."""
+        # Успешный повтор тех же аргументов почти всегда означает цикл модели.
+        # Ошибка ToolMessage, напротив, может быть временной и допускает retry.
         if len(previous_calls) > self.config.agent.tool_error_retries:
             return False
         latest_call_id = previous_calls[-1].get("id")
@@ -472,6 +525,7 @@ class AgentRunner:
 
     @staticmethod
     def _tool_call_signature(call: dict[str, object]) -> str:
+        """Канонизирует имя и аргументы tool call для сравнения повторов."""
         payload = {
             "name": call.get("name"),
             "args": call.get("args", {}),
@@ -479,6 +533,7 @@ class AgentRunner:
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
     def _fallback_answer_from_tools(self, messages: list[BaseMessage]) -> str:
+        """Гарантирует формирование финального ответа пользователю на основе последних результатов инструментов при невозможности продолжения автоматизации."""
         tool_results = self._tool_results(messages)
         if not tool_results:
             return "Tool-вызовы остановлены: модель начала повторять цикл действий."
@@ -488,11 +543,33 @@ class AgentRunner:
             lines.append(self._format_tool_result_for_answer(result))
         return "\n".join(lines)
 
+    def _append_required_tool_summary(
+        self,
+        user_message: str,
+        answer: str,
+        tool_results: list[AgentToolResult],
+    ) -> str:
+        """Дополняет ответ результатами явно запрошенной цепочки tools без нового LLM-вызова."""
+        requested = set(self._requested_tools(user_message))
+        if len(requested) < 2:
+            return answer
+        relevant = [result for result in tool_results if result.name in requested]
+        if len(relevant) < 2:
+            return answer
+        summary = "\n".join(
+            self._format_tool_result_for_answer(result) for result in relevant
+        )
+        marker = "Ключевые результаты tools:"
+        if marker.casefold() in answer.casefold():
+            return answer
+        return f"{answer.rstrip()}\n\n{marker}\n{summary}".strip()
+
     def _repair_serialized_tool_answer(
         self,
         user_message: str,
         messages: list[BaseMessage],
     ) -> str:
+        """Гарантирует попытку восстановления финального ответа для пользователя без повторных вызовов инструментов и без протечек протокола, используя только уже полученные результаты."""
         evidence = self._tool_evidence(messages)
         try:
             response = self.llm.invoke(
@@ -529,6 +606,7 @@ class AgentRunner:
 
     @staticmethod
     def _tool_evidence(messages: list[BaseMessage]) -> str:
+        """Гарантирует сбор и форматирование релевантных результатов инструментов из истории сообщений для последующего использования в ответе."""
         evidence: list[str] = []
         for message in messages:
             if not isinstance(message, ToolMessage):
@@ -552,6 +630,7 @@ class AgentRunner:
 
     @staticmethod
     def _looks_like_serialized_tool_call(answer: str) -> bool:
+        """Гарантирует определение, содержит ли строка признаки сериализованного вызова инструмента или function call."""
         lowered = answer.lower()
         return (
             ("recipient_name" in lowered and "parameters" in lowered)
@@ -562,6 +641,7 @@ class AgentRunner:
 
     @staticmethod
     def _has_deterministic_support_evidence(messages: list[BaseMessage]) -> bool:
+        """Проверяет, что среди сообщений есть успешные результаты инструментов, обеспечивающих воспроизводимую поддержку."""
         grounded_tools = {"analyze_log_fragment", "build_diagnostic_checklist"}
         return any(
             isinstance(message, ToolMessage)
@@ -572,10 +652,13 @@ class AgentRunner:
 
     @staticmethod
     def _cancel_pending_tool_calls(messages: list[BaseMessage]) -> list[ToolMessage]:
+        """Закрывает каждый отменённый tool call протокольным ToolMessage."""
         if not messages:
             return []
         pending_calls = getattr(messages[-1], "tool_calls", None) or []
         cancelled: list[ToolMessage] = []
+        # Провайдеры требуют результат для каждого assistant function call. Даже
+        # остановленный loop должен завершить протокол до финального AIMessage.
         for index, call in enumerate(pending_calls, start=1):
             tool_name = str(call.get("name") or "tool")
             tool_call_id = str(call.get("id") or f"loop_guard_{index}")
@@ -597,6 +680,7 @@ class AgentRunner:
 
     @staticmethod
     def _format_tool_result_for_answer(result: AgentToolResult) -> str:
+        """Гарантирует преобразование результата инструмента в человекочитаемую строку для включения в финальный ответ пользователю."""
         name = result.name or "tool"
         try:
             payload = json.loads(result.content)
@@ -652,6 +736,7 @@ class AgentRunner:
         memory_before: list[MemoryRecord],
         exc: Exception,
     ) -> AgentResponse:
+        """Гарантирует формирование воспроизводимого ответа с описанием ошибки, трассировкой и фиксацией состояния памяти для диагностики."""
         answer = f"Ошибка выполнения агента: {self._sanitize_agent_error(exc)}"
         error_message = AIMessage(content=answer)
         trace = self._trace(
@@ -682,6 +767,7 @@ class AgentRunner:
         self,
         messages: list[BaseMessage],
     ) -> tuple[list[RagCitation], AgentRetrievalInfo | None]:
+        """Извлекает уникальные цитаты и агрегированную информацию о поиске знаний из сообщений, гарантируя корректную обработку ошибок и дублирующихся источников."""
         results: list[RagRetrievalResult] = []
         for message in messages:
             if not isinstance(message, ToolMessage):
@@ -692,7 +778,10 @@ class AgentRunner:
             }:
                 continue
             try:
-                payload = json.loads(str(message.content))
+                sanitized_data = self.guardrails.unwrap_tool_output(
+                    str(message.content)
+                )
+                payload = json.loads(sanitized_data)
                 if payload.get("status") == "cancelled":
                     continue
                 results.append(RagRetrievalResult.model_validate(payload))
@@ -732,6 +821,7 @@ class AgentRunner:
 
     @staticmethod
     def _append_citations(answer: str, citations: list[RagCitation]) -> str:
+        """Добавляет структурированный список использованных источников к ответу, гарантируя прозрачность происхождения информации для пользователя."""
         lines = []
         for citation in citations:
             location = citation.source or "неизвестный источник"
@@ -748,6 +838,7 @@ class AgentRunner:
 
     @staticmethod
     def _is_recoverable_agent_error(exc: Exception) -> bool:
+        """Гарантирует определение ошибок, после которых возможен повторный запуск или восстановление работы агента."""
         module = exc.__class__.__module__
         return (
             isinstance(exc, GraphRecursionError)
@@ -757,6 +848,7 @@ class AgentRunner:
 
     @staticmethod
     def _sanitize_agent_error(exc: Exception) -> str:
+        """Удаляет чувствительные данные и ограничивает длину сообщения об ошибке, чтобы предотвратить утечку секретов в логи или интерфейс."""
         text = str(exc)
         text = re.sub(
             r"Authorization':\s*'[^']+'", "Authorization': '<redacted>'", text
@@ -768,10 +860,12 @@ class AgentRunner:
 
     @staticmethod
     def _is_secret_storage_request(message: str) -> bool:
+        """Гарантирует обнаружение попытки обращения к хранилищу секретов по содержимому сообщения."""
         return bool(SECRET_STORAGE_RE.search(message))
 
     @staticmethod
     def _tool_results(messages: list[BaseMessage]) -> list[AgentToolResult]:
+        """Формирует список результатов работы инструментов из сообщений, гарантируя ограничение размера и корректную маркировку ошибок."""
         results: list[AgentToolResult] = []
         for message in messages:
             if isinstance(message, ToolMessage):
@@ -787,6 +881,7 @@ class AgentRunner:
 
     @staticmethod
     def _tool_message_is_error(message: ToolMessage) -> bool:
+        """Гарантирует определение сообщений инструментов, содержащих ошибку, для корректной обработки статуса выполнения."""
         if getattr(message, "status", None) == "error":
             return True
         content = str(message.content)
@@ -822,6 +917,7 @@ class AgentRunner:
         memory_after: list[MemoryRecord],
         loop_guard_triggered: bool = False,
     ) -> AgentTrace:
+        """Формирует полную трассировку шага агента, фиксируя изменения памяти, вызовы инструментов и промежуточные состояния для аудита и отладки."""
         before_by_id = {record.id: record for record in memory_before}
         after_by_id = {record.id: record for record in memory_after}
         created_ids = [

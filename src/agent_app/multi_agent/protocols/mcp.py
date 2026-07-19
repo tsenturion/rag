@@ -1,3 +1,5 @@
+"""Реализация компонентов для межагентных протоколов."""
+
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
@@ -9,6 +11,7 @@ from agent_app.tools.support import (
 
 
 def build_mcp_server(*, max_log_chars: int = 12000) -> FastMCP:
+    """Гарантирует готовность stateless HTTP-сервера с инструментами анализа логов и чек-листами для мультиагентной диагностики."""
     server = FastMCP(
         "Инженерные tools",
         instructions=(

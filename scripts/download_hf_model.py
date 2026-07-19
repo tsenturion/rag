@@ -1,3 +1,5 @@
+"""Реализация компонентов для вспомогательных сценариев проекта."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +11,7 @@ from huggingface_hub import snapshot_download
 
 
 def main() -> None:
+    """Запускает командный интерфейс и возвращает код завершения."""
     project_root = Path(__file__).resolve().parents[1]
     load_dotenv(project_root / ".env")
     args = build_parser().parse_args()
@@ -52,6 +55,7 @@ def main() -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Создаёт и настраивает parser аргументов командной строки."""
     parser = argparse.ArgumentParser(
         description=(
             "Скачивание произвольной Hugging Face модели в локальную папку проекта."
@@ -106,6 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _non_empty(value: str) -> str:
+    """Гарантирует, что аргумент командной строки не пустой и пригоден для дальнейшей обработки."""
     normalized = value.strip()
     if not normalized:
         raise argparse.ArgumentTypeError("значение не может быть пустым")

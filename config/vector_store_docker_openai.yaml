@@ -14,6 +14,7 @@ paths:
 vector_store:
   mode: http
   recreate_collection: false
+  prune_stale_points: true
   batch_size: 128
   host: qdrant
   port: 6333

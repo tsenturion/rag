@@ -1,3 +1,5 @@
+"""Реализация компонентов для межагентных протоколов."""
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -19,8 +21,11 @@ class ACPMessage(BaseModel):
 
 
 class ACPProtocolAdapter:
+    """Преобразует legacy ACP-сообщения во внутренний и A2A-форматы."""
+
     @staticmethod
     def to_internal(message: ACPMessage, *, recipient: str) -> AgentEnvelope:
+        """Гарантирует преобразование ACP-сообщения в внутренний конверт агента с сохранением идентификаторов и полезной нагрузки."""
         return AgentEnvelope(
             correlation_id=message.run_id,
             sender=message.agent_name,
@@ -35,6 +40,7 @@ class ACPProtocolAdapter:
 
     @staticmethod
     def to_a2a_message(message: ACPMessage) -> dict[str, object]:
+        """Гарантирует преобразование ACP-сообщения в публичный формат A2A с сохранением метаданных и структуры частей."""
         text_parts = [
             {"text": str(part.get("content", part.get("text", "")))}
             for part in message.parts

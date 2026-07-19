@@ -1,8 +1,12 @@
+"""Регрессионные тесты для подсистемы support_service."""
+
 from __future__ import annotations
 
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -28,14 +32,40 @@ from agent_app.service.runtime import SupportApplicationRuntime  # noqa: E402
 
 
 class SimpleModel:
+    """Обеспечивает базовую модель для тестирования, гарантирующую стабильный ответ без вызова инструментов, чтобы проверить корректность работы сервиса."""
+
     supports_tool_calling = False
 
     def invoke(self, _messages):
+        """Проверяет, что сервис возвращает корректный ответ без ошибок при типовом вызове модели."""
         return AIMessage(content="Сервисный ответ")
 
 
+class BlockingMultiAgentRuntime:
+    """Имитирует sync LLM-вызов, продолжающий работать после отмены async wrapper."""
+
+    def __init__(self) -> None:
+        """Создаёт события для наблюдения начала, завершения и закрытия runtime."""
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.closed = threading.Event()
+
+    def ask(self, **_kwargs):
+        """Удерживает execution lock до явного разрешения тестом."""
+        self.started.set()
+        self.release.wait(timeout=2)
+        return object()
+
+    def close(self) -> None:
+        """Фиксирует момент освобождения общего multi-agent runtime."""
+        self.closed.set()
+
+
 class SupportServiceTest(unittest.TestCase):
+    """Проверяет ключевые аспекты работы сервиса поддержки, включая маршруты API, безопасность, жизненный цикл сессий и обработку запросов."""
+
     def test_openapi_documents_routes_examples_and_api_key_security(self) -> None:
+        """Проверяет, что документация OpenAPI доступна, содержит примеры, корректно описывает безопасность через API-ключ и возвращает успешные HTTP-статусы."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             config = AgentAppConfig(
@@ -79,6 +109,7 @@ class SupportServiceTest(unittest.TestCase):
         )
 
     def test_health_auth_chat_stream_metrics_and_session_lifecycle(self) -> None:
+        """Проверяет, что сервис корректно отвечает на запросы здоровья, аутентификации, потокового чата, метрик и управляет жизненным циклом сессий с учётом безопасности."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             config = AgentAppConfig(
@@ -114,7 +145,8 @@ class SupportServiceTest(unittest.TestCase):
                         "/v1/sessions/session-1?user_id=engineer",
                         headers=headers,
                     )
-                    metrics = client.get("/metrics")
+                    metrics_without_key = client.get("/metrics")
+                    metrics = client.get("/metrics", headers=headers)
                     deleted = client.delete(
                         "/v1/sessions/session-1?user_id=engineer",
                         headers=headers,
@@ -128,11 +160,14 @@ class SupportServiceTest(unittest.TestCase):
         self.assertIn("event: started", stream.text)
         self.assertIn("event: result", stream.text)
         self.assertEqual(session.status_code, 200)
+        self.assertEqual(metrics_without_key.status_code, 401)
+        self.assertEqual(metrics.status_code, 200)
         self.assertIn("support_agent_requests_total", metrics.text)
         self.assertEqual(deleted.status_code, 200)
         self.assertTrue(deleted.json()["runner_removed"])
 
     def test_message_limit_returns_413(self) -> None:
+        """Проверяет, что при превышении максимального размера сообщения сервис возвращает HTTP-статус 413, обеспечивая ограничение на размер входящих данных."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             config = AgentAppConfig(
@@ -154,6 +189,43 @@ class SupportServiceTest(unittest.TestCase):
             runtime.close()
 
         self.assertEqual(response.status_code, 413)
+
+    def test_close_waits_for_inflight_multi_agent_call(self) -> None:
+        """Не закрывает LLM registry и SQLite, пока sync-вызов реально работает."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            config = AgentAppConfig(
+                agent=AgentConfig(provider="local", model="test-model"),
+                memory=MemoryConfig(sqlite_path=root / "memory.sqlite"),
+                tools=AgentToolsConfig(incident_sqlite_path=root / "incidents.sqlite"),
+            )
+            runtime = SupportApplicationRuntime(config, llm=SimpleModel())
+            blocking = BlockingMultiAgentRuntime()
+            runtime.multi_agent_runtime = blocking  # type: ignore[assignment]
+            request = threading.Thread(
+                target=runtime.ask_multi,
+                kwargs={
+                    "user_id": "engineer",
+                    "session_id": "shutdown",
+                    "message": "Диагностика",
+                },
+            )
+            request.start()
+            self.assertTrue(blocking.started.wait(timeout=1))
+            shutdown = threading.Thread(target=runtime.close)
+            shutdown.start()
+            time.sleep(0.05)
+
+            self.assertTrue(shutdown.is_alive())
+            self.assertFalse(blocking.closed.is_set())
+
+            blocking.release.set()
+            request.join(timeout=2)
+            shutdown.join(timeout=2)
+
+        self.assertFalse(request.is_alive())
+        self.assertFalse(shutdown.is_alive())
+        self.assertTrue(blocking.closed.is_set())
 
 
 if __name__ == "__main__":

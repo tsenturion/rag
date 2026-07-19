@@ -4,3 +4,10 @@ agent:
   max_new_tokens: 512
   timeout_seconds: 60
   max_retries: 2
+
+multi_agent:
+  cost:
+    # Официальный тариф GigaChat 2 Lite в рублях за 1 млн токенов.
+    input_cost_per_million: 65.0
+    output_cost_per_million: 65.0
+    currency: RUB

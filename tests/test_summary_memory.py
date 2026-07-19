@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы summary_memory."""
+
 from __future__ import annotations
 
 import sys
@@ -20,14 +22,20 @@ from agent_app.memory.summary import SummaryMemory  # noqa: E402
 
 
 class SummaryModel:
+    """Обеспечивает генерацию кратких резюме без ошибок, гарантируя корректность и полноту итогового текста при стандартных запросах."""
+
     def invoke(self, _messages):
+        """Проверяет, что модель возвращает краткое резюме без ошибок при стандартном запросе."""
         return AIMessage(content="Краткое резюме")
 
 
 class SummaryFailingModel:
+    """Модель служит для проверки обработки ошибок при недоступности backend-сервиса суммаризации, гарантируя корректное реагирование на системные сообщения с ошибками."""
+
     supports_tool_calling = False
 
     def invoke(self, messages):
+        """Проверяет, что модель корректно сигнализирует о недоступности бэкенда при соответствующем системном сообщении."""
         if messages and isinstance(messages[0], SystemMessage):
             if "Сожми историю" in str(messages[0].content):
                 raise RuntimeError("summary backend unavailable")
@@ -35,7 +43,10 @@ class SummaryFailingModel:
 
 
 class SummaryMemoryTest(unittest.TestCase):
+    """Тесты проверяют корректность работы подсистемы суммаризации истории диалога, включая обрезку истории и обработку ошибок при суммаризации."""
+
     def test_history_is_trimmed_on_complete_turn_boundary(self) -> None:
+        """Проверяет, что при достижении границы длины истории суммаризация корректно обрезает историю, сохраняя последние сообщения."""
         with tempfile.TemporaryDirectory() as temp_dir:
             summary = SummaryMemory(
                 SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite"),
@@ -57,6 +68,7 @@ class SummaryMemoryTest(unittest.TestCase):
         self.assertEqual([message.type for message in kept], ["human", "ai"])
 
     def test_summary_failure_does_not_discard_ready_answer(self) -> None:
+        """Проверяет, что при ошибке суммаризации готовый ответ не теряется и история сообщений сохраняется без удаления."""
         with tempfile.TemporaryDirectory() as temp_dir:
             config = load_agent_config(PROJECT_ROOT / "config" / "agent_openai.yaml")
             config = config.model_copy(

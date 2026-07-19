@@ -1,3 +1,6 @@
+"""Прикладные исключения для распределённой оркестрации."""
+
+
 class OrchestrationError(RuntimeError):
     """Базовая ошибка orchestration runtime."""
 

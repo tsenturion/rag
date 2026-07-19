@@ -1,3 +1,5 @@
+"""Расчёт метрик для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 from llm_tuning.models import (
@@ -18,6 +20,7 @@ def build_fine_tuning_counts(
     tuned: EvaluationReport | None = None,
     comparison: ComparisonResult | None = None,
 ) -> dict[str, int | float]:
+    """Формирует сводные метрики fine-tuning, объединяя данные валидации, обучения и оценки для комплексного анализа качества модели."""
     counts: dict[str, int | float] = {
         "train_examples_count": dataset_validation.train.examples_count,
         "eval_examples_count": dataset_validation.eval.examples_count,

@@ -1,3 +1,5 @@
+"""Выбор вычислительного устройства и типа данных для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -7,6 +9,7 @@ from llm_tuning.models import DeviceReport
 
 
 def build_device_report(config: LocalModelConfig) -> DeviceReport:
+    """Гарантирует выбор совместимого устройства и типа данных для запуска модели, фиксируя ограничения среды и информируя о возможных деградациях."""
     import torch
 
     xpu_available = bool(getattr(torch, "xpu", None) and torch.xpu.is_available())
@@ -53,6 +56,7 @@ def build_device_report(config: LocalModelConfig) -> DeviceReport:
 
 
 def select_dtype_name(requested_dtype: str, selected_device: str) -> str:
+    """Гарантирует выбор поддерживаемого типа данных для вычислений на заданном устройстве с учётом пользовательских и аппаратных ограничений."""
     if requested_dtype != "auto":
         return {"bf16": "bf16", "fp16": "fp16", "fp32": "fp32"}[requested_dtype]
     if selected_device in {"xpu", "cuda"}:
@@ -61,6 +65,7 @@ def select_dtype_name(requested_dtype: str, selected_device: str) -> str:
 
 
 def torch_dtype(dtype_name: str) -> Any:
+    """Гарантирует получение корректного torch-типa для вычислений, соответствующего выбранному имени типа данных."""
     import torch
 
     if dtype_name == "bf16":

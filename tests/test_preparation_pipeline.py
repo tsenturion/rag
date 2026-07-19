@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы preparation_pipeline."""
+
 from __future__ import annotations
 
 import sys
@@ -27,9 +29,12 @@ from rag_prep.stages.structuring import LlamaIndexStructuringStage  # noqa: E402
 
 
 class PreparationPipelineTest(unittest.TestCase):
+    """Проверяет корректность обработки данных в подготовительном пайплайне, включая загрузку, очистку, нормализацию, дедупликацию и структурирование документов."""
+
     def test_csv_passes_loading_cleaning_normalization_dedup_and_structuring(
         self,
     ) -> None:
+        """Проверяет, что CSV-файл корректно проходит этапы загрузки, очистки, нормализации, удаления дубликатов и структурирования, обеспечивая целостность и качество итоговых документов."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             input_dir = Path(temporary_dir) / "raw"
             input_dir.mkdir()

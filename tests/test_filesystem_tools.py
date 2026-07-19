@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы filesystem_tools."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +12,10 @@ from agent_app.tools.filesystem import WorkspaceFileService, filesystem_tools
 
 
 class FilesystemToolsTest(unittest.TestCase):
+    """Проверяет корректность работы файловых операций в рабочем пространстве, включая безопасность, права доступа и маскирование секретных данных."""
+
     def test_workspace_read_write_and_secret_redaction(self) -> None:
+        """Проверяет, что файлы можно безопасно записывать и читать в рабочем пространстве, а секретные данные корректно маскируются при чтении."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             service = WorkspaceFileService(
                 FileToolsConfig(
@@ -30,6 +35,7 @@ class FilesystemToolsTest(unittest.TestCase):
         self.assertEqual(listing["entries"][0]["path"], "notes/result.txt")
 
     def test_path_traversal_and_forbidden_extension_are_rejected(self) -> None:
+        """Проверяет, что попытки доступа к файлам вне рабочего пространства и с запрещёнными расширениями блокируются с соответствующими ошибками."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             service = WorkspaceFileService(
                 FileToolsConfig(
@@ -43,6 +49,7 @@ class FilesystemToolsTest(unittest.TestCase):
                 service.read_file("payload.exe")
 
     def test_write_tool_is_not_exposed_in_read_only_mode(self) -> None:
+        """Проверяет, что в режиме только для чтения инструменты записи не доступны, предотвращая изменение файлов."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             tools = filesystem_tools(
                 FileToolsConfig(

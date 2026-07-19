@@ -1,3 +1,5 @@
+"""Фоновые задачи Celery для распределённой оркестрации."""
+
 from __future__ import annotations
 
 import random
@@ -24,6 +26,8 @@ from agent_app.orchestration.service import JobRunner, result_has_retryable_fail
 from agent_app.orchestration.store import RedisJobStore
 
 _EXECUTORS: dict[str, tuple[Any, Any]] = {}
+# Runtime включает тяжёлую LLM. Кэш на процесс worker предотвращает повторную
+# загрузку модели для каждой Celery-задачи и исчерпание памяти XPU/GPU.
 _EXECUTOR_LOCK = threading.RLock()
 
 
@@ -34,6 +38,7 @@ def execute_job_task(
     job_payload: dict[str, Any],
     config_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """Выполняет задание с at-least-once delivery, retry и финальным DLQ reject."""
     config = _load_worker_config(config_payload)
     job = OrchestrationJob.model_validate(job_payload)
     state_url = _required_state_url(config)
@@ -69,6 +74,8 @@ def execute_job_task(
                     countdown=countdown,
                     max_retries=config.orchestration.max_retries,
                 )
+            # requeue=False не запускает бесконечный broker redelivery: RabbitMQ
+            # направит сообщение в DLQ согласно политике очереди.
             raise Reject(record.error or "Лимит повторов исчерпан", requeue=False)
         return record.model_dump(mode="json")
     except (Retry, Reject):
@@ -103,6 +110,7 @@ def execute_job_task(
 
 
 def _cached_executor(config: AgentAppConfig) -> tuple[Any, Any]:
+    """Переиспользует runtime для одинаковой модели и checkpoint в одном worker."""
     key = (
         f"{config.agent.provider}:{config.agent.model}:"
         f"{config.multi_agent.checkpoint_path}"
@@ -117,6 +125,7 @@ def _cached_executor(config: AgentAppConfig) -> tuple[Any, Any]:
 
 
 def _required_state_url(config: AgentAppConfig) -> str:
+    """Гарантирует, что URL хранилища состояния получен из переменной окружения и явно валиден для запуска оркестрации."""
     import os
 
     value = os.getenv(config.orchestration.state_store_url_env)
@@ -128,6 +137,7 @@ def _required_state_url(config: AgentAppConfig) -> str:
 
 
 def _load_worker_config(config_payload: dict[str, Any]) -> AgentAppConfig:
+    """Предпочитает серверный конфиг и использует payload как переносимый fallback."""
     import os
 
     config_path = os.getenv("SUPPORT_AGENT_CONFIG")
@@ -137,21 +147,26 @@ def _load_worker_config(config_payload: dict[str, Any]) -> AgentAppConfig:
 
 
 def _countdown(config: AgentAppConfig, retries: int) -> int:
+    """Считает bounded exponential backoff с необязательным jitter."""
     base = min(
         config.orchestration.retry_backoff_seconds * (2**retries),
         config.orchestration.retry_backoff_max_seconds,
     )
     if not config.orchestration.retry_jitter:
         return base
+    # Jitter разводит одновременные повторы workers после общего сбоя провайдера.
     return max(1, int(base * random.uniform(0.75, 1.25)))
 
 
 class _UnreachableExecutor:
+    """Обеспечивает немедленное прерывание выполнения шагов для завершённых заданий, предотвращая неконсистентность состояния."""
+
     def execute(
         self,
         step: PlanStep,
         job: OrchestrationJob,
         context: Mapping[str, StepResult],
     ) -> StepResult:
+        """Гарантирует, что попытка выполнить шаг для завершённого задания приводит к немедленной ошибке и предотвращает неконсистентность."""
         del step, job, context
         raise RuntimeError("Executor не должен вызываться для завершённого задания")

@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы stable_source_ids."""
+
 from __future__ import annotations
 
 import sys
@@ -18,7 +20,10 @@ from rag_prep.stages.structuring import LlamaIndexStructuringStage  # noqa: E402
 
 
 class StableSourceIdsTest(unittest.TestCase):
+    """Проверяет стабильность генерации идентификаторов источников и элементов независимо от расположения исходных файлов, обеспечивая воспроизводимость и консистентность данных."""
+
     def test_ids_do_not_depend_on_source_location(self) -> None:
+        """Проверяет, что идентификаторы источников и элементов остаются неизменными при изменении расположения исходных файлов, гарантируя стабильность ссылок и метаданных."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             first_root = root / "first"
@@ -53,6 +58,7 @@ class StableSourceIdsTest(unittest.TestCase):
 
     @staticmethod
     def _structured_document(source, text: str):
+        """Проверяет, что структурирование текста даёт стабильный идентификатор источника независимо от параметров запуска."""
         element = ProcessedElement(
             source_file=source,
             element_id=UnstructuredParsingStage._element_id(source, 0),

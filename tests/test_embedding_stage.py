@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы embedding_stage."""
+
 from __future__ import annotations
 
 import os
@@ -18,7 +20,10 @@ from rag_prep.models import ChunkMetadata, PreparedChunk  # noqa: E402
 
 
 class EmbeddingStageTest(unittest.TestCase):
+    """Проверяет корректность этапа эмбеддинга, включая сохранение соответствия между исходными чанками и результатами, а также корректность метаданных."""
+
     def test_openai_stage_preserves_chunk_mapping_and_metadata(self) -> None:
+        """Проверяет, что при использовании OpenAI-эмбеддинга сохраняется порядок и метаданные исходных текстовых чанков в результатах эмбеддинга."""
         client = Mock()
         client.embeddings.create.return_value = SimpleNamespace(
             data=[
@@ -66,6 +71,7 @@ class EmbeddingStageTest(unittest.TestCase):
         )
 
     def test_openai_request_omits_dimensions_when_not_configured(self) -> None:
+        """Проверяет, что при отсутствии настройки размеров эмбеддингов запрос к OpenAI формируется без параметра dimensions, обеспечивая корректное поведение клиента."""
         client = Mock()
         client.embeddings.create.return_value = SimpleNamespace(
             data=[SimpleNamespace(index=0, embedding=[1.0, 0.0, 0.0])]
@@ -97,6 +103,7 @@ class EmbeddingStageTest(unittest.TestCase):
 
     @staticmethod
     def _chunk(chunk_id: str, text: str) -> PreparedChunk:
+        """Формирует подготовленный текстовый фрагмент с метаданными для проверки этапа создания эмбеддингов в тестах."""
         return PreparedChunk(
             text=text,
             metadata=ChunkMetadata(

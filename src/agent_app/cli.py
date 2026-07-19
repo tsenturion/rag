@@ -1,36 +1,32 @@
+"""Командный интерфейс для агентного приложения."""
+
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import sys
-from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from agent_app.config import AgentAppConfig, load_agent_config
 from agent_app.cli_formatting import RussianHelpFormatter, add_russian_help
-from agent_app.graph import AgentRunner
-from agent_app.memory import SQLiteMemoryStore
-from agent_app.multi_agent.exporting import MultiAgentExporter
-from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
-from agent_app.multi_agent.protocols.simulation import run_protocol_simulation
-from agent_app.multi_agent.runtime import (
-    MultiAgentRuntime,
-    load_comparison_suite,
+
+if TYPE_CHECKING:
+    from agent_app.config import AgentAppConfig
+
+
+ORCHESTRATION_PATTERNS = (
+    "sequential",
+    "parallel",
+    "conditional",
+    "quorum",
+    "dynamic",
 )
-from agent_app.orchestration.models import (
-    JobPriority,
-    JobStatus,
-    OrchestrationJob,
-    OrchestrationPattern,
-    utc_now,
-)
-from agent_app.orchestration.service import OrchestrationService
-from agent_app.scenarios import ScenarioRunner, load_scenario_suite
-from agent_app.tools.mcp_external import ExternalMCPToolManager
+JOB_PRIORITIES = ("low", "normal", "high")
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Создаёт и настраивает parser аргументов командной строки."""
     parser = argparse.ArgumentParser(
         description="Запуск LangGraph-агента с tools и памятью.",
         add_help=False,
@@ -161,14 +157,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--pattern",
-        choices=[item.value for item in OrchestrationPattern],
-        default=OrchestrationPattern.SEQUENTIAL.value,
+        choices=ORCHESTRATION_PATTERNS,
+        default="sequential",
         help="Паттерн orchestration-задания.",
     )
     parser.add_argument(
         "--priority",
-        choices=[item.value for item in JobPriority],
-        default=JobPriority.NORMAL.value,
+        choices=JOB_PRIORITIES,
+        default="normal",
         help="Приоритет задания в очереди.",
     )
     parser.add_argument(
@@ -215,8 +211,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Запускает командный интерфейс и возвращает код завершения."""
     _configure_stdio()
     args = build_parser().parse_args()
+
+    # Конфигурационные модели загружаются только после разбора аргументов:
+    # справка CLI не должна инициализировать LangGraph, MLflow и LLM SDK.
+    from agent_app.config import load_agent_config
+
     config = load_agent_config(Path(args.config))
     logging.basicConfig(
         level=getattr(logging, config.logging.level.upper(), logging.INFO),
@@ -244,6 +246,10 @@ def main() -> int:
         )
 
     if args.simulate_protocols:
+        from agent_app.multi_agent.protocols.simulation import (
+            run_protocol_simulation,
+        )
+
         print(
             json.dumps(
                 run_protocol_simulation(),
@@ -254,6 +260,8 @@ def main() -> int:
         return 0
 
     if args.list_mcp_tools or args.call_mcp_tool:
+        from agent_app.tools.mcp_external import ExternalMCPToolManager
+
         manager = ExternalMCPToolManager(config.tools.mcp_servers)
         try:
             tools = manager.start()
@@ -286,6 +294,8 @@ def main() -> int:
             manager.close()
 
     if args.get_multi_agent_run:
+        from agent_app.multi_agent.exporting import MultiAgentExporter
+
         payload = MultiAgentExporter(config.multi_agent.output_dir).load_result(
             args.get_multi_agent_run
         )
@@ -296,6 +306,8 @@ def main() -> int:
         return 0
 
     if args.list_multi_agent_history:
+        from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
+
         checkpoints = MultiAgentCheckpointStore(config.multi_agent.checkpoint_path)
         try:
             history = [
@@ -315,6 +327,11 @@ def main() -> int:
         return 0
 
     if args.multi_agent or args.compare_agents:
+        from agent_app.multi_agent.runtime import (
+            MultiAgentRuntime,
+            load_comparison_suite,
+        )
+
         if not config.multi_agent.enabled:
             raise ValueError(
                 "Multi-agent режим отключён. Используйте config/multi_agent_*.yaml."
@@ -353,19 +370,29 @@ def main() -> int:
             runtime.close()
 
     if args.list_memory:
+        from agent_app.memory import SQLiteMemoryStore
+
         store = SQLiteMemoryStore(config.memory.sqlite_path)
         records = [
             record.model_dump(mode="json")
-            for record in store.list_memories(user_id=user_id, limit=100)
+            for record in store.list_memories(
+                user_id=user_id,
+                session_id=session_id,
+                limit=100,
+            )
         ]
         print(json.dumps(records, ensure_ascii=False, indent=2))
         return 0
 
     if args.clear_session_memory:
+        from agent_app.memory import SQLiteMemoryStore
+
         store = SQLiteMemoryStore(config.memory.sqlite_path)
         deleted_count = store.clear_session(user_id=user_id, session_id=session_id)
         checkpoint_deleted = False
         if config.multi_agent.enabled:
+            from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
+
             checkpoints = MultiAgentCheckpointStore(config.multi_agent.checkpoint_path)
             try:
                 checkpoint_deleted = checkpoints.clear(
@@ -387,6 +414,8 @@ def main() -> int:
         return 0
 
     if args.run_scenario or args.run_scenarios:
+        from agent_app.scenarios import ScenarioRunner, load_scenario_suite
+
         suite = load_scenario_suite(Path(args.scenarios_config))
         scenario_runner = ScenarioRunner(
             config,
@@ -407,6 +436,8 @@ def main() -> int:
         _print_scenario_report(payload, as_json=args.json)
         scenario_runner.close()
         return 0 if report.passed else 1
+
+    from agent_app.graph import AgentRunner
 
     runner = AgentRunner(
         config,
@@ -440,6 +471,7 @@ def main() -> int:
 
 
 def _print_response(payload: dict[str, object], *, as_json: bool) -> None:
+    """Представляет результат запуска агента в форме, подходящей для интерактивной работы и автоматизации CLI."""
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -447,6 +479,7 @@ def _print_response(payload: dict[str, object], *, as_json: bool) -> None:
 
 
 def _print_scenario_report(payload: dict[str, object], *, as_json: bool) -> None:
+    """Гарантирует наглядное отображение итогов проверки сценариев для пользователя и автоматизации."""
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -467,6 +500,18 @@ def _run_orchestration_command(
     user_id: str,
     session_id: str,
 ) -> int:
+    """Гарантирует корректное выполнение и вывод результата оркестрационных команд с обработкой ошибок пользователя."""
+    from datetime import timedelta
+
+    from agent_app.orchestration.models import (
+        JobPriority,
+        JobStatus,
+        OrchestrationJob,
+        OrchestrationPattern,
+        utc_now,
+    )
+    from agent_app.orchestration.service import OrchestrationService
+
     service = OrchestrationService(config)
     try:
         if args.queue_status:
@@ -522,6 +567,7 @@ def _run_orchestration_command(
 
 
 def _configure_stdio() -> None:
+    """Гарантирует корректный вывод русскоязычных сообщений в терминалах Windows."""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):

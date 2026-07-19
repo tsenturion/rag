@@ -1,6 +1,10 @@
+"""Сервис управления заданиями для распределённой оркестрации."""
+
 from __future__ import annotations
 
+import hashlib
 import os
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -31,59 +35,81 @@ ExecutorFactory = Callable[[], StepExecutor]
 
 
 class JobRunner:
+    """Обеспечивает выполнение и контроль жизненного цикла задания с учётом лимитов параллелизма и устойчивости к сбоям."""
+
     def __init__(
         self,
         config: AgentAppConfig,
         store: JobStore,
         executor: StepExecutor,
     ):
+        """Готовит экземпляр к запуску заданий, обеспечивая владение конфигурацией, хранилищем и исполнителем шагов."""
         self.config = config
         self.store = store
         self.executor = executor
 
     def run(self, job: OrchestrationJob) -> JobRecord:
+        """Проводит задание по плану с учётом дедлайна, отмены, лимитов параллелизма и политики ошибок."""
         record = self.store.get(job.id) or JobRecord(job=job)
-        if record.status == JobStatus.CANCELLED:
+        if record.status.terminal:
             return record
         if job.expired:
             return self._finish(record, JobStatus.EXPIRED, "Deadline задания истёк")
 
-        provider = self.config.agent.provider
-        limit = self.config.orchestration.provider_concurrency_limits.get(provider, 1)
-        slot_name = f"provider:{provider}"
-        if not self.store.acquire_slot(
-            slot_name,
-            job.id,
-            limit=limit,
-            lease_seconds=self.config.orchestration.slot_lease_seconds,
-        ):
+        providers = self._required_providers(job)
+        acquired_slots: list[str] = []
+        for provider in providers:
+            limit = self.config.orchestration.provider_concurrency_limits.get(
+                provider, 1
+            )
+            slot_name = f"provider:{provider}"
+            if self.store.acquire_slot(
+                slot_name,
+                job.id,
+                limit=limit,
+                lease_seconds=self.config.orchestration.slot_lease_seconds,
+            ):
+                acquired_slots.append(slot_name)
+                continue
+            for acquired in reversed(acquired_slots):
+                self.store.release_slot(acquired, job.id)
             raise TransientOrchestrationError(
                 f"Достигнут лимит параллелизма provider={provider}: {limit}"
             )
 
-        record.status = JobStatus.RUNNING
-        record.attempts += 1
-        record.started_at = record.started_at or utc_now()
-        record.updated_at = utc_now()
-        record.error = None
-        self.store.save(record)
-        self.store.append_event(
-            JobEvent(
-                job_id=job.id,
-                kind="started",
-                status=JobStatus.RUNNING,
-                message=f"Начата попытка {record.attempts}",
-                payload={"attempt": record.attempts, "provider": provider},
-            )
+        heartbeat_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._renew_slots,
+            args=(acquired_slots, job.id, heartbeat_stop),
+            name=f"orchestration-lease-{job.id}",
+            daemon=True,
         )
+        heartbeat.start()
+
+        engine: OrchestrationEngine | None = None
         try:
+            record.status = JobStatus.RUNNING
+            record.attempts += 1
+            record.started_at = record.started_at or utc_now()
+            record.updated_at = utc_now()
+            record.error = None
+            self.store.save(record)
+            self.store.append_event(
+                JobEvent(
+                    job_id=job.id,
+                    kind="started",
+                    status=JobStatus.RUNNING,
+                    message=f"Начата попытка {record.attempts}",
+                    payload={"attempt": record.attempts, "providers": providers},
+                )
+            )
             engine = OrchestrationEngine(
                 self.executor,
                 plan_builder=OrchestrationPlanBuilder(
                     step_timeout_seconds=(self.config.multi_agent.task_timeout_seconds)
                 ),
                 max_parallelism=self.config.orchestration.max_parallelism,
-                allow_parallel=provider != "local",
+                allow_parallel="local" not in providers,
             )
             result = engine.run(job)
             latest = self.store.get(job.id)
@@ -98,9 +124,109 @@ class JobRunner:
             self._record_result_events(record)
             return record
         finally:
-            self.store.release_slot(slot_name, job.id)
+            if engine is not None and engine.has_inflight_steps:
+                threading.Thread(
+                    target=self._release_after_inflight,
+                    args=(
+                        engine,
+                        acquired_slots,
+                        job.id,
+                        heartbeat_stop,
+                        heartbeat,
+                    ),
+                    name=f"orchestration-release-{job.id}",
+                    daemon=True,
+                ).start()
+            else:
+                self._release_slots(
+                    acquired_slots,
+                    job.id,
+                    heartbeat_stop,
+                    heartbeat,
+                )
+
+    def _required_providers(self, job: OrchestrationJob) -> list[str]:
+        """Возвращает провайдеров ролей фактического плана и его fallback-ветвей."""
+        plan = OrchestrationPlanBuilder(
+            step_timeout_seconds=self.config.multi_agent.task_timeout_seconds
+        ).build(job)
+        roles = {
+            role
+            for step in plan.steps
+            for role in [step.assigned_role, *step.fallback_roles]
+            if role
+        }
+        providers: set[str] = set()
+        for role in roles:
+            profile_name = self.config.multi_agent.role_llm_profiles.get(role)
+            profile = (
+                self.config.multi_agent.llm_profiles.get(profile_name)
+                if profile_name
+                else None
+            )
+            providers.add(
+                profile.provider if profile is not None else self.config.agent.provider
+            )
+        # Планы без LLM-шагов не должны захватывать provider-слоты.
+        return sorted(providers)
+
+    def _renew_slots(
+        self,
+        slot_names: list[str],
+        token: str,
+        stop: threading.Event,
+    ) -> None:
+        """Продлевает lease до окончания задания и не допускает тихой потери слота."""
+        lease_seconds = self.config.orchestration.slot_lease_seconds
+        interval = max(0.2, lease_seconds / 3)
+        while not stop.wait(interval):
+            for slot_name in slot_names:
+                if not self.store.renew_slot(
+                    slot_name,
+                    token,
+                    lease_seconds=lease_seconds,
+                ):
+                    # Потеря lease означает, что лимит параллелизма больше нельзя
+                    # гарантировать. Прерывание LLM-потока небезопасно, поэтому
+                    # фиксируем проблему и не захватываем слот заново в обход очереди.
+                    self.store.append_event(
+                        JobEvent(
+                            job_id=token,
+                            kind="lease_lost",
+                            status=JobStatus.RUNNING,
+                            message=f"Потерян lease ресурса {slot_name}",
+                        )
+                    )
+                    return
+
+    def _release_after_inflight(
+        self,
+        engine: OrchestrationEngine,
+        slot_names: list[str],
+        token: str,
+        stop: threading.Event,
+        heartbeat: threading.Thread,
+    ) -> None:
+        """Удерживает provider lease, пока просроченный вызов реально работает."""
+        engine.wait_for_inflight_steps()
+        self._release_slots(slot_names, token, stop, heartbeat)
+
+    def _release_slots(
+        self,
+        slot_names: list[str],
+        token: str,
+        stop: threading.Event,
+        heartbeat: threading.Thread,
+    ) -> None:
+        """Останавливает heartbeat и освобождает все захваченные ресурсы."""
+        stop.set()
+        if heartbeat is not threading.current_thread():
+            heartbeat.join(timeout=1)
+        for slot_name in reversed(slot_names):
+            self.store.release_slot(slot_name, token)
 
     def mark_retry(self, job_id: str, error: str, *, countdown: int) -> JobRecord:
+        """Гарантирует перевод задания в состояние повторной попытки с фиксацией причины и времени следующего запуска."""
         record = self._require(job_id)
         record.status = JobStatus.RETRYING
         record.error = error[:1000]
@@ -118,9 +244,11 @@ class JobRunner:
         return record
 
     def mark_failed(self, job_id: str, error: str) -> JobRecord:
+        """Гарантирует перевод задания в финальное состояние ошибки с фиксацией причины сбоя."""
         return self._finish(self._require(job_id), JobStatus.FAILED, error)
 
     def _record_result_events(self, record: JobRecord) -> None:
+        """Фиксирует в хранилище полную историю событий выполнения задания, чтобы обеспечить аудит и трассировку всех этапов и пересчётов результата."""
         result = record.result
         if result is None:
             return
@@ -176,6 +304,7 @@ class JobRunner:
         )
 
     def _finish(self, record: JobRecord, status: JobStatus, error: str) -> JobRecord:
+        """Сохраняет финальный статус задания и добавляет соответствующее событие в журнал выполнения."""
         record.status = status
         record.error = error[:1000]
         record.updated_at = utc_now()
@@ -193,6 +322,7 @@ class JobRunner:
         return record
 
     def _require(self, job_id: str) -> JobRecord:
+        """Гарантирует, что задание с указанным идентификатором существует, иначе выбрасывает исключение для явного контроля потока."""
         record = self.store.get(job_id)
         if record is None:
             raise JobNotFoundError(f"Задание не найдено: {job_id}")
@@ -200,6 +330,8 @@ class JobRunner:
 
 
 class OrchestrationService:
+    """Обеспечивает единый интерфейс для постановки, мониторинга и управления заданиями в распределённой оркестрации."""
+
     def __init__(
         self,
         config: AgentAppConfig,
@@ -208,6 +340,7 @@ class OrchestrationService:
         executor_factory: ExecutorFactory | None = None,
         dispatcher: CeleryJobDispatcher | None = None,
     ):
+        """Готовит экземпляр к приёму и обработке заданий, настраивая все зависимости и владение ресурсами согласно конфигурации."""
         self.config = config
         self.backend = config.orchestration.backend
         self.store = store or self._build_store()
@@ -222,18 +355,13 @@ class OrchestrationService:
         self._owned_runtime: Any | None = None
 
     def submit(self, job: OrchestrationJob) -> JobSubmission:
+        """Гарантирует однократную постановку задания в очередь с учётом идемпотентности и лимитов, либо возвращает существующую запись."""
         if not self.config.orchestration.enabled:
             raise RuntimeError("Оркестрация отключена в конфигурации")
         if job.idempotency_key:
-            claimed_id = self.store.claim_idempotency(
-                job.idempotency_key,
-                job.id,
-                self.config.orchestration.idempotency_ttl_seconds,
-            )
-            if claimed_id != job.id:
-                existing = self.store.get(claimed_id)
-                if existing is not None:
-                    return JobSubmission(record=existing, deduplicated=True)
+            existing = self._claim_idempotency(job)
+            if existing is not None:
+                return JobSubmission(record=existing, deduplicated=True)
 
         counts = self.store.counts()
         pending = sum(
@@ -285,17 +413,46 @@ class OrchestrationService:
             ).run(job)
         return JobSubmission(record=record)
 
+    def _claim_idempotency(self, job: OrchestrationJob) -> JobRecord | None:
+        """Закрепляет ключ, восстанавливая stale binding без race condition."""
+        key = self._scoped_idempotency_key(job)
+        ttl = self.config.orchestration.idempotency_ttl_seconds
+        for _ in range(4):
+            claimed_id = self.store.claim_idempotency(key, job.id, ttl)
+            if claimed_id == job.id:
+                return None
+            existing = self.store.get(claimed_id)
+            if existing is not None:
+                return existing
+            if self.store.rebind_idempotency(
+                key,
+                expected_job_id=claimed_id,
+                new_job_id=job.id,
+                ttl_seconds=ttl,
+            ):
+                return None
+        raise RuntimeError("Не удалось атомарно восстановить idempotency binding")
+
+    @staticmethod
+    def _scoped_idempotency_key(job: OrchestrationJob) -> str:
+        """Изолирует пользовательские ключи идемпотентности без раскрытия user_id в backend."""
+        raw = f"{job.user_id}\0{job.idempotency_key}".encode("utf-8")
+        return "user:" + hashlib.sha256(raw).hexdigest()
+
     def get(self, job_id: str) -> JobRecord:
+        """Гарантирует получение актуального состояния задания по идентификатору или явную ошибку при отсутствии."""
         record = self.store.get(job_id)
         if record is None:
             raise JobNotFoundError(f"Задание не найдено: {job_id}")
         return record
 
     def events(self, job_id: str) -> list[JobEvent]:
+        """Возвращает полную хронологию событий по заданию, гарантируя целостность истории для аудита и отладки."""
         self.get(job_id)
         return self.store.events(job_id)
 
     def cancel(self, job_id: str) -> JobRecord:
+        """Гарантирует корректную отмену задания с фиксацией статуса и событий, либо возвращает финальное состояние, если отмена невозможна."""
         record = self.get(job_id)
         if record.status.terminal:
             return record
@@ -317,6 +474,7 @@ class OrchestrationService:
         return record
 
     def wait(self, job_id: str, *, timeout_seconds: float) -> JobRecord:
+        """Блокирует выполнение до завершения задания или истечения таймаута, гарантируя возврат финального состояния или ошибку ожидания."""
         deadline = time.monotonic() + timeout_seconds
         while True:
             record = self.get(job_id)
@@ -329,6 +487,7 @@ class OrchestrationService:
             time.sleep(0.5)
 
     def status(self) -> QueueStatus:
+        """Гарантирует получение актуального статуса очереди и доступности воркеров, либо диагностическую ошибку при сбое."""
         try:
             ready = self.store.ping()
             workers = self.dispatcher.workers() if self.dispatcher else {"inline": True}
@@ -348,12 +507,14 @@ class OrchestrationService:
             )
 
     def close(self) -> None:
+        """Гарантирует корректное освобождение всех ресурсов оркестрации и завершение работы с хранилищем состояния."""
         if self._owned_runtime is not None:
             self._owned_runtime.close()
             self._owned_runtime = None
         self.store.close()
 
     def _build_store(self) -> JobStore:
+        """Обеспечивает создание хранилища заданий, подходящего для выбранного backend, и выбрасывает ошибку при отсутствии необходимой конфигурации."""
         if self.backend == "inline":
             return InMemoryJobStore()
         url = os.getenv(self.config.orchestration.state_store_url_env)
@@ -369,6 +530,7 @@ class OrchestrationService:
         )
 
     def _executor(self) -> StepExecutor:
+        """Гарантирует получение готового к запуску исполнителя шагов с корректно инициализированным окружением."""
         if self.executor_factory is not None:
             return self.executor_factory()
         executor, runtime = runtime_executor(self.config)
@@ -376,6 +538,7 @@ class OrchestrationService:
         return executor
 
     def _mark_submission_failed(self, record: JobRecord, error: str) -> None:
+        """Фиксирует неудачную отправку задания с сохранением причины ошибки и генерацией события для аудита."""
         record.status = JobStatus.FAILED
         record.error = error[:1000]
         record.updated_at = utc_now()
@@ -392,12 +555,14 @@ class OrchestrationService:
 
 
 def callback_executor(
-    callback: Callable[[str, str, str], Any],
+    callback: Callable[[str, str, str, str], Any],
 ) -> ExecutorFactory:
+    """Гарантирует создание фабрики исполнителя шагов, вызывающей пользовательский callback для интеграции с внешними системами."""
     return lambda: MultiAgentStepExecutor(callback)
 
 
 def result_has_retryable_failure(record: JobRecord) -> bool:
+    """Гарантирует определение наличия в результате задания шагов, которые завершились ошибкой и допускают повторную попытку."""
     return bool(
         record.result
         and any(

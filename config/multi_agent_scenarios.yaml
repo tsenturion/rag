@@ -3,8 +3,8 @@ scenarios:
     title: Простой запрос без лишней декомпозиции
     request: Кратко объясни, чем HTTP 503 отличается от HTTP 500.
     expected_terms:
-      - 503
-      - 500
+      - "503"
+      - "500"
     require_citations: false
     max_agents: 1
 

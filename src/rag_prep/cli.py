@@ -1,3 +1,5 @@
+"""Командный интерфейс для RAG-конвейера."""
+
 from __future__ import annotations
 
 import argparse
@@ -5,23 +7,12 @@ import json
 import os
 from pathlib import Path
 
-from rag_prep.config import (
-    load_chunking_config,
-    load_config,
-    load_embedding_config,
-    load_vector_store_config,
-)
-from rag_prep.pipeline import (
-    RagChunkingPipeline,
-    RagEmbeddingPipeline,
-    RagPreparationPipeline,
-    RagVectorStorePipeline,
-)
-from rag_prep.utils import setup_logging
-
 
 class RussianHelpFormatter(argparse.HelpFormatter):
+    """Гарантирует вывод справки CLI с русскоязычными заголовками и терминологией для повышения доступности."""
+
     def _format_usage(self, *args, **kwargs) -> str:
+        """Гарантирует отображение инструкции по использованию CLI на русском языке для повышения удобства пользователя."""
         return (
             super()
             ._format_usage(*args, **kwargs)
@@ -30,6 +21,7 @@ class RussianHelpFormatter(argparse.HelpFormatter):
 
 
 def _add_russian_help(parser: argparse.ArgumentParser) -> None:
+    """Гарантирует наличие русскоязычной справки и корректных заголовков для всех CLI-аргументов."""
     parser.add_argument(
         "-h",
         "--help",
@@ -42,6 +34,7 @@ def _add_russian_help(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Создаёт и настраивает parser аргументов командной строки."""
     parser = argparse.ArgumentParser(
         description="Запуск пайплайнов подготовки данных, чанкинга, embeddings и vector store для RAG.",
         add_help=False,
@@ -135,12 +128,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Запускает командный интерфейс и возвращает код завершения."""
     args = build_parser().parse_args()
     command = args.command or "prepare"
 
     if command == "chunk":
         config_path = args.config
         if args.no_prefect:
+            from rag_prep.config import load_chunking_config
+            from rag_prep.pipeline import RagChunkingPipeline
+            from rag_prep.utils import setup_logging
+
             config = load_chunking_config(Path(config_path))
             setup_logging(config.logging.level)
             result = RagChunkingPipeline(config).run()
@@ -152,6 +150,10 @@ def main() -> None:
     elif command == "embed":
         config_path = args.config
         if args.no_prefect:
+            from rag_prep.config import load_embedding_config
+            from rag_prep.pipeline import RagEmbeddingPipeline
+            from rag_prep.utils import setup_logging
+
             config = load_embedding_config(Path(config_path))
             setup_logging(config.logging.level)
             result = RagEmbeddingPipeline(config).run()
@@ -163,6 +165,10 @@ def main() -> None:
     elif command == "vector-store":
         config_path = args.config
         if args.no_prefect:
+            from rag_prep.config import load_vector_store_config
+            from rag_prep.pipeline import RagVectorStorePipeline
+            from rag_prep.utils import setup_logging
+
             config = load_vector_store_config(Path(config_path))
             setup_logging(config.logging.level)
             result = RagVectorStorePipeline(config).run()
@@ -174,6 +180,10 @@ def main() -> None:
     else:
         config_path = args.config or "config/default.yaml"
         if args.no_prefect:
+            from rag_prep.config import load_config
+            from rag_prep.pipeline import RagPreparationPipeline
+            from rag_prep.utils import setup_logging
+
             config = load_config(Path(config_path))
             setup_logging(config.logging.level)
             result = RagPreparationPipeline(config).run()
@@ -187,11 +197,13 @@ def main() -> None:
 
 
 def _configure_local_prefect_runtime() -> None:
+    """Гарантирует корректную локальную работу Prefect без конфликтов с прокси и лишней телеметрии."""
     _ensure_local_prefect_no_proxy()
     _disable_prefect_events_worker()
 
 
 def _ensure_local_prefect_no_proxy() -> None:
+    """Гарантирует, что обращения к локальным адресам не будут перенаправлены через прокси-серверы."""
     local_hosts = ["localhost", "127.0.0.1", "::1"]
     for name in ("NO_PROXY", "no_proxy"):
         existing = os.environ.get(name, "")
@@ -205,6 +217,7 @@ def _ensure_local_prefect_no_proxy() -> None:
 
 
 def _disable_prefect_events_worker() -> None:
+    """Гарантирует отключение отправки событий Prefect для предотвращения лишней нагрузки и ошибок в локальном окружении."""
     try:
         from prefect.events.clients import NullEventsClient
         from prefect.events.worker import EventsWorker

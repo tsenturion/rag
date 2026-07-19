@@ -1,3 +1,5 @@
+"""Интеграция с Camunda для распределённой оркестрации."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +26,7 @@ from agent_app.orchestration.service import OrchestrationService
 
 
 def deploy_process(config: AgentAppConfig) -> dict[str, Any]:
+    """Гарантирует регистрацию BPMN-процесса в Camunda и сообщает вызывающему коду идентификаторы развёрнутых ресурсов или ошибку при отсутствии файла."""
     process_path = config.orchestration.camunda.process_path
     if not process_path.is_file():
         raise FileNotFoundError(f"BPMN-файл не найден: {process_path}")
@@ -41,6 +44,7 @@ def start_process(
     risk_level: str = "medium",
     priority: str = "normal",
 ) -> dict[str, Any]:
+    """Запускает экземпляр процесса в Camunda с заданными переменными и возвращает идентификатор созданного процесса для отслеживания."""
     variables = ProcessInstanceCreationInstructionByIdVariables.from_dict(
         {
             "userId": user_id,
@@ -60,17 +64,21 @@ def start_process(
 
 
 class CamundaAgentWorker:
+    """Обеспечивает асинхронную обработку задач Camunda с гарантией корректного распределения ролей и управления жизненным циклом воркера."""
+
     def __init__(
         self,
         config: AgentAppConfig,
         *,
         service: OrchestrationService | None = None,
     ):
+        """Готовит экземпляр к запуску воркера, обеспечивая владение сервисом оркестрации и доступ к конфигурации."""
         self.config = config
         self.service = service or OrchestrationService(config)
         self._owns_service = service is None
 
     async def run(self) -> None:
+        """Гарантирует регистрацию всех обработчиков задач Camunda и запуск асинхронного цикла обработки до остановки."""
         worker_config = self.config.orchestration.camunda
         timeout_ms = worker_config.worker_timeout_seconds * 1000
         poll_timeout_ms = worker_config.poll_request_timeout_seconds * 1000
@@ -96,10 +104,12 @@ class CamundaAgentWorker:
             await client.run_workers()
 
     def close(self) -> None:
+        """Гарантирует корректное освобождение ресурсов сервиса оркестрации при владении им."""
         if self._owns_service:
             self.service.close()
 
     async def validate_request(self, job: ConnectedJobContext) -> dict[str, Any]:
+        """Проверяет, что входные переменные задачи содержат обязательные поля и сообщает об ошибке при их отсутствии."""
         variables = job.variables.to_dict()
         missing = [
             name
@@ -114,6 +124,7 @@ class CamundaAgentWorker:
         return {"requestValid": True}
 
     async def classify_risk(self, job: ConnectedJobContext) -> dict[str, Any]:
+        """Определяет уровень риска заявки и необходимость согласования, гарантируя корректную классификацию для дальнейшей маршрутизации."""
         variables = job.variables.to_dict()
         supplied = str(variables.get("riskLevel", "")).lower()
         if supplied in {"low", "medium", "high"}:
@@ -128,6 +139,7 @@ class CamundaAgentWorker:
         }
 
     async def run_agent(self, job: ConnectedJobContext) -> dict[str, Any]:
+        """Гарантирует выполнение агентской задачи с ожиданием результата и сообщает вызывающему коду итоговый статус и ответ агента."""
         variables = job.variables.to_dict()
         orchestration_job = OrchestrationJob(
             user_id=str(variables["userId"]),
@@ -169,6 +181,7 @@ class CamundaAgentWorker:
         }
 
     async def verify_result(self, job: ConnectedJobContext) -> dict[str, Any]:
+        """Обеспечивает проверку корректности и полноты ответа агента для принятия решения о завершении задания в распределённой оркестрации."""
         variables = job.variables.to_dict()
         answer = str(variables.get("agentAnswer", "")).strip()
         passed = (
@@ -186,6 +199,7 @@ class CamundaAgentWorker:
 
 
 def _to_dict(value: Any) -> dict[str, Any]:
+    """Гарантирует сериализацию результата Camunda в словарь для унифицированной передачи между подсистемами."""
     converter = getattr(value, "to_dict", None)
     if callable(converter):
         payload = converter()

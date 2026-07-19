@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы tools."""
+
 from __future__ import annotations
 
 import json
@@ -27,7 +29,10 @@ from agent_app.tools.weather import weather_tool  # noqa: E402
 
 
 class ToolsTest(unittest.TestCase):
+    """Проверяет функциональность инструментов, включая вычисления, прогноз погоды и бюджет путешествий, гарантируя корректность и обработку ошибок."""
+
     def test_calculator_and_travel_tools_execute_structured_inputs(self) -> None:
+        """Проверяет, что калькулятор и инструменты путешествий корректно обрабатывают структурированные входные данные и возвращают ожидаемые результаты."""
         self.assertEqual(calculate("(128 * 47) + 4"), "6020")
         self.assertIn("ошибка калькулятора", calculate("__import__('os')"))
         self.assertEqual(calculator_tool().invoke({"expression": "7 ** 2"}), "49")
@@ -50,12 +55,14 @@ class ToolsTest(unittest.TestCase):
         self.assertEqual(budget["total"], 9000.0)
 
     def test_weather_tool_reports_missing_key_without_network_request(self) -> None:
+        """Проверяет, что инструмент погоды сообщает об отсутствии API-ключа без выполнения сетевых запросов, обеспечивая корректную валидацию конфигурации."""
         config = WeatherConfig(api_key_env="MISSING_WEATHER_KEY")
         with patch.dict(os.environ, {}, clear=True):
             result = json.loads(weather_tool(config).invoke({"city": "Пермь"}))
         self.assertEqual(result["error"], "missing_api_key")
 
     def test_registry_contains_operational_and_memory_tools(self) -> None:
+        """Проверяет, что реестр инструментов содержит необходимые операционные и инструменты работы с памятью для полноценной работы агента."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             config = AgentAppConfig(
                 agent=AgentConfig(provider="local", model="test-model"),

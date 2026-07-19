@@ -1,3 +1,5 @@
+"""Публичный интерфейс для мультиагентной системы."""
+
 from agent_app.multi_agent.models import (
     MultiAgentComparisonReport,
     MultiAgentResponse,

@@ -1,3 +1,5 @@
+"""Жизненный цикл runtime и общих ресурсов для мультиагентной системы."""
+
 from __future__ import annotations
 
 import json
@@ -10,6 +12,7 @@ import yaml
 from langchain_core.tools import BaseTool
 
 from agent_app.config import AgentAppConfig
+from agent_app.currency import CBRCurrencyConverter
 from agent_app.graph import AgentRunner
 from agent_app.multi_agent.evaluation import assess_answer, assess_multi_response
 from agent_app.multi_agent.exporting import MultiAgentExporter
@@ -25,12 +28,15 @@ from agent_app.multi_agent.llm_routing import MultiAgentLLMRegistry
 from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
 from agent_app.multi_agent.tracking import MultiAgentTracker
 from agent_app.multi_agent.usage import estimate_mode_usage
+from agent_app.paths import resolve_project_file
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.support.incidents import IncidentStore
 from agent_app.tools.mcp_external import ExternalMCPToolManager
 
 
 class MultiAgentRuntime:
+    """Обеспечивает согласованное выполнение, хранение истории и интеграцию инструментов для мультиагентных сценариев с контролем жизненного цикла зависимостей."""
+
     def __init__(
         self,
         config: AgentAppConfig,
@@ -42,7 +48,9 @@ class MultiAgentRuntime:
         llm_registry: MultiAgentLLMRegistry | None = None,
         role_llms: dict[str, Any] | None = None,
         checkpoint_store: MultiAgentCheckpointStore | None = None,
+        currency_converter: CBRCurrencyConverter | None = None,
     ):
+        """Готовит экземпляр к запуску мультиагентных сценариев с валидной конфигурацией и управлением всеми необходимыми ресурсами."""
         if not config.multi_agent.enabled:
             raise ValueError("Multi-agent runtime отключён в конфигурации")
         self.config = config
@@ -53,6 +61,9 @@ class MultiAgentRuntime:
             role_llms=role_llms,
         )
         self.llm = self.llm_registry.default_llm
+        self.currency_converter = currency_converter or CBRCurrencyConverter(
+            config.currency_conversion
+        )
         self._owns_rag = rag_runtime is None
         self.rag_runtime = rag_runtime or OnlineRagRuntime(config.rag)
         self.incident_store = incident_store or IncidentStore(
@@ -79,9 +90,25 @@ class MultiAgentRuntime:
         session_id: str,
         message: str,
     ) -> MultiAgentRunResult:
+        """Гарантирует корректное выполнение пользовательского запроса с изоляцией сессии и освобождением ресурсов после завершения."""
         runner = self._runner(user_id=user_id, session_id=session_id)
         try:
             return runner.run(message)
+        finally:
+            runner.close()
+
+    def ask_role(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        message: str,
+        role: str,
+    ) -> MultiAgentRunResult:
+        """Исполняет назначенную оркестратором роль без запуска supervisor-графа."""
+        runner = self._runner(user_id=user_id, session_id=session_id)
+        try:
+            return runner.run_role(role, message)
         finally:
             runner.close()
 
@@ -92,6 +119,7 @@ class MultiAgentRuntime:
         user_id: str,
         session_prefix: str = "comparison",
     ) -> MultiAgentComparisonReport:
+        """Гарантирует сопоставимое выполнение и оценку сценариев для анализа качества и стоимости мультиагентных и одиночных решений."""
         cases: list[ComparisonCaseResult] = []
         for scenario in suite.scenarios:
             session_id = f"{session_prefix}-{scenario.id}"
@@ -129,6 +157,8 @@ class MultiAgentRuntime:
                 output_cost_per_million=(
                     self.config.multi_agent.cost.output_cost_per_million
                 ),
+                cost_currency=self.config.multi_agent.cost.currency,
+                currency_converter=self.currency_converter,
             )
             multi_result = self.ask(
                 user_id=user_id,
@@ -189,8 +219,13 @@ class MultiAgentRuntime:
                     ),
                     token_delta=(multi_usage.total_tokens - single_usage.total_tokens),
                     cost_delta=round(
-                        multi_usage.estimated_cost - single_usage.estimated_cost,
+                        (multi_usage.estimated_cost_rub or 0.0)
+                        - (single_usage.estimated_cost_rub or 0.0),
                         8,
+                    ),
+                    cost_delta_rub=_optional_cost_delta(
+                        multi_usage.estimated_cost_rub,
+                        single_usage.estimated_cost_rub,
                     ),
                 )
             )
@@ -201,8 +236,19 @@ class MultiAgentRuntime:
         multi_quality_average = sum(case.multi.quality.score for case in cases) / len(
             cases
         )
-        single_cost = sum(case.single.usage.estimated_cost for case in cases)
-        multi_cost = sum(case.multi.usage.estimated_cost for case in cases)
+        single_costs = _sum_costs_by_currency(
+            case.single.usage.costs_by_currency for case in cases
+        )
+        multi_costs = _sum_costs_by_currency(
+            case.multi.usage.costs_by_currency for case in cases
+        )
+        single_cost_rub = _sum_optional_costs(
+            case.single.usage.estimated_cost_rub for case in cases
+        )
+        multi_cost_rub = _sum_optional_costs(
+            case.multi.usage.estimated_cost_rub for case in cases
+        )
+        cost_delta_rub = _optional_cost_delta(multi_cost_rub, single_cost_rub)
         report = MultiAgentComparisonReport(
             run_id=str(uuid4()),
             provider=self.llm_registry.provider_summary,
@@ -212,9 +258,17 @@ class MultiAgentRuntime:
             average_single_quality=round(single_quality_average, 4),
             average_multi_quality=round(multi_quality_average, 4),
             quality_delta=round(multi_quality_average - single_quality_average, 4),
-            total_single_cost=round(single_cost, 8),
-            total_multi_cost=round(multi_cost, 8),
-            total_cost_delta=round(multi_cost - single_cost, 8),
+            # Скалярные поля отчёта нормализованы в RUB; исходные суммы не
+            # теряются и остаются в отдельных словарях по валютам.
+            total_single_cost=round(single_cost_rub or 0.0, 8),
+            total_multi_cost=round(multi_cost_rub or 0.0, 8),
+            total_cost_delta=round(cost_delta_rub or 0.0, 8),
+            cost_currency="RUB",
+            total_single_costs_by_currency=single_costs,
+            total_multi_costs_by_currency=multi_costs,
+            total_single_cost_rub=single_cost_rub,
+            total_multi_cost_rub=multi_cost_rub,
+            total_cost_delta_rub=cost_delta_rub,
         )
         run_dir = self.exporter.export_comparison(report)
         report = report.model_copy(update={"run_dir": str(run_dir)})
@@ -222,6 +276,7 @@ class MultiAgentRuntime:
         return report
 
     def load_run(self, run_id: str) -> dict[str, object] | None:
+        """Гарантирует воспроизводимое восстановление результатов выполнения по идентификатору для последующего анализа."""
         return self.exporter.load_result(run_id)
 
     def session_history(
@@ -230,6 +285,7 @@ class MultiAgentRuntime:
         user_id: str,
         session_id: str,
     ) -> list[dict[str, object]]:
+        """Гарантирует получение полной истории сообщений сессии в формате, пригодном для отображения и аудита."""
         return [
             {
                 "id": message.id,
@@ -243,9 +299,11 @@ class MultiAgentRuntime:
         ]
 
     def clear_session(self, *, user_id: str, session_id: str) -> bool:
+        """Гарантирует удаление всех следов сессии пользователя для освобождения ресурсов и приватности."""
         return self.checkpoint_store.clear(user_id=user_id, session_id=session_id)
 
     def close(self) -> None:
+        """Гарантирует корректное освобождение всех управляемых ресурсов и завершение внешних соединений."""
         if self._external_mcp_manager is not None:
             self._external_mcp_manager.close()
             self._external_mcp_manager = None
@@ -257,6 +315,7 @@ class MultiAgentRuntime:
             self.checkpoint_store.close()
 
     def _runner(self, *, user_id: str, session_id: str) -> MultiAgentRunner:
+        """Гарантирует создание изолированного экземпляра MultiAgentRunner с корректной передачей всех зависимостей для выполнения сессии пользователя."""
         return MultiAgentRunner(
             self.config,
             user_id=user_id,
@@ -267,13 +326,43 @@ class MultiAgentRuntime:
             external_tools=self.external_tools,
             llm_registry=self.llm_registry,
             checkpointer=self.checkpoint_store.saver,
+            currency_converter=self.currency_converter,
         )
 
 
 def load_comparison_suite(path: str | Path) -> ComparisonScenarioSuite:
-    payload = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    """Гарантирует воспроизводимую загрузку и валидацию набора сравнительных сценариев из YAML независимо от окружения."""
+    suite_path = resolve_project_file(path)
+    payload = yaml.safe_load(suite_path.read_text(encoding="utf-8"))
     return ComparisonScenarioSuite.model_validate(payload)
 
 
 def comparison_report_json(report: MultiAgentComparisonReport) -> str:
+    """Гарантирует сериализацию отчёта сравнения в человекочитаемый JSON для автоматизации и аудита."""
     return json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2)
+
+
+def _sum_costs_by_currency(
+    values: Any,
+) -> dict[str, float]:
+    """Суммирует исходные расходы сравнительных запусков без смешивания валют."""
+    result: dict[str, float] = {}
+    for costs in values:
+        for currency, amount in costs.items():
+            result[currency] = round(result.get(currency, 0.0) + amount, 8)
+    return result
+
+
+def _sum_optional_costs(values: Any) -> float | None:
+    """Возвращает полную RUB-сумму либо None при пропущенной конвертации."""
+    materialized = list(values)
+    if any(value is None for value in materialized):
+        return None
+    return round(sum(float(value) for value in materialized), 8)
+
+
+def _optional_cost_delta(current: float | None, baseline: float | None) -> float | None:
+    """Не строит вводящую в заблуждение разницу по неполным RUB-данным."""
+    if current is None or baseline is None:
+        return None
+    return round(current - baseline, 8)

@@ -1,3 +1,5 @@
+"""Оценка результатов для мультиагентной системы."""
+
 from __future__ import annotations
 
 import re
@@ -18,6 +20,7 @@ def assess_answer(
     completed_roles: int = 0,
     expected_roles: int = 0,
 ) -> QualityAssessment:
+    """Гарантирует объективную оценку ответа агента по ключевым критериям полноты, корректности и соответствия ожиданиям."""
     expected_terms = expected_terms or []
     normalized = answer.casefold()
     checks = {
@@ -41,6 +44,7 @@ def assess_multi_response(
     response: MultiAgentResponse,
     scenario: ComparisonScenario | None = None,
 ) -> QualityAssessment:
+    """Гарантирует комплексную оценку коллективного ответа с учётом сценарных требований и полноты выполнения ролей."""
     completed = sum(result.state == "completed" for result in response.task_results)
     assessment = assess_answer(
         response.answer,

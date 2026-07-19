@@ -15,6 +15,14 @@ weather:
   language: ru
   timeout_seconds: 10
 
+currency_conversion:
+  enabled: true
+  cbr_daily_rates_url: https://www.cbr.ru/scripts/XML_daily.asp
+  timeout_seconds: 10
+  cache_ttl_seconds: 43200
+  allow_stale_on_error: true
+  fail_on_error: false
+
 rag:
   enabled: true
   top_k: 5
@@ -27,6 +35,7 @@ rag:
     timeout_seconds: 60
   vector_store:
     recreate_collection: false
+    prune_stale_points: true
     batch_size: 128
     port: 6333
     https: false
@@ -70,9 +79,52 @@ service:
   request_max_chars: 20000
   session_cache_size: 256
   cors_origins: []
+  # Внешний URL задаётся явно в deployment-профиле или SUPPORT_PUBLIC_BASE_URL.
+  public_base_url: null
 
 security:
   api_key_env: SUPPORT_SERVICE_API_KEY
+  api_key_role: service
+  jwt_enabled: false
+  jwt_secret_env: SUPPORT_JWT_SECRET
+  jwt_algorithm: HS256
+  jwt_issuer: rag-support
+  jwt_audience: rag-support-api
+  enforce_user_scope: true
+  rate_limit_enabled: true
+  rate_limit_requests_per_minute: 60
+  rate_limit_burst: 10
+
+guardrails:
+  enabled: true
+  block_prompt_injection: true
+  redact_sensitive_data: true
+  output_review_enabled: true
+  audit_sqlite_path: data/agent/security_audit.sqlite
+  review_sqlite_path: data/agent/human_reviews.sqlite
+
+evaluation:
+  output_dir: data/evaluation/runs
+  repeats: 2
+  min_task_success_rate: 0.75
+  min_fact_f1: 0.70
+  min_consistency: 0.70
+  max_p95_latency_ms: 120000
+  # Порог применяется к нормализованной стоимости в RUB.
+  max_average_cost: 1.0
+  mlflow_enabled: true
+  mlflow_tracking_uri: sqlite:///mlruns/mlflow.db
+  mlflow_experiment: rag-agent-quality
+
+observability:
+  enabled: false
+  service_name: rag-support-agent
+  environment: local
+  otlp_http_endpoint: http://127.0.0.1:4318
+  trace_sample_ratio: 1.0
+  instrument_http_clients: true
+  instrument_celery: true
 
 logging:
   level: INFO
+  json_format: false

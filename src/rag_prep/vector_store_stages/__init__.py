@@ -1,3 +1,5 @@
+"""Публичный интерфейс для индексации в Qdrant."""
+
 from rag_prep.vector_store_stages.exporting import VectorStoreExportStage
 from rag_prep.vector_store_stages.indexing import QdrantIndexingStage
 from rag_prep.vector_store_stages.loading import EmbeddingLoadingStage

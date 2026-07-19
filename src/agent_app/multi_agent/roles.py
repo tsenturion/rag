@@ -1,3 +1,5 @@
+"""Роли и специализированные агенты для мультиагентной системы."""
+
 from __future__ import annotations
 
 import json
@@ -18,11 +20,13 @@ from agent_app.multi_agent.models import (
     TaskExecutionState,
     UsageMetrics,
 )
+from agent_app.observability import traced
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.support.security import redact_secrets
 
 
 def default_role_definitions() -> list[AgentDefinition]:
+    """Определяет базовый набор ролей агентов с их целями и возможностями, формируя исходный контракт мультиагентной системы."""
     return [
         AgentDefinition(
             name="knowledge_agent",
@@ -96,6 +100,8 @@ def default_role_definitions() -> list[AgentDefinition]:
 
 
 class SpecialistAgent:
+    """Инкапсулирует логику выполнения задач агента с гарантией соблюдения ограничений по инструментам и контролю вызовов LLM."""
+
     def __init__(
         self,
         definition: AgentDefinition,
@@ -104,9 +110,11 @@ class SpecialistAgent:
         rag_runtime: OnlineRagRuntime | None,
         llm_invoke: Callable[[list[object], str], str],
         llm_invoke_response: Callable[..., object] | None = None,
+        tool_output_guardrail: Callable[[str], str] | None = None,
         tool_max_iterations: int = 4,
         tool_output_max_chars: int = 12_000,
     ):
+        """Готовит экземпляр агента с валидным набором инструментов и настройками для безопасного и контролируемого выполнения задач."""
         self.definition = definition
         self.tools = {
             tool.name: tool for tool in tools if tool.name in definition.tool_allowlist
@@ -114,10 +122,12 @@ class SpecialistAgent:
         self.rag_runtime = rag_runtime
         self.llm_invoke = llm_invoke
         self.llm_invoke_response = llm_invoke_response
+        self.tool_output_guardrail = tool_output_guardrail
         self.tool_max_iterations = tool_max_iterations
         self.tool_output_max_chars = tool_output_max_chars
 
     async def handle(self, envelope: AgentEnvelope) -> AgentEnvelope:
+        """Обрабатывает входящее сообщение с задачей, гарантируя возврат валидного ответа с результатом выполнения."""
         task = AgentTask.model_validate(envelope.payload["task"])
         result = self.execute(task)
         return AgentEnvelope(
@@ -131,6 +141,17 @@ class SpecialistAgent:
         )
 
     def execute(self, task: AgentTask) -> AgentTaskResult:
+        """Выполняет задачу с трассировкой и контролем, обеспечивая надёжность и мониторинг процесса исполнения."""
+        with traced(
+            "agent.specialist.execute",
+            agent_name=self.definition.name,
+            capability=task.capability,
+            task_id=task.id,
+        ):
+            return self._execute(task)
+
+    def _execute(self, task: AgentTask) -> AgentTaskResult:
+        """Гарантирует выполнение задания с учётом capability, возвращая результат с фиксированным контрактом и обработкой ошибок без утечек внутренних исключений."""
         started = perf_counter()
         started_at = task.created_at
         before = UsageMetrics()
@@ -173,6 +194,7 @@ class SpecialistAgent:
         )
 
     def _knowledge(self, task: AgentTask):
+        """Гарантирует получение релевантных знаний из RAG и формирует отчёт только по найденным источникам или сообщает о недоступности."""
         if self.rag_runtime is None:
             raise RuntimeError("Online RAG не подключён агенту знаний")
         result = self.rag_runtime.retrieve(task.instruction)
@@ -190,25 +212,30 @@ class SpecialistAgent:
         return content, ["search_knowledge_base"], result.citations
 
     def _diagnostics(self, task: AgentTask):
+        """Гарантирует формирование воспроизводимой диагностики по заданию с использованием разрешённых инструментов и без вымышленных фактов."""
         calls: list[str] = []
         outputs: list[str] = []
         if "analyze_log_fragment" in self.tools:
             outputs.append(
-                str(
-                    self.tools["analyze_log_fragment"].invoke(
-                        {"log_text": task.instruction, "component": None}
+                self._sanitize_tool_output(
+                    str(
+                        self.tools["analyze_log_fragment"].invoke(
+                            {"log_text": task.instruction, "component": None}
+                        )
                     )
                 )
             )
             calls.append("analyze_log_fragment")
         if "build_diagnostic_checklist" in self.tools:
             outputs.append(
-                str(
-                    self.tools["build_diagnostic_checklist"].invoke(
-                        {
-                            "component": self._component(task.instruction),
-                            "symptoms": task.instruction,
-                        }
+                self._sanitize_tool_output(
+                    str(
+                        self.tools["build_diagnostic_checklist"].invoke(
+                            {
+                                "component": self._component(task.instruction),
+                                "symptoms": task.instruction,
+                            }
+                        )
                     )
                 )
             )
@@ -224,6 +251,7 @@ class SpecialistAgent:
         return content, calls, []
 
     def _tool_execution(self, task: AgentTask):
+        """Гарантирует безопасное выполнение только разрешённых инструментов с контролем обязательных вызовов и объяснением результата."""
         if self.llm_invoke_response is None:
             raise RuntimeError("Для tool_agent не настроен function calling")
         missing = sorted(set(task.required_tools) - set(self.tools))
@@ -317,7 +345,9 @@ class SpecialistAgent:
                         completed_required.add(name)
                 messages.append(
                     ToolMessage(
-                        content=redact_secrets(result)[: self.tool_output_max_chars],
+                        content=self._sanitize_tool_output(result)[
+                            : self.tool_output_max_chars
+                        ],
                         tool_call_id=call_id,
                         name=name or None,
                         status="error" if is_error else "success",
@@ -325,8 +355,16 @@ class SpecialistAgent:
                 )
         raise RuntimeError("Tool agent превысил лимит итераций")
 
+    def _sanitize_tool_output(self, result: str) -> str:
+        """Считает tool output недоверенным и применяет context guardrail."""
+        redacted = redact_secrets(result)
+        if self.tool_output_guardrail is None:
+            return redacted
+        return self.tool_output_guardrail(redacted)
+
     @staticmethod
     def _tool_result_is_error(result: str) -> bool:
+        """Гарантирует определение статуса ошибки в результате работы инструмента по контракту формата или ключевым признакам."""
         try:
             payload = json.loads(result)
         except json.JSONDecodeError:
@@ -342,6 +380,7 @@ class SpecialistAgent:
 
     @staticmethod
     def _tool_summary(messages: list[object]) -> str:
+        """Гарантирует получение итогового текстового отчёта по результатам работы инструментов или явное указание на их отсутствие."""
         outputs = [
             str(message.content)
             for message in messages
@@ -350,37 +389,44 @@ class SpecialistAgent:
         return "\n".join(outputs) or "Инструменты не вернули результат."
 
     def _incident_context(self, task: AgentTask):
+        """Гарантирует извлечение и краткое описание релевантного контекста инцидентов пользователя с учётом приватности и текущей сессии."""
         calls: list[str] = []
         outputs: list[str] = []
         lower = task.instruction.casefold()
         if "search_memory" in self.tools:
             outputs.append(
-                str(
-                    self.tools["search_memory"].invoke(
-                        {"query": task.instruction, "limit": 5}
+                self._sanitize_tool_output(
+                    str(
+                        self.tools["search_memory"].invoke(
+                            {"query": task.instruction, "limit": 5}
+                        )
                     )
                 )
             )
             calls.append("search_memory")
         if "list_incidents" in self.tools:
             outputs.append(
-                str(
-                    self.tools["list_incidents"].invoke(
-                        {"current_session_only": True, "limit": 20}
+                self._sanitize_tool_output(
+                    str(
+                        self.tools["list_incidents"].invoke(
+                            {"current_session_only": True, "limit": 20}
+                        )
                     )
                 )
             )
             calls.append("list_incidents")
         if "созд" in lower and "инцидент" in lower and "create_incident" in self.tools:
             outputs.append(
-                str(
-                    self.tools["create_incident"].invoke(
-                        {
-                            "title": self._title(task.instruction),
-                            "description": task.instruction,
-                            "priority": "medium",
-                            "component": self._component(task.instruction),
-                        }
+                self._sanitize_tool_output(
+                    str(
+                        self.tools["create_incident"].invoke(
+                            {
+                                "title": self._title(task.instruction),
+                                "description": task.instruction,
+                                "priority": "medium",
+                                "component": self._component(task.instruction),
+                            }
+                        )
                     )
                 )
             )
@@ -396,6 +442,7 @@ class SpecialistAgent:
         return content, calls, []
 
     def _summarize(self, task: AgentTask, evidence: str, *, instruction: str) -> str:
+        """Гарантирует генерацию краткого отчёта по заданию и данным с учётом цели агента и политики использования LLM."""
         if not self.definition.use_llm:
             return evidence
         return self.llm_invoke(
@@ -417,16 +464,19 @@ class SpecialistAgent:
 
     @staticmethod
     def _component(text: str) -> str:
+        """Гарантирует извлечение идентификатора компонента из текста или возвращает явное значение по умолчанию."""
         match = re.search(r"(?i)(?:компонент|сервис|service)\s*[:=]?\s*([\w.-]+)", text)
         return match.group(1) if match else "не указан"
 
     @staticmethod
     def _title(text: str) -> str:
+        """Гарантирует получение нормализованного заголовка с ограничением длины для использования в инцидентах."""
         normalized = re.sub(r"\s+", " ", text).strip()
         return (normalized[:117] + "...") if len(normalized) > 120 else normalized
 
 
 def result_from_envelope(envelope: AgentEnvelope) -> AgentTaskResult:
+    """Извлекает и валидирует результат задачи из сообщения агента, обеспечивая корректный контракт данных для обработки."""
     payload = envelope.payload.get("result")
     if not isinstance(payload, dict):
         raise ValueError("Ответ агента не содержит result")
@@ -434,6 +484,7 @@ def result_from_envelope(envelope: AgentEnvelope) -> AgentTaskResult:
 
 
 def compact_results(results: list[AgentTaskResult]) -> str:
+    """Формирует компактное текстовое представление списка результатов задач для удобства логирования и анализа."""
     return "\n\n".join(
         json.dumps(
             {

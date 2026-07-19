@@ -1,3 +1,5 @@
+"""Семантическое разбиение документов для чанкинга документов."""
+
 from __future__ import annotations
 
 import logging
@@ -22,6 +24,8 @@ _PARAGRAPH_SEPARATOR_RE = re.compile(r"(?:\r?\n[ \t]*){2,}")
 
 @dataclass(frozen=True)
 class SemanticBlock:
+    """Неделимый абзац с исходными offsets и lineage элементов документа."""
+
     id: str
     text: str
     position: int
@@ -33,6 +37,8 @@ class SemanticBlock:
 
 @dataclass(frozen=True)
 class LocatedSpan:
+    """Положение текста чанка и способ, которым оно было определено."""
+
     start_char: int
     end_char: int
     offset_strategy: str
@@ -42,6 +48,7 @@ class ChunkSplittingStage:
     """Делит подготовленные документы на чанки для embeddings без расчёта embeddings."""
 
     def __init__(self, config: ChunkingConfig):
+        """Готовит экземпляр к разбиению документов, гарантируя корректную инициализацию токенизатора и стратегии разбиения согласно конфигурации."""
         self.config = config
         try:
             self.encoding = tiktoken.encoding_for_model(config.tokenizer_model)
@@ -55,8 +62,18 @@ class ChunkSplittingStage:
                 )
                 self.encoding = tiktoken.get_encoding("cl100k_base")
         self.splitter = self._build_splitter()
+        self._run_id = "standalone"
 
-    def run(self, documents: list[PreparedDocument]) -> list[PreparedChunk]:
+    def run(
+        self,
+        documents: list[PreparedDocument],
+        *,
+        run_id: str = "standalone",
+    ) -> list[PreparedChunk]:
+        """Разбивает документы, сохраняя порядок чанков внутри каждого документа."""
+        # Stage выполняется одним pipeline-run за раз; run_id хранится только на
+        # время синхронного прохода и попадает в lineage каждого результата.
+        self._run_id = run_id
         chunks: list[PreparedChunk] = []
         for document in documents:
             chunks.extend(self._split_document(document))
@@ -66,6 +83,7 @@ class ChunkSplittingStage:
         return chunks
 
     def _build_splitter(self):
+        """Создаёт LlamaIndex splitter с единым для метаданных токенизатором."""
         kwargs = {
             "chunk_size": self.config.chunk_size,
             "chunk_overlap": self.config.chunk_overlap,
@@ -76,6 +94,7 @@ class ChunkSplittingStage:
         return SentenceSplitter(**kwargs)
 
     def _split_document(self, document: PreparedDocument) -> list[PreparedChunk]:
+        """Выбирает структурный либо сквозной режим разбиения документа."""
         if not document.text.strip():
             return []
 
@@ -90,11 +109,14 @@ class ChunkSplittingStage:
     def _split_semantic_blocks(
         self, document: PreparedDocument, blocks: list[SemanticBlock]
     ) -> list[PreparedChunk]:
+        """Собирает чанки из целых блоков и дробит только oversized-блоки."""
         chunks: list[PreparedChunk] = []
         current: list[SemanticBlock] = []
 
         for block in blocks:
             if block.token_count > self.config.chunk_size:
+                # Большой блок нельзя присоединять к накопленному чанку: сначала
+                # фиксируем текущий, затем делегируем дробление sentence splitter.
                 if current:
                     chunks.append(
                         self._chunk_from_blocks(document, current, len(chunks))
@@ -104,6 +126,8 @@ class ChunkSplittingStage:
                 continue
 
             candidate = [*current, block]
+            # Пересчитываем объединённый текст, поскольку разделитель абзацев тоже
+            # может занимать токены и должен входить в жёсткий предел chunk_size.
             if current and self._joined_token_count(candidate) > self.config.chunk_size:
                 chunks.append(self._chunk_from_blocks(document, current, len(chunks)))
                 overlap = self._overlap_blocks(current, next_block=block)
@@ -118,6 +142,7 @@ class ChunkSplittingStage:
     def _split_whole_document(
         self, document: PreparedDocument, blocks: list[SemanticBlock]
     ) -> list[PreparedChunk]:
+        """Разбивает весь текст и восстанавливает spans относительно оригинала."""
         source_text = document.text
         split_texts = self.splitter.split_text(source_text)
         chunks: list[PreparedChunk] = []
@@ -153,6 +178,7 @@ class ChunkSplittingStage:
     def _split_oversized_block(
         self, document: PreparedDocument, block: SemanticBlock, start_position: int
     ) -> list[PreparedChunk]:
+        """Дробит один слишком большой блок, не перенося overlap через его границы."""
         chunks: list[PreparedChunk] = []
         cursor = 0
         for chunk_text in self.splitter.split_text(block.text):
@@ -183,6 +209,7 @@ class ChunkSplittingStage:
     def _chunk_from_blocks(
         self, document: PreparedDocument, blocks: list[SemanticBlock], position: int
     ) -> PreparedChunk:
+        """Гарантирует создание чанка из последовательности семантических блоков с сохранением позиции и границ в исходном документе."""
         chunk_text = "\n\n".join(block.text for block in blocks).strip()
         return self._chunk_from_text(
             document=document,
@@ -205,6 +232,7 @@ class ChunkSplittingStage:
         blocks: list[SemanticBlock],
         offset_strategy: str,
     ) -> PreparedChunk:
+        """Гарантирует создание чанка с корректными метаданными и привязкой к исходному документу и позиции."""
         return PreparedChunk(
             text=chunk_text,
             metadata=self._metadata(
@@ -229,6 +257,7 @@ class ChunkSplittingStage:
         blocks: list[SemanticBlock],
         offset_strategy: str,
     ) -> ChunkMetadata:
+        """Гарантирует формирование уникальных и воспроизводимых метаданных чанка для трассировки происхождения и аудита пайплайна."""
         doc_meta = document.metadata
         token_count = len(self._tokenize(chunk_text))
         text_hash = text_sha256(chunk_text)
@@ -253,6 +282,7 @@ class ChunkSplittingStage:
                     max(semantic_positions) if semantic_positions else None,
                 ],
                 "pipeline_stage": "chunk",
+                "chunking_run_id": self._run_id,
             }
         )
         hierarchy = dict(doc_meta.hierarchy)
@@ -281,6 +311,7 @@ class ChunkSplittingStage:
             chunking_strategy=self.config.strategy,
             tokenizer_model=self.config.tokenizer_model,
             embedding_model=self.config.embedding_model,
+            chunking_run_id=self._run_id,
             semantic_block_ids=semantic_block_ids,
             semantic_block_start=min(semantic_positions)
             if semantic_positions
@@ -302,11 +333,14 @@ class ChunkSplittingStage:
         )
 
     def _semantic_blocks(self, document: PreparedDocument) -> list[SemanticBlock]:
+        """Строит устойчиво идентифицируемые семантические блоки из абзацев."""
         spans = self._paragraph_spans(document.text)
         if not spans:
             return []
 
         origin_ids = document.metadata.origin_element_ids
+        # Однозначное сопоставление возможно только при равном числе элементов и
+        # абзацев. Иначе сохраняем полный lineage, не выдумывая ложную связь 1:1.
         one_origin_per_block = len(origin_ids) == len(spans)
         blocks: list[SemanticBlock] = []
         for position, (text, start_char, end_char) in enumerate(spans):
@@ -336,6 +370,7 @@ class ChunkSplittingStage:
 
     @staticmethod
     def _paragraph_spans(text: str) -> list[tuple[str, int, int]]:
+        """Выделяет непустые абзацы вместе с точными границами исходного текста."""
         blocks: list[tuple[str, int, int]] = []
         cursor = 0
         for separator in _PARAGRAPH_SEPARATOR_RE.finditer(text):
@@ -358,10 +393,13 @@ class ChunkSplittingStage:
     def _append_trimmed_span(
         blocks: list[tuple[str, int, int]], *, text: str, start: int, end: int
     ) -> None:
+        """Обрезает пробелы, одновременно сдвигая обе границы source span."""
         segment = text[start:end]
         if not segment.strip():
             return
 
+        # Смещения вычисляются по исходному segment, поэтому многострочный абзац
+        # остаётся пригодным для подсветки и attribution в исходном документе.
         leading = len(segment) - len(segment.lstrip())
         trailing = len(segment.rstrip())
         span_start = start + leading
@@ -373,10 +411,13 @@ class ChunkSplittingStage:
     def _overlap_blocks(
         self, blocks: list[SemanticBlock], *, next_block: SemanticBlock
     ) -> list[SemanticBlock]:
+        """Выбирает хвост из целых блоков в пределах реального token overlap."""
         if self.config.chunk_overlap <= 0:
             return []
 
         overlap: list[SemanticBlock] = []
+        # Частичный абзац здесь не создаётся: если ближайший блок больше лимита,
+        # block-aware overlap сознательно становится пустым.
         for block in reversed(blocks):
             candidate = [block, *overlap]
             candidate_tokens = self._joined_token_count(candidate)
@@ -387,6 +428,8 @@ class ChunkSplittingStage:
         if not overlap:
             return []
 
+        # Даже допустимый overlap отбрасывается, если вместе с новым содержимым он
+        # нарушит основной предел размера чанка.
         if self._joined_token_count([*overlap, next_block]) <= self.config.chunk_size:
             return overlap
 
@@ -401,12 +444,14 @@ class ChunkSplittingStage:
         return []
 
     def _joined_token_count(self, blocks: list[SemanticBlock]) -> int:
+        """Считает токены именно в итоговом тексте с разделителями блоков."""
         return len(self._tokenize("\n\n".join(block.text for block in blocks)))
 
     @staticmethod
     def _blocks_for_span(
         blocks: list[SemanticBlock], start_char: int, end_char: int
     ) -> list[SemanticBlock]:
+        """Возвращает блоки, пересекающие полуоткрытый интервал ``[start, end)``."""
         return [
             block
             for block in blocks
@@ -422,13 +467,18 @@ class ChunkSplittingStage:
         exact_strategy: str,
         fallback_strategy: str,
     ) -> LocatedSpan:
+        """Находит span слева направо и помечает оценочный fallback явно."""
         if source_text[cursor:].startswith(chunk_text):
             return LocatedSpan(cursor, cursor + len(chunk_text), exact_strategy)
 
+        # Поиск начинается немного раньше cursor из-за текстового overlap. Это
+        # отличает одинаковые повторяющиеся фрагменты по их позиции в документе.
         overlap_window = max(len(chunk_text), self.config.chunk_overlap * 8)
         search_from = max(0, cursor - overlap_window)
         start = source_text.find(chunk_text, search_from)
         if start == -1:
+            # Некоторые splitter нормализуют пробелы. В таком случае точный span
+            # восстановить нельзя: не скрываем это и записываем fallback_strategy.
             start = min(cursor, len(source_text))
             LOGGER.warning(
                 (
@@ -458,6 +508,7 @@ class ChunkSplittingStage:
         document_quality: object,
         blocks: list[SemanticBlock],
     ) -> dict[str, object]:
+        """Вычисляет детерминированные признаки качества без семантической модели."""
         quality = dict(document_quality) if isinstance(document_quality, dict) else {}
         words = [word.lower() for word in _WORD_RE.findall(chunk_text)]
         char_count = len(chunk_text)
@@ -504,11 +555,13 @@ class ChunkSplittingStage:
 
     @staticmethod
     def _is_supported_letter(char: str) -> bool:
+        """Гарантирует определение поддержки буквы для языков с латиницей и кириллицей при разбиении текста на чанки."""
         lower = char.lower()
         return ("а" <= lower <= "я") or lower == "ё" or ("a" <= lower <= "z")
 
     @staticmethod
     def _is_noise_char(char: str) -> bool:
+        """Гарантирует фильтрацию управляющих, неалфавитных и неразрешённых символов для повышения качества текстовых чанков."""
         if char == "\ufffd" or (ord(char) < 32 and char not in "\n\r\t"):
             return True
         return (
@@ -519,6 +572,7 @@ class ChunkSplittingStage:
 
     @staticmethod
     def _ordered_unique(values: Iterable[str]) -> list[str]:
+        """Удаляет повторы lineage ID без изменения их исходного порядка."""
         seen: set[str] = set()
         result: list[str] = []
         for value in values:
@@ -528,4 +582,5 @@ class ChunkSplittingStage:
         return result
 
     def _tokenize(self, text: str) -> list[int]:
+        """Гарантирует получение последовательности токенов для оценки размера и границ чанка независимо от исходной кодировки."""
         return self.encoding.encode(text)

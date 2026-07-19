@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы empty_scenarios."""
+
 from __future__ import annotations
 
 import sys
@@ -18,11 +20,15 @@ from agent_app.scenarios.runner import ScenarioRunner  # noqa: E402
 
 
 class EmptyScenariosTest(unittest.TestCase):
+    """Проверяет обработку пустых сценариев и отчетов, гарантируя, что пустые наборы тестов и успешные пустые отчеты считаются ошибочными."""
+
     def test_empty_suite_is_rejected_by_validation(self) -> None:
+        """Проверяет, что пустой набор сценариев не проходит валидацию и вызывает исключение ValidationError."""
         with self.assertRaises(ValidationError):
             ScenarioSuite.model_validate({"scenarios": []})
 
     def test_empty_successful_report_is_rejected(self) -> None:
+        """Проверяет, что успешный отчет без результатов считается недопустимым и вызывает исключение ValidationError."""
         with self.assertRaises(ValidationError):
             ScenarioRunReport(
                 config_path="config/scenarios.yaml",
@@ -32,6 +38,7 @@ class EmptyScenariosTest(unittest.TestCase):
             )
 
     def test_runner_defensively_marks_constructed_empty_suite_as_failed(self) -> None:
+        """Проверяет, что запуск пустого набора сценариев завершается с признаком неуспеха и отсутствием результатов."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             suite = ScenarioSuite.model_construct(
                 default_user_id="user",

@@ -1,3 +1,5 @@
+"""Типизированные модели данных для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -8,16 +10,20 @@ from pydantic import BaseModel, Field, field_validator
 
 
 def utc_now() -> datetime:
+    """Возвращает текущее время в UTC с информацией о часовом поясе."""
     return datetime.now(timezone.utc)
 
 
 class ChatMessage(BaseModel):
+    """Обеспечивает корректность сообщений в диалоге, гарантируя отсутствие пустого или некорректного текста для обучения модели."""
+
     role: Literal["system", "user", "assistant"]
     content: str
 
     @field_validator("content")
     @classmethod
     def content_must_not_be_empty(cls, value: str) -> str:
+        """Гарантирует, что сообщение не содержит пустого или пробельного текста, предотвращая некорректные данные в обучающей выборке."""
         text = value.strip()
         if not text:
             raise ValueError("content не должен быть пустым")
@@ -25,6 +31,8 @@ class ChatMessage(BaseModel):
 
 
 class FineTuningExample(BaseModel):
+    """Гарантирует, что обучающий пример содержит минимум одно user-сообщение и завершается assistant-ответом, обеспечивая пригодность для fine-tuning."""
+
     id: str
     messages: list[ChatMessage]
     required_keywords: list[str] = Field(default_factory=list)
@@ -38,6 +46,7 @@ class FineTuningExample(BaseModel):
         cls,
         values: list[ChatMessage],
     ) -> list[ChatMessage]:
+        """Гарантирует корректную структуру обучающего примера: минимум два сообщения, последнее — assistant, и хотя бы одно — user."""
         if len(values) < 2:
             raise ValueError(
                 "пример должен содержать минимум user и assistant сообщения"
@@ -52,6 +61,8 @@ class FineTuningExample(BaseModel):
 
 
 class DatasetStats(BaseModel):
+    """Гарантирует воспроизводимую статистику датасета для оценки пригодности и качества данных для обучения и валидации."""
+
     path: Path
     examples_count: int
     max_prompt_chars: int
@@ -62,6 +73,8 @@ class DatasetStats(BaseModel):
 
 
 class DatasetValidationResult(BaseModel):
+    """Гарантирует целостность и разделимость обучающей и валидационной выборок, а также корректность идентификаторов примеров."""
+
     train: DatasetStats
     eval: DatasetStats
     train_eval_id_overlap_count: int
@@ -71,6 +84,7 @@ class DatasetValidationResult(BaseModel):
 
     @property
     def has_errors(self) -> bool:
+        """Проверяет, что валидация датасета выявила дубли, пересечения или другие критические ошибки, влияющие на корректность обучения."""
         return (
             not self.train.ids_are_unique
             or not self.eval.ids_are_unique
@@ -79,6 +93,8 @@ class DatasetValidationResult(BaseModel):
 
 
 class DeviceReport(BaseModel):
+    """Гарантирует прозрачное описание выбранного устройства и его возможностей для корректной инициализации вычислений."""
+
     requested_device: str
     selected_device: str
     torch_version: str
@@ -89,6 +105,8 @@ class DeviceReport(BaseModel):
 
 
 class GeneratedAnswer(BaseModel):
+    """Гарантирует воспроизводимую структуру результата генерации с проверкой прохождения по ключевым словам и соответствию ожиданиям."""
+
     example_id: str
     prompt: str
     expected_answer: str
@@ -101,6 +119,8 @@ class GeneratedAnswer(BaseModel):
 
 
 class EvaluationReport(BaseModel):
+    """Гарантирует полный отчёт о качестве модели на тестовой выборке с фиксированными метриками и детализацией по каждому примеру."""
+
     run_id: str
     model_id: str
     adapter_path: Path | None = None
@@ -115,6 +135,8 @@ class EvaluationReport(BaseModel):
 
 
 class TrainingMetrics(BaseModel):
+    """Гарантирует вызывающему коду прозрачный контракт по ключевым метрикам и параметрам процесса обучения для последующего анализа и аудита."""
+
     train_loss: float | None = None
     eval_loss: float | None = None
     train_runtime: float | None = None
@@ -127,6 +149,8 @@ class TrainingMetrics(BaseModel):
 
 
 class TrainingResult(BaseModel):
+    """Фиксирует воспроизводимый результат запуска обучения, включая идентификаторы, метрики, артефакты и временные метки для трассировки и автоматизации."""
+
     run_id: str
     model_id: str
     method: str
@@ -139,6 +163,8 @@ class TrainingResult(BaseModel):
 
 
 class ComparisonResult(BaseModel):
+    """Обеспечивает однозначную интерпретацию эффекта обучения через сравнение метрик и примеров между базовой и дообученной моделью."""
+
     run_id: str
     baseline_report_path: Path
     tuned_report_path: Path
@@ -153,6 +179,8 @@ class ComparisonResult(BaseModel):
 
 
 class FineTuningExportResult(BaseModel):
+    """Гарантирует целостность и доступность путей к экспортированным артефактам дообучения для последующего использования или публикации."""
+
     manifest_path: Path
     baseline_report_path: Path | None = None
     tuned_report_path: Path | None = None
@@ -161,6 +189,7 @@ class FineTuningExportResult(BaseModel):
     run_id: str
 
     def artifact_paths(self) -> list[Path]:
+        """Возвращает только реально существующие пути к артефактам, гарантируя их доступность для последующей обработки."""
         paths = [
             self.manifest_path,
             self.baseline_report_path,
@@ -171,6 +200,8 @@ class FineTuningExportResult(BaseModel):
 
 
 class FineTuningPipelineResult(BaseModel):
+    """Объединяет результаты обучения, оценки, сравнения и экспорта в итог одного запуска fine-tuning."""
+
     run_id: str
     dataset_validation: DatasetValidationResult
     device: DeviceReport
@@ -182,6 +213,8 @@ class FineTuningPipelineResult(BaseModel):
 
 
 class LocalGenerationResult(BaseModel):
+    """Гарантирует воспроизводимость локальной генерации ответа LLM с фиксацией параметров, устройства и времени генерации."""
+
     model_id: str
     adapter_path: Path | None = None
     prompt: str

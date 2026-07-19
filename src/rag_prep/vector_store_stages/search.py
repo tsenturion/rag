@@ -1,3 +1,5 @@
+"""Поиск и формирование результатов для индексации в Qdrant."""
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +19,7 @@ class QdrantSearchStage:
     """Запускает smoke-проверки similarity search по проиндексированным vectors."""
 
     def __init__(self, config: VectorStoreConfig):
+        """Обеспечивает готовность экземпляра к поисковым операциям по заданной конфигурации без владения внешними ресурсами."""
         self.config = config
 
     def run(
@@ -25,6 +28,7 @@ class QdrantSearchStage:
         *,
         client: QdrantClient | None = None,
     ) -> list[VectorSearchResult]:
+        """Гарантирует корректное выполнение тестовых поисковых запросов по эмбеддингам с контролем числа запросов и управлением клиентом Qdrant."""
         if self.config.test_queries_count == 0 or not embedded_chunks:
             return []
 
@@ -40,6 +44,7 @@ class QdrantSearchStage:
         return results
 
     def _search_one(self, client, query: EmbeddedChunk) -> VectorSearchResult:
+        """Гарантирует получение и анализ результатов поиска по одному эмбеддингу с учётом порога score и идентификации self-match."""
         response = client.query_points(
             collection_name=self.config.collection_name,
             query=query.embedding,
@@ -77,6 +82,7 @@ class QdrantSearchStage:
 
     @staticmethod
     def _hit(point: Any) -> VectorSearchHit:
+        """Гарантирует преобразование результата поиска Qdrant в структуру с валидированными полями для дальнейшей обработки пайплайном."""
         raw_payload = getattr(point, "payload", None)
         payload: dict[str, Any] = (
             dict(raw_payload) if isinstance(raw_payload, Mapping) else {}

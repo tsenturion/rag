@@ -1,3 +1,5 @@
+"""Токенизация обучающих примеров для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,6 +12,8 @@ from llm_tuning.models import FineTuningExample
 
 
 class SupervisedChatDataset(Dataset):
+    """Инкапсулирует подготовку и хранение токенизированных примеров для обучения, обеспечивая доступ к данным в формате, пригодном для модели."""
+
     def __init__(
         self,
         examples: list[FineTuningExample],
@@ -17,6 +21,7 @@ class SupervisedChatDataset(Dataset):
         *,
         max_seq_length: int,
     ):
+        """Готовит набор токенизированных примеров для обучения, гарантируя, что все данные приведены к единому формату с учётом максимальной длины последовательности."""
         self.items = [
             tokenize_example(
                 example,
@@ -27,17 +32,23 @@ class SupervisedChatDataset(Dataset):
         ]
 
     def __len__(self) -> int:
+        """Возвращает количество доступных элементов."""
         return len(self.items)
 
     def __getitem__(self, index: int) -> dict[str, list[int]]:
+        """Возвращает элемент по индексу."""
         return self.items[index]
 
 
 class DataCollatorForCausalLM:
+    """Формирует батчи с правильным паддингом и масками, обеспечивая корректную обработку последовательностей разной длины при обучении causal LM."""
+
     def __init__(self, tokenizer: Any):
+        """Инициализирует коллатор данных с токенизатором, обеспечивая корректное паддингование и подготовку батчей для обучения causal language model."""
         self.tokenizer = tokenizer
 
     def __call__(self, features: list[dict[str, list[int]]]) -> dict[str, torch.Tensor]:
+        """Формирует батчи с выравниванием по максимальной длине, гарантируя корректное паддингование input_ids, attention_mask и labels для обучения с учётом маскировки."""
         max_length = max(len(feature["input_ids"]) for feature in features)
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
@@ -65,6 +76,7 @@ def tokenize_example(
     *,
     max_seq_length: int,
 ) -> dict[str, list[int]]:
+    """Преобразует пример обучения в токенизированный формат с масками и метками, обеспечивая корректную подготовку данных для обучения модели с учётом разделения подсказки и ответа."""
     full_text = ChatFormatter.apply_chat_template(
         tokenizer,
         ChatFormatter.all_messages(example),

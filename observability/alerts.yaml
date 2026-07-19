@@ -1,0 +1,42 @@
+groups:
+  - name: rag-support-agent
+    rules:
+      - alert: SupportAgentHighErrorRate
+        expr: |
+          sum(rate(support_agent_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(support_agent_requests_total[5m])), 0.001) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Высокая доля ошибок support-агента
+          description: Более 5% HTTP-запросов завершаются ошибкой 5xx.
+
+      - alert: SupportAgentHighP95Latency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(support_agent_request_duration_seconds_bucket[5m]))) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Высокая p95 latency support-агента
+          description: p95 длительности запросов превышает 20 секунд.
+
+      - alert: SupportAgentPromptInjectionDetected
+        expr: increase(support_agent_guardrail_decisions_total{action="block"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Guardrail заблокировал prompt injection
+          description: За последние пять минут заблокирован небезопасный запрос.
+
+      - alert: SupportAgentHumanReviewBacklog
+        expr: increase(support_agent_human_reviews_total{status="pending"}[30m]) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Растёт очередь human review
+          description: За 30 минут создано более десяти задач ручной проверки.

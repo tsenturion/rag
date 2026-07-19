@@ -1,3 +1,5 @@
+"""Расчёт векторных представлений для расчёта embeddings."""
+
 from __future__ import annotations
 
 import hashlib
@@ -28,11 +30,16 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class EmbeddingBatchResult:
+    """Векторы одного provider-вызова и момент получения его результата."""
+
     vectors: list[list[float]]
     embedded_at: datetime
 
 
 def resolve_openai_api_key(config: EmbeddingConfig) -> str:
+    """Читает OpenAI API key только из уже загруженного окружения."""
+    # Разбор .env сосредоточен в load_embedding_config. Здесь намеренно нет
+    # ручного поиска строк, чтобы комментарий или чужое значение не приняли за ключ.
     value = os.getenv(config.api_key_env)
     if value:
         return _clean_api_key(value, config.api_key_env)
@@ -46,6 +53,7 @@ def resolve_openai_api_key(config: EmbeddingConfig) -> str:
 
 
 def resolve_gigachat_auth_key(config: EmbeddingConfig) -> str:
+    """Читает GigaChat Authorization key из настроенной переменной окружения."""
     value = os.getenv(config.api_key_env)
     if value:
         return _clean_api_key(value, config.api_key_env)
@@ -59,6 +67,8 @@ def resolve_gigachat_auth_key(config: EmbeddingConfig) -> str:
 
 
 class EmbeddingRecordMixin:
+    """Формирует единый формат embedding-записи для всех провайдеров."""
+
     config: EmbeddingConfig
 
     def _build_embedded_chunk(
@@ -69,6 +79,7 @@ class EmbeddingRecordMixin:
         run_id: str,
         embedded_at: datetime,
     ) -> EmbeddedChunk:
+        """Связывает вектор с исходным чанком и аудиторскими метаданными."""
         embedding = self._normalize(vector) if self.config.normalize else vector
         metadata_payload = chunk.metadata.model_dump(mode="python")
         metadata_payload.update(
@@ -90,6 +101,7 @@ class EmbeddingRecordMixin:
 
     @staticmethod
     def _normalize(vector: list[float]) -> list[float]:
+        """Выполняет L2-нормализацию, не скрывая нулевые и нечисловые нормы."""
         array = np.array(vector, dtype=np.float32)
         norm = float(np.linalg.norm(array))
         if norm == 0.0 or not math.isfinite(norm):
@@ -101,10 +113,12 @@ class EmbeddingRecordMixin:
 
     @staticmethod
     def _norm(vector: list[float]) -> float:
+        """Гарантирует корректное вычисление евклидовой нормы вектора embeddings для последующей нормализации и сравнения."""
         return float(np.linalg.norm(np.array(vector, dtype=np.float32)))
 
     @staticmethod
     def _embedding_hash(vector: list[float]) -> str:
+        """Строит hash сериализованного вектора для проверки целостности."""
         payload = json.dumps(vector, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -113,6 +127,7 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
     """Считает OpenAI embeddings для подготовленных чанков."""
 
     def __init__(self, config: EmbeddingConfig):
+        """Готовит экземпляр к безопасному и воспроизводимому взаимодействию с OpenAI API, включая выбор токенизатора и обработку неизвестных моделей."""
         self.config = config
         api_key = resolve_openai_api_key(config)
         with self._openai_client_env():
@@ -130,6 +145,7 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
             self.encoding = tiktoken.get_encoding("cl100k_base")
 
     def run(self, chunks: list[PreparedChunk], *, run_id: str) -> list[EmbeddedChunk]:
+        """Гарантирует получение embeddings для всех входных чанков с контролем соответствия размеров и логированием прогресса."""
         embedded: list[EmbeddedChunk] = []
         batches = list(self._batches(chunks))
         for batch_number, batch in enumerate(batches, start=1):
@@ -159,6 +175,7 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
         return embedded
 
     def _embed_texts(self, texts: list[str]) -> EmbeddingBatchResult:
+        """Выполняет OpenAI-запрос с retry только для временных ошибок транспорта/API."""
         retryer = Retrying(
             stop=stop_after_attempt(self.config.max_retries),
             wait=wait_exponential_jitter(initial=1, max=30),
@@ -168,12 +185,16 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
         return retryer(self._request_embeddings, texts)
 
     def embed_query(self, text: str) -> list[float]:
+        """Гарантирует получение ровно одного embedding для запроса или сообщает об ошибке API."""
         result = self._embed_texts([text])
         if len(result.vectors) != 1:
             raise ValueError("OpenAI должен вернуть ровно один query embedding")
         return result.vectors[0]
 
     def _request_embeddings(self, texts: list[str]) -> EmbeddingBatchResult:
+        """Запрашивает batch и фиксирует время сразу после ответа API."""
+        # Не все модели разрешают управлять размерностью. При dimensions=None
+        # параметр полностью исключается, и размер выбирает сам provider.
         if self.config.dimensions is None:
             response = self.client.embeddings.create(
                 model=self.config.model,
@@ -195,6 +216,7 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
         )
 
     def _batches(self, chunks: list[PreparedChunk]) -> Iterable[list[PreparedChunk]]:
+        """Формирует batch с ограничением и по числу входов, и по токенам."""
         batch: list[PreparedChunk] = []
         batch_tokens = 0
         for chunk in chunks:
@@ -209,6 +231,8 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
                 )
 
             would_exceed_size = len(batch) >= self.config.batch_size
+            # Общий token budget защищает API даже тогда, когда каждый отдельный
+            # чанк укладывается в max_input_tokens.
             would_exceed_tokens = (
                 bool(batch)
                 and batch_tokens + token_count > self.config.max_batch_tokens
@@ -225,14 +249,17 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
             yield batch
 
     def _token_count(self, text: str) -> int:
+        """Гарантирует точный подсчёт токенов текста согласно выбранному токенизатору модели."""
         return len(self.encoding.encode(text))
 
     @staticmethod
     def ensure_api_key(config: EmbeddingConfig) -> None:
+        """Проверяет наличие и корректность API-ключа для предотвращения ошибок при обращении к OpenAI."""
         resolve_openai_api_key(config)
 
     @contextmanager
     def _openai_client_env(self):
+        """Временно меняет proxy-env только во время создания HTTP-клиента."""
         if not self.config.clear_no_proxy_for_openai:
             yield
             return
@@ -251,6 +278,7 @@ class OpenAIEmbeddingStage(EmbeddingRecordMixin):
 
 
 def _clean_api_key(value: str, env_name: str) -> str:
+    """Удаляет случайные кавычки и префикс имени из значения env-переменной."""
     cleaned = value.strip().strip("\"'")
     if "=" in cleaned and cleaned.startswith(env_name):
         cleaned = cleaned.split("=", 1)[1].strip().strip("\"'")
@@ -261,6 +289,7 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
     """Считает локальные embeddings через transformers encoder model."""
 
     def __init__(self, config: EmbeddingConfig):
+        """Готовит экземпляр к локальному вычислению embeddings, включая загрузку модели, токенизатора и выбор устройства."""
         self.config = config
         self._configure_hf_hub_downloads()
         self.device = self._select_device()
@@ -269,6 +298,7 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         self.model = self._load_model()
 
     def run(self, chunks: list[PreparedChunk], *, run_id: str) -> list[EmbeddedChunk]:
+        """Гарантирует получение embeddings для всех входных чанков локальной моделью с контролем соответствия размеров и логированием прогресса."""
         embedded: list[EmbeddedChunk] = []
         batches = list(self._batches(chunks))
         for batch_number, batch in enumerate(batches, start=1):
@@ -299,6 +329,7 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         return embedded
 
     def _load_tokenizer(self) -> Any:
+        """Гарантирует загрузку токенизатора, совместимого с выбранной моделью и политикой доверия к коду."""
         from transformers import AutoTokenizer
 
         return AutoTokenizer.from_pretrained(
@@ -308,6 +339,7 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         )
 
     def _load_model(self) -> Any:
+        """Гарантирует загрузку и перевод embedding-модели на выбранное устройство с fallback на CPU при ошибках, обеспечивая готовность к инференсу."""
         from transformers import AutoModel
 
         kwargs: dict[str, Any] = {
@@ -334,6 +366,7 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         return model
 
     def _embed_texts(self, texts: list[str]) -> EmbeddingBatchResult:
+        """Кодирует batch локально и применяет выбранный pooling."""
         import torch
 
         inputs = self.tokenizer(
@@ -355,6 +388,7 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         )
 
     def embed_query(self, text: str) -> list[float]:
+        """Гарантирует получение единственного embedding для запроса с учётом префикса, обеспечивая совместимость с локальной моделью."""
         query_text = (
             f"{self.config.query_prefix}{text}" if self.config.query_prefix else text
         )
@@ -366,10 +400,13 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         return result.vectors[0]
 
     def _pool(self, outputs: Any, attention_mask: Any) -> Any:
+        """Получает CLS либо mean pooling только по незаполненным padding токенам."""
         if self.config.pooling == "cls":
             return outputs.last_hidden_state[:, 0]
 
         token_embeddings = outputs.last_hidden_state
+        # attention_mask исключает padding: простое среднее по длине batch-тензора
+        # сместило бы короткие тексты в сторону нулевых представлений.
         mask = (
             attention_mask.unsqueeze(-1)
             .expand(token_embeddings.size())
@@ -380,6 +417,7 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         return summed / counts
 
     def _batches(self, chunks: list[PreparedChunk]) -> Iterable[list[PreparedChunk]]:
+        """Разбивает входные чанки на батчи, не превышающие ограничения по размеру и количеству токенов, чтобы избежать ошибок при обработке локальной моделью."""
         batch: list[PreparedChunk] = []
         batch_tokens = 0
         for chunk in chunks:
@@ -410,9 +448,11 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
             yield batch
 
     def _token_count(self, text: str) -> int:
+        """Гарантирует точный подсчёт токенов в тексте согласно используемому токенизатору для соблюдения лимитов модели."""
         return len(self.tokenizer.encode(text, add_special_tokens=True))
 
     def _passage_text(self, text: str) -> str:
+        """Добавляет passage-префикс, ожидаемый асимметричными E5-моделями."""
         return (
             f"{self.config.passage_prefix}{text}"
             if self.config.passage_prefix
@@ -420,12 +460,14 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         )
 
     def _configure_hf_hub_downloads(self) -> None:
+        """Обеспечивает корректную настройку переменных окружения для загрузки моделей HuggingFace в соответствии с политикой безопасности и совместимости."""
         if self.config.hub_disable_xet:
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         if self.config.hub_disable_symlink_warning:
             os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
     def _select_device(self) -> str:
+        """Выбирает XPU, затем CUDA и в последнюю очередь CPU."""
         import torch
 
         if self.config.local_device != "auto":
@@ -437,6 +479,7 @@ class LocalEmbeddingStage(EmbeddingRecordMixin):
         return "cpu"
 
     def _select_dtype(self, device: str) -> Any:
+        """Сопоставляет переносимый dtype конфига с типом PyTorch."""
         import torch
 
         dtype = self.config.local_dtype
@@ -455,6 +498,7 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
     """Считает GigaChat embeddings для подготовленных чанков."""
 
     def __init__(self, config: EmbeddingConfig):
+        """Готовит экземпляр к работе с GigaChat API, валидируя зависимости и аутентификацию для безопасного получения embeddings."""
         self.config = config
         credentials = resolve_gigachat_auth_key(config)
         try:
@@ -477,6 +521,7 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
         )
 
     def run(self, chunks: list[PreparedChunk], *, run_id: str) -> list[EmbeddedChunk]:
+        """Гарантирует получение embeddings для всех чанков с логированием прогресса и строгой проверкой соответствия входов и выходов."""
         embedded: list[EmbeddedChunk] = []
         batches = list(self._batches(chunks))
         for batch_number, batch in enumerate(batches, start=1):
@@ -507,6 +552,7 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
         return embedded
 
     def _embed_texts(self, texts: list[str]) -> EmbeddingBatchResult:
+        """Выполняет GigaChat-запрос с ограниченным retry временных ошибок."""
         try:
             from gigachat.exceptions import GigaChatException
         except ImportError:
@@ -523,6 +569,7 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
         return retryer(self._request_embeddings, texts)
 
     def _request_embeddings(self, texts: list[str]) -> EmbeddingBatchResult:
+        """Гарантирует получение embeddings для заданных текстов с фиксацией времени генерации для последующей трассировки."""
         vectors = self.client.embed_documents(texts)
         return EmbeddingBatchResult(
             vectors=[[float(value) for value in vector] for vector in vectors],
@@ -530,10 +577,12 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
         )
 
     def embed_query(self, text: str) -> list[float]:
+        """Гарантирует получение embedding для запроса через GigaChat API с приведением к числовому формату."""
         vector = self.client.embed_query(text)
         return [float(value) for value in vector]
 
     def _batches(self, chunks: list[PreparedChunk]) -> Iterable[list[PreparedChunk]]:
+        """Разбивает входные чанки на батчи, строго соблюдая лимиты GigaChat по размеру и количеству токенов для предотвращения ошибок API."""
         batch: list[PreparedChunk] = []
         batch_tokens = 0
         for chunk in chunks:
@@ -564,16 +613,19 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
             yield batch
 
     def _token_count(self, text: str) -> int:
+        """Оценивает токены по символам, когда provider не публикует tokenizer."""
         return max(1, math.ceil(len(text) / self.config.gigachat_chars_per_token))
 
     @staticmethod
     def ensure_api_key(config: EmbeddingConfig) -> None:
+        """Проверяет наличие и корректность ключа доступа к GigaChat, предотвращая ошибки аутентификации при запуске."""
         resolve_gigachat_auth_key(config)
 
 
 def build_embedding_stage(
     config: EmbeddingConfig,
 ) -> OpenAIEmbeddingStage | LocalEmbeddingStage | GigaChatEmbeddingStage:
+    """Создаёт stage строго для явно выбранного embedding-провайдера."""
     if config.provider == "openai":
         return OpenAIEmbeddingStage(config)
     if config.provider == "local":
@@ -584,6 +636,7 @@ def build_embedding_stage(
 
 
 def ensure_embedding_runtime(config: EmbeddingConfig) -> None:
+    """Гарантирует, что для выбранного провайдера эмбеддингов доступны все необходимые ключи доступа перед запуском вычислений."""
     if config.provider == "openai":
         OpenAIEmbeddingStage.ensure_api_key(config)
     if config.provider == "gigachat":

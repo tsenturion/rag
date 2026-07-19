@@ -1,3 +1,5 @@
+"""Построение и пересмотр плана для распределённой оркестрации."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -17,9 +19,11 @@ class OrchestrationPlanBuilder:
     """Строит ограниченные планы из разрешённых сервером сценариев."""
 
     def __init__(self, *, step_timeout_seconds: float = 60.0):
+        """Настраивает параметры построителя плана, обеспечивая готовность к созданию планов с заданным таймаутом на шаг."""
         self.step_timeout_seconds = step_timeout_seconds
 
     def build(self, job: OrchestrationJob) -> ExecutionPlan:
+        """Формирует план исполнения на основе шаблона задания, обеспечивая соответствие структуры плана выбранной оркестрационной стратегии."""
         builders = {
             OrchestrationPattern.SEQUENTIAL: self._sequential,
             OrchestrationPattern.PARALLEL: self._parallel,
@@ -38,6 +42,7 @@ class OrchestrationPlanBuilder:
         plan: ExecutionPlan,
         results: list[StepResult],
     ) -> tuple[ExecutionPlan, PlanRevision]:
+        """Обновляет план с учётом неудачных шагов, переназначая роли для повышения устойчивости и обеспечивая версионирование изменений."""
         failed = {
             result.step_id: result
             for result in results
@@ -88,6 +93,7 @@ class OrchestrationPlanBuilder:
         )
 
     def _base(self) -> list[PlanStep]:
+        """Создаёт базовый шаг валидации, который гарантирует проверку входных данных перед выполнением основных этапов плана."""
         return [
             PlanStep(
                 id="validate",
@@ -98,6 +104,7 @@ class OrchestrationPlanBuilder:
         ]
 
     def _sequential(self, job: OrchestrationJob) -> list[PlanStep]:
+        """Формирует последовательный план шагов с чёткими зависимостями, обеспечивая упорядоченное выполнение и агрегирование результатов."""
         del job
         return [
             *self._base(),
@@ -118,6 +125,7 @@ class OrchestrationPlanBuilder:
         ]
 
     def _parallel(self, job: OrchestrationJob) -> list[PlanStep]:
+        """Создаёт параллельный план с независимыми агентскими шагами и последующим объединением результатов для ускорения обработки."""
         del job
         agent_ids = ["diagnostics", "knowledge", "risks"]
         return [
@@ -153,6 +161,7 @@ class OrchestrationPlanBuilder:
         ]
 
     def _conditional(self, job: OrchestrationJob) -> list[PlanStep]:
+        """Создаёт план с детерминированным ветвлением по уровню риска, гарантируя выбор безопасной и соответствующей стратегии обработки запроса."""
         del job
         return [
             *self._base(),
@@ -190,6 +199,7 @@ class OrchestrationPlanBuilder:
         ]
 
     def _quorum(self, job: OrchestrationJob) -> list[PlanStep]:
+        """Формирует план с голосованием нескольких агентов для коллективной оценки решения, обеспечивая согласованность и проверку качества результата."""
         del job
         voters = ["vote-diagnostics", "vote-knowledge", "vote-critic"]
         return [
@@ -228,6 +238,7 @@ class OrchestrationPlanBuilder:
         ]
 
     def _dynamic(self, job: OrchestrationJob) -> list[PlanStep]:
+        """Строит адаптивный план, который учитывает доступные инструменты и данные, обеспечивая гибкость и надёжность обработки запроса."""
         del job
         return [
             *self._base(),
@@ -259,6 +270,7 @@ class OrchestrationPlanBuilder:
         fallback_roles: list[str] | None = None,
         condition: Literal["always", "low_or_medium_risk", "high_risk"] = "always",
     ) -> PlanStep:
+        """Создаёт шаг плана, назначенный конкретной роли с условиями и зависимостями, гарантируя корректное распределение задач в оркестрации."""
         return PlanStep(
             id=step_id,
             title=title,

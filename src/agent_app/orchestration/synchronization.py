@@ -1,3 +1,5 @@
+"""Синхронизация результатов агентов для распределённой оркестрации."""
+
 from __future__ import annotations
 
 import re
@@ -18,6 +20,7 @@ class QuorumCoordinator:
         required: int,
         cancelled_steps: list[str] | None = None,
     ) -> SynchronizationResult:
+        """Определяет достижение кворума и консенсус по результатам шагов, гарантируя корректную синхронизацию распределённых агентов."""
         agent_results = [
             result
             for result in results
@@ -42,6 +45,7 @@ class QuorumCoordinator:
 
     @staticmethod
     def _vote(result: StepResult) -> str:
+        """Извлекает голос агента из результата шага, обеспечивая корректный учёт мнения при подсчёте кворума."""
         if result.vote is not None:
             return result.vote
         match = VOTE_RE.search(result.output)

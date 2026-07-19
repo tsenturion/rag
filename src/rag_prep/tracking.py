@@ -1,3 +1,5 @@
+"""Логирование запусков в MLflow для RAG-конвейера."""
+
 from __future__ import annotations
 
 import logging
@@ -18,16 +20,24 @@ LOGGER = logging.getLogger(__name__)
 
 
 class SupportsArtifactPaths(Protocol):
-    def artifact_paths(self) -> list[Path]: ...
+    """Контракт результата экспорта, предоставляющего пути MLflow-артефактов."""
+
+    def artifact_paths(self) -> list[Path]:
+        """Возвращает существующие или ожидаемые пути артефактов запуска."""
+        ...
 
 
 class MLflowTracker:
+    """Обеспечивает централизованное логирование параметров, метрик и артефактов RAG-конвейера в MLflow с учётом конфигурации."""
+
     def __init__(self, config: Any):
+        """Готовит экземпляр для логирования, сохраняя конфигурацию и обеспечивая доступ к настройкам MLflow."""
         self.config = config
 
     def log_run(
         self, counts: Mapping[str, int | float], export: SupportsArtifactPaths
     ) -> None:
+        """Логирует параметры, метрики и артефакты запуска в MLflow, если логирование включено, обеспечивая воспроизводимость и мониторинг."""
         if not self.config.logging.mlflow_enabled:
             LOGGER.info("Логирование MLflow отключено")
             return
@@ -53,6 +63,7 @@ class MLflowTracker:
         LOGGER.info("Запуск залогирован в MLflow tracking URI %s", tracking_uri)
 
     def _tracking_uri(self) -> str:
+        """Определяет корректный URI для MLflow tracking, учитывая абсолютные и относительные пути, гарантируя доступность хранилища."""
         project_root = Path(__file__).resolve().parents[2]
         uri = resolve_mlflow_tracking_uri(
             self.config.logging.mlflow_tracking_uri,
@@ -68,6 +79,7 @@ class MLflowTracker:
 
     @staticmethod
     def _safe_param(value: Any) -> str | int | float | bool:
+        """Преобразует параметр в безопасный для MLflow формат, ограничивая длину и предотвращая ошибки при логировании."""
         if isinstance(value, (str, int, float, bool)):
             text = str(value)
         else:

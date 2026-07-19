@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы chunk_overlap."""
+
 from __future__ import annotations
 
 import sys
@@ -17,7 +19,10 @@ from rag_prep.config import ChunkingConfig  # noqa: E402
 
 
 class ChunkOverlapTest(unittest.TestCase):
+    """Проверяет логику определения перекрытия семантических блоков при разбиении текста на чанки с учётом ограничений по размеру и перекрытию."""
+
     def test_large_semantic_block_is_not_used_as_oversized_overlap(self) -> None:
+        """Проверяет, что большие семантические блоки не учитываются как перекрытия, превышающие заданный лимит перекрытия токенов."""
         stage = ChunkSplittingStage(
             ChunkingConfig(
                 chunk_size=100,
@@ -45,6 +50,7 @@ class ChunkOverlapTest(unittest.TestCase):
         *,
         position: int,
     ) -> SemanticBlock:
+        """Создаёт семантический блок с предсказуемыми параметрами для тестирования корректности разбиения текста и подсчёта токенов."""
         normalized = text.strip()
         return SemanticBlock(
             id=f"block-{position}",

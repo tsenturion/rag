@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы scenario_model_reuse."""
+
 from __future__ import annotations
 
 import sys
@@ -19,14 +21,20 @@ from agent_app.scenarios.runner import ScenarioRunner  # noqa: E402
 
 
 class FakeChatModel:
+    """Обеспечивает имитацию чат-модели без побочных эффектов для проверки повторного использования модели в сценариях, гарантируя стабильность ответов."""
+
     supports_tool_calling = False
 
     def invoke(self, _messages):
+        """Проверяет, что модель возвращает корректный ответ без побочных эффектов при повторном использовании в сценарии."""
         return AIMessage(content="Готово")
 
 
 class ScenarioModelReuseTest(unittest.TestCase):
+    """Проверяет подсистему повторного использования моделей в сценариях, обеспечивая, что модель создаётся единожды и используется повторно без избыточных вызовов."""
+
     def test_scenario_suite_builds_llm_only_once(self) -> None:
+        """Проверяет, что при выполнении набора сценариев модель создаётся только один раз, что гарантирует оптимальное использование ресурсов и отсутствие дублирования."""
         scenarios = [
             {
                 "id": f"scenario_{index}",

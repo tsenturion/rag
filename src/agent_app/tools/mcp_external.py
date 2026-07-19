@@ -1,3 +1,5 @@
+"""Подключение внешних MCP-серверов для инструментов агента."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +30,7 @@ class ExternalMCPToolManager:
     """Поддерживает постоянные MCP-сессии и адаптирует удалённые tools для агента."""
 
     def __init__(self, servers: list[ExternalMCPServerConfig]):
+        """Готовит менеджер к запуску, фильтруя активные серверы и инициализируя внутренние структуры для управления сессиями и инструментами."""
         self.servers = [server for server in servers if server.enabled]
         self._server_by_name = {server.name: server for server in self.servers}
         self._sessions: dict[str, ClientSession] = {}
@@ -42,13 +45,16 @@ class ExternalMCPToolManager:
 
     @property
     def tools(self) -> list[BaseTool]:
+        """Гарантирует получение актуального списка инструментов, доступных через внешние MCP-серверы."""
         return list(self._tools)
 
     @property
     def errors(self) -> dict[str, str]:
+        """Гарантирует доступ к актуальному состоянию ошибок подключения к MCP-серверам."""
         return dict(self._errors)
 
     def start(self) -> list[BaseTool]:
+        """Гарантирует запуск фонового клиента MCP, готовность инструментов и обработку ошибок и таймаутов старта."""
         if self._started:
             return self.tools
         self._started = True
@@ -74,6 +80,7 @@ class ExternalMCPToolManager:
         return self.tools
 
     def status(self) -> dict[str, object]:
+        """Гарантирует получение полной информации о конфигурации, подключениях, доступных инструментах и ошибках MCP."""
         connected = sorted(self._sessions)
         return {
             "configured": len(self.servers),
@@ -83,6 +90,7 @@ class ExternalMCPToolManager:
         }
 
     def close(self) -> None:
+        """Гарантирует корректное завершение фоновых потоков, освобождение ресурсов и сброс состояния менеджера MCP."""
         thread = self._thread
         loop = self._loop
         shutdown_event = self._shutdown_event
@@ -107,6 +115,7 @@ class ExternalMCPToolManager:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> str:
+        """Обеспечивает синхронный вызов внешнего MCP-инструмента с гарантией завершения в пределах таймаута, обеспечивая корректное взаимодействие с асинхронным циклом."""
         loop = self._loop
         server = self._server_by_name[server_name]
         if loop is None or not loop.is_running():
@@ -118,6 +127,7 @@ class ExternalMCPToolManager:
         return future.result(timeout=server.timeout_seconds + 1)
 
     def _run(self) -> None:
+        """Запускает отдельный асинхронный цикл для управления жизненным циклом MCP-соединений, гарантируя корректное создание и завершение ресурсов."""
         loop = asyncio.new_event_loop()
         self._loop = loop
         asyncio.set_event_loop(loop)
@@ -131,6 +141,7 @@ class ExternalMCPToolManager:
             loop.close()
 
     async def _lifecycle(self) -> None:
+        """Организует подключение к MCP-серверам и проверку доступности инструментов, устанавливая состояние готовности или ошибку запуска."""
         self._shutdown_event = asyncio.Event()
         async with AsyncExitStack() as stack:
             try:
@@ -149,6 +160,7 @@ class ExternalMCPToolManager:
         stack: AsyncExitStack,
         server: ExternalMCPServerConfig,
     ) -> None:
+        """Устанавливает и поддерживает сессию с MCP-сервером, проверяя обязательность и доступность инструментов, обеспечивая корректное управление ошибками и ресурсами."""
         server_stack = AsyncExitStack()
         await server_stack.__aenter__()
         try:
@@ -204,6 +216,7 @@ class ExternalMCPToolManager:
         stack: AsyncExitStack,
         server: ExternalMCPServerConfig,
     ) -> tuple[Any, Any]:
+        """Создаёт транспортный канал к MCP-серверу с проверкой необходимых переменных окружения и конфигураций, гарантируя готовность к обмену данными."""
         if server.transport == "stdio":
             environment = dict(server.env)
             for variable in server.env_from_host:
@@ -252,6 +265,7 @@ class ExternalMCPToolManager:
 
     @staticmethod
     async def _list_tools(session: ClientSession) -> list[Tool]:
+        """Получает полный список инструментов с MCP-сессии, обеспечивая полноту и актуальность данных для дальнейшего использования."""
         tools: list[Tool] = []
         cursor: str | None = None
         while True:
@@ -266,9 +280,11 @@ class ExternalMCPToolManager:
         server: ExternalMCPServerConfig,
         tool: Tool,
     ) -> BaseTool:
+        """Преобразует удалённый MCP-инструмент в локальный вызов с синхронным и асинхронным интерфейсом, сохраняя метаданные и гарантируя корректность вызова."""
         exposed_name = self._exposed_name(server, tool.name)
 
         def invoke_external(**arguments: Any) -> str:
+            """Обеспечивает синхронный вызов внешнего инструмента агента через менеджер, гарантируя корректную маршрутизацию и обработку аргументов."""
             return self.call_tool(
                 server_name=server.name,
                 tool_name=tool.name,
@@ -276,6 +292,7 @@ class ExternalMCPToolManager:
             )
 
         async def ainvoke_external(**arguments: Any) -> str:
+            """Обеспечивает асинхронный вызов внешнего инструмента агента, позволяя не блокировать основной поток при выполнении операции."""
             return await asyncio.to_thread(invoke_external, **arguments)
 
         description = tool.description or f"Внешний MCP tool {tool.name}"
@@ -299,6 +316,7 @@ class ExternalMCPToolManager:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> str:
+        """Выполняет асинхронный вызов MCP-инструмента с обработкой ошибок и ограничением размера ответа, обеспечивая надёжность и безопасность данных."""
         server = self._server_by_name[server_name]
         session = self._sessions.get(server_name)
         if session is None:
@@ -318,6 +336,7 @@ class ExternalMCPToolManager:
 
     @staticmethod
     def _exposed_name(server: ExternalMCPServerConfig, tool_name: str) -> str:
+        """Формирует уникальное и валидное имя для MCP-инструмента с учётом префиксов, предотвращая коллизии и ошибки именования."""
         prefix = server.tool_prefix or f"mcp_{server.name}"
         normalized = TOOL_NAME_RE.sub("_", f"{prefix}_{tool_name}").strip("_")
         if not normalized:
@@ -327,6 +346,7 @@ class ExternalMCPToolManager:
         return normalized[:64]
 
     def _validate_tool_names(self) -> None:
+        """Проверяет уникальность имён всех MCP-инструментов после применения префиксов, предотвращая конфликты в системе."""
         names = [tool.name for tool in self._tools]
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:

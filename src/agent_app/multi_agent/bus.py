@@ -1,3 +1,5 @@
+"""Шина сообщений для мультиагентной системы."""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +21,7 @@ class AsyncMessageBus:
     """In-memory request-response/pub-sub transport с дедупликацией и timeout."""
 
     def __init__(self):
+        """Готовит экземпляр к маршрутизации сообщений между агентами с изоляцией состояний, журналированием и защитой от гонок."""
         self._agents: dict[str, MessageHandler] = {}
         self._subscribers: dict[str, list[EventHandler]] = defaultdict(list)
         self._responses: dict[str, AgentEnvelope] = {}
@@ -28,14 +31,17 @@ class AsyncMessageBus:
         self._lock = asyncio.Lock()
 
     def register_agent(self, name: str, handler: MessageHandler) -> None:
+        """Гарантирует уникальность имени агента и обеспечивает маршрутизацию запросов только зарегистрированным обработчикам."""
         if name in self._agents:
             raise ValueError(f"Обработчик агента уже зарегистрирован: {name}")
         self._agents[name] = handler
 
     def subscribe(self, topic: str, handler: EventHandler) -> None:
+        """Позволяет подписаться на события по теме, гарантируя доставку каждому подписчику при публикации."""
         self._subscribers[topic].append(handler)
 
     async def request(self, envelope: AgentEnvelope) -> AgentEnvelope:
+        """Гарантирует однократную доставку запроса агенту с трассировкой статуса, дедупликацией и обработкой ошибок доставки."""
         if envelope.kind != MessageKind.REQUEST:
             raise ValueError("request() принимает только сообщения kind=request")
         if not envelope.recipient:
@@ -125,6 +131,7 @@ class AsyncMessageBus:
         return completed.model_copy(deep=True)
 
     async def publish(self, envelope: AgentEnvelope) -> int:
+        """Гарантирует доставку события всем подписчикам темы с трассировкой статуса публикации и подсчётом обработчиков."""
         if envelope.kind != MessageKind.EVENT:
             raise ValueError("publish() принимает только сообщения kind=event")
         if not envelope.topic:
@@ -143,15 +150,19 @@ class AsyncMessageBus:
         return len(subscribers)
 
     def journal(self) -> list[AgentEnvelope]:
+        """Возвращает полную историю всех сообщений с сохранением инварианта неизменности для аудита и отладки."""
         return [message.model_copy(deep=True) for message in self._journal]
 
     def dead_letters(self) -> list[AgentEnvelope]:
+        """Возвращает сообщения, не доставленные адресату, для последующего анализа причин сбоев."""
         return [message.model_copy(deep=True) for message in self._dead_letters]
 
     def _record(self, envelope: AgentEnvelope) -> None:
+        """Сохраняет копию сообщения в журнале, обеспечивая неизменность истории для аудита и восстановления."""
         self._journal.append(envelope.model_copy(deep=True))
 
     @staticmethod
     def _expired(envelope: AgentEnvelope) -> bool:
+        """Гарантирует, что сообщения с истёкшим временем жизни не будут обработаны в мультиагентной шине."""
         elapsed = datetime.now(timezone.utc) - envelope.created_at
         return elapsed.total_seconds() > envelope.ttl_seconds

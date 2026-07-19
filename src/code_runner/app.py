@@ -1,3 +1,5 @@
+"""HTTP-приложение и его обработчики для изолированного выполнения Python."""
+
 from __future__ import annotations
 
 import ast
@@ -40,12 +42,16 @@ BLOCKED_CALLS = {
 
 
 class ExecutionRequest(BaseModel):
+    """Обеспечивает проверку кода, времени выполнения и объёма вывода для безопасного и контролируемого запуска кода в изолированной среде."""
+
     code: str = Field(min_length=1, max_length=100_000)
     timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     max_output_chars: int = Field(default=12_000, ge=100, le=100_000)
 
 
 class ExecutionResponse(BaseModel):
+    """Гарантирует вызывающему коду структурированный контракт результата выполнения Python-кода с явным статусом, выводом и ошибками."""
+
     status: str
     stdout: str = ""
     stderr: str = ""
@@ -67,6 +73,7 @@ app = FastAPI(
 
 @app.get("/health", tags=["Состояние"])
 def health() -> dict[str, str]:
+    """Гарантирует готовность сервиса к приёму запросов для проверки внешними системами."""
     return {"status": "ok"}
 
 
@@ -80,6 +87,7 @@ def execute(
     payload: ExecutionRequest,
     supplied_key: str | None = Header(default=None, alias="X-Code-Runner-Key"),
 ) -> ExecutionResponse:
+    """Гарантирует безопасное и изолированное выполнение пользовательского Python-кода с контролем ресурсов и валидацией."""
     _require_api_key(supplied_key)
     violation = _validate_code(payload.code)
     if violation is not None:
@@ -101,7 +109,13 @@ def execute(
                     stderr_path.open("wb") as stderr_stream,
                 ):
                     process = subprocess.run(
-                        [sys.executable, "-I", "-S", "-B", str(script)],
+                        [
+                            sys.executable,
+                            "-I",
+                            "-B",
+                            str(Path(__file__).with_name("sandbox.py")),
+                            str(script),
+                        ],
                         cwd=directory,
                         env={
                             "PYTHONHASHSEED": "0",
@@ -146,6 +160,7 @@ def execute(
 
 
 def _require_api_key(supplied: str | None) -> None:
+    """Гарантирует отказ в доступе при отсутствии или некорректности API-ключа, предотвращая неавторизованный запуск кода."""
     expected = os.getenv("CODE_RUNNER_API_KEY")
     if not expected:
         raise HTTPException(
@@ -160,6 +175,7 @@ def _require_api_key(supplied: str | None) -> None:
 
 
 def _validate_code(code: str) -> str | None:
+    """Гарантирует отказ в выполнении кода, нарушающего политику безопасности по синтаксису, импортам и запрещённым вызовам."""
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError as exc:
@@ -178,15 +194,20 @@ def _validate_code(code: str) -> str | None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id in BLOCKED_CALLS:
                 return f"Запрещён вызов: {node.func.id}"
-        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
-            return "Доступ к dunder-атрибутам запрещён."
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            # Приватные атрибуты разрешённых модулей часто содержат ссылки на
+            # sys, builtins и loader, через которые обходится import allowlist.
+            return "Доступ к приватным атрибутам запрещён."
         if isinstance(node, ast.Name) and node.id.startswith("__"):
             return "Доступ к dunder-именам запрещён."
     return None
 
 
 def _resource_limits(payload: ExecutionRequest):
+    """Гарантирует применение системных ограничений ресурсов процесса для предотвращения злоупотреблений при запуске кода."""
+
     def apply_limits() -> None:
+        """Гарантирует ограничение ресурсов процесса для предотвращения чрезмерного потребления CPU, памяти, файлов и вывода при изолированном запуске."""
         resource: Any = importlib.import_module("resource")
 
         cpu_seconds = max(1, int(payload.timeout_seconds) + 1)
@@ -213,6 +234,7 @@ def _response(
     max_output_chars: int,
     error: str | None = None,
 ) -> ExecutionResponse:
+    """Гарантирует формирование результата выполнения с учётом ограничения размера вывода и корректной маркировки усечённого контента."""
     stdout_value, stdout_truncated = _truncate(stdout, max_output_chars)
     remaining = max(0, max_output_chars - len(stdout_value))
     stderr_value, stderr_truncated = _truncate(stderr, remaining)
@@ -228,6 +250,7 @@ def _response(
 
 
 def _truncate(value: str, limit: int) -> tuple[str, bool]:
+    """Гарантирует, что строка не превысит заданный лимит символов, явно маркируя усечение для вызывающего кода."""
     if len(value) <= limit:
         return value, False
     marker = "... [вывод сокращён]"
@@ -239,6 +262,7 @@ def _truncate(value: str, limit: int) -> tuple[str, bool]:
 
 
 def _read_output(path: Path, limit: int) -> str:
+    """Гарантирует корректное чтение и нормализацию вывода изолированного процесса с защитой от переполнения по размеру."""
     with path.open("rb") as stream:
         value = stream.read(limit + 1).decode("utf-8", errors="replace")
     return value.replace("\r\n", "\n").replace("\r", "\n")

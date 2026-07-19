@@ -1,3 +1,5 @@
+"""Дедупликация текстовых элементов для подготовки документов."""
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +19,8 @@ TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 @dataclass(frozen=True)
 class DeduplicationResult:
+    """Гарантирует прозрачный контракт о составе уникальных элементов и количестве удалённых дубликатов после дедупликации."""
+
     elements: list[ProcessedElement]
     duplicates_removed: int
     exact_duplicates_removed: int = 0
@@ -27,9 +31,11 @@ class DeduplicationStage:
     """Удаляет exact и near-дубли через datasketch MinHash LSH."""
 
     def __init__(self, config: DeduplicationConfig):
+        """Гарантирует готовность экземпляра к дедупликации с заданной политикой поиска дубликатов."""
         self.config = config
 
     def run(self, elements: list[ProcessedElement]) -> DeduplicationResult:
+        """Удаляет точные и близкие дубликаты, гарантируя уникальность возвращаемых элементов согласно политике конфигурации."""
         if not self.config.enabled:
             return DeduplicationResult(elements=elements, duplicates_removed=0)
 
@@ -88,6 +94,7 @@ class DeduplicationStage:
 
     @staticmethod
     def _lsh_key(position: int, digest: str, inserted_keys: set[str]) -> str:
+        """Гарантирует уникальность ключа для вставки в LSH, предотвращая коллизии при дедупликации."""
         key = f"{position}:{digest}"
         if key not in inserted_keys:
             return key
@@ -98,13 +105,16 @@ class DeduplicationStage:
         return f"{key}:{suffix}"
 
     def _tokens(self, text: str) -> list[str]:
+        """Гарантирует получение нормализованного списка токенов для корректного сравнения текстов при дедупликации."""
         return [token.lower() for token in TOKEN_RE.findall(text)]
 
     @staticmethod
     def _normalized_short_text(tokens: list[str]) -> str:
+        """Гарантирует воспроизводимую строку для сравнения коротких текстов вне зависимости от исходного форматирования."""
         return " ".join(tokens)
 
     def _is_near_short_duplicate(self, text: str, candidates: list[str]) -> bool:
+        """Гарантирует, что короткие тексты с высокой степенью схожести не будут повторно включены в итоговую выборку."""
         if not text:
             return False
         return any(
@@ -113,6 +123,7 @@ class DeduplicationStage:
         )
 
     def _minhash(self, tokens: list[str]) -> MinHash:
+        """Обеспечивает воспроизводимое хеширование токенов для эффективного поиска дубликатов по схожести."""
         minhash = MinHash(num_perm=self.config.num_perm)
         shingles = self._shingles(tokens)
         for shingle in shingles:
@@ -120,6 +131,7 @@ class DeduplicationStage:
         return minhash
 
     def _shingles(self, tokens: list[str]) -> list[tuple[str, ...]]:
+        """Гарантирует разбиение последовательности токенов на перекрывающиеся фрагменты фиксированной длины для дальнейшего сравнения."""
         size = self.config.shingle_size
         if len(tokens) < size:
             return [tuple(tokens)]

@@ -1,3 +1,5 @@
+"""Парсинг исходных документов для подготовки документов."""
+
 from __future__ import annotations
 
 import csv
@@ -19,10 +21,12 @@ class UnstructuredParsingStage:
     """Парсит файлы в semantic elements через Unstructured и структурированные CSV-строки."""
 
     def __init__(self, config: ParserConfig, default_section: str):
+        """Подготавливает экземпляр с конфигурацией и базовым разделом, обеспечивая корректную настройку парсинга неструктурированных данных."""
         self.config = config
         self.default_section = default_section
 
     def run(self, sources: list[SourceFile]) -> ParseResult:
+        """Обрабатывает список исходных файлов, возвращая распарсенные элементы и аккумулируя ошибки, при этом может прерывать выполнение при критических ошибках."""
         elements: list[RawElement] = []
         failures: list[ParseFailure] = []
         for source in sources:
@@ -51,6 +55,7 @@ class UnstructuredParsingStage:
         return ParseResult(elements=elements, failures=failures)
 
     def _parse_source(self, source: SourceFile) -> list[RawElement]:
+        """Разбирает содержимое файла в структурированные элементы с учётом типа файла и иерархии разделов для унифицированного представления данных."""
         if source.file_type == "csv":
             return self._parse_csv_source(source)
 
@@ -91,6 +96,7 @@ class UnstructuredParsingStage:
         return raw_elements
 
     def _parse_csv_source(self, source: SourceFile) -> list[RawElement]:
+        """Обеспечивает корректное чтение CSV-файла и преобразование строк в элементы с метаданными, сохраняя структуру и контекст данных."""
         with source.path.open("r", encoding=self.config.encoding, newline="") as file:
             reader = csv.DictReader(file)
             columns = reader.fieldnames or []
@@ -120,6 +126,7 @@ class UnstructuredParsingStage:
         return raw_elements
 
     def _csv_section(self, row: dict[str, str]) -> str:
+        """Определяет раздел документа на основе приоритетных полей CSV-строки, обеспечивая консистентную категоризацию элементов."""
         section = self._csv_value(row, "section", "раздел", "секция", "category")
         title = self._csv_value(row, "title", "заголовок", "тема", "name", "название")
         if section and title:
@@ -127,6 +134,7 @@ class UnstructuredParsingStage:
         return title or section or self.default_section
 
     def _csv_section_path(self, row: dict[str, str]) -> list[str]:
+        """Формирует иерархический путь раздела из CSV-данных, гарантируя наличие валидного пути для структурирования контента."""
         section = self._csv_value(row, "section", "раздел", "секция", "category")
         title = self._csv_value(row, "title", "заголовок", "тема", "name", "название")
         return [value for value in [section, title] if value] or [self.default_section]
@@ -134,6 +142,7 @@ class UnstructuredParsingStage:
     def _next_section_path(
         self, current_path: list[str], title: str, element_type: str
     ) -> list[str]:
+        """Обновляет путь раздела в зависимости от типа элемента, поддерживая корректную иерархию документа."""
         if element_type in TITLE_TYPES:
             return [title]
         if current_path:
@@ -142,6 +151,7 @@ class UnstructuredParsingStage:
 
     @staticmethod
     def _normalize_csv_row(row: dict[str, Any]) -> dict[str, str]:
+        """Обеспечивает стандартизированное представление CSV-строки с очищенными ключами и значениями для надёжного парсинга и обработки."""
         normalized: dict[str, str] = {}
         for key, value in row.items():
             if key is None:
@@ -151,11 +161,13 @@ class UnstructuredParsingStage:
 
     @staticmethod
     def _csv_row_to_text(row: dict[str, str]) -> str:
+        """Гарантирует преобразование строки CSV в человекочитаемый текст для унифицированной подготовки документов."""
         lines = [f"{key}: {value}" for key, value in row.items() if value]
         return "\n".join(lines).strip()
 
     @staticmethod
     def _csv_value(row: dict[str, str], *keys: str) -> str:
+        """Гарантирует извлечение первого непустого значения по списку ключей без учёта регистра, обеспечивая устойчивость к разным вариантам заголовков."""
         by_lower_key = {key.lower(): value for key, value in row.items()}
         for key in keys:
             value = by_lower_key.get(key.lower())
@@ -165,10 +177,12 @@ class UnstructuredParsingStage:
 
     @staticmethod
     def _element_id(source: SourceFile, element_index: int) -> str:
+        """Гарантирует уникальность идентификатора элемента в рамках исходного файла и позиции для отслеживания происхождения данных."""
         return stable_id(source.source_hash, element_index)
 
     @staticmethod
     def _metadata_to_dict(metadata: Any) -> dict[str, Any]:
+        """Гарантирует получение словаря метаданных вне зависимости от их исходного формата или отсутствия."""
         if metadata is None:
             return {}
         if hasattr(metadata, "to_dict"):

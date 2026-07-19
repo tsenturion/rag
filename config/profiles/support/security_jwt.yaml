@@ -1,0 +1,7 @@
+security:
+  jwt_enabled: true
+  jwt_secret_env: SUPPORT_JWT_SECRET
+  jwt_algorithm: HS256
+  jwt_issuer: rag-support
+  jwt_audience: rag-support-api
+  enforce_user_scope: true

@@ -1,3 +1,5 @@
+"""Загрузка входных данных для чанкинга документов."""
+
 from __future__ import annotations
 
 import json
@@ -5,6 +7,7 @@ import logging
 from pathlib import Path
 
 from rag_prep.models import PreparedDocument
+from rag_prep.utils import verify_upstream_artifact
 
 LOGGER = logging.getLogger(__name__)
 
@@ -13,10 +16,12 @@ class PreparedDocumentLoadingStage:
     """Загружает подготовленные документы из предыдущего пайплайна."""
 
     def run(self, input_jsonl: Path) -> list[PreparedDocument]:
+        """Гарантирует воспроизводимую загрузку подготовленных документов из JSONL с валидацией формата и информативной обработкой ошибок."""
         if not input_jsonl.exists():
             raise FileNotFoundError(
                 f"Файл подготовленных документов не существует: {input_jsonl}"
             )
+        verify_upstream_artifact(input_jsonl)
 
         documents: list[PreparedDocument] = []
         with input_jsonl.open("r", encoding="utf-8") as file:

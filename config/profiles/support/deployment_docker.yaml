@@ -8,3 +8,6 @@ service:
 
 security:
   require_api_key: true
+
+logging:
+  json_format: true

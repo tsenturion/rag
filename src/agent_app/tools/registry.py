@@ -1,3 +1,5 @@
+"""Реестр разрешённых инструментов для инструментов агента."""
+
 from __future__ import annotations
 
 from langchain_core.tools import BaseTool
@@ -27,6 +29,7 @@ def build_tools(
     incident_store: IncidentStore | None = None,
     external_tools: list[BaseTool] | None = None,
 ) -> list[BaseTool]:
+    """Формирует набор инструментов агента с учётом конфигурации и зависимостей, гарантируя отсутствие конфликтов имён и соответствие включённых функций."""
     tools: list[BaseTool] = [
         calculator_tool(),
         datetime_tool(),

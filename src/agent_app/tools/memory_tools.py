@@ -1,3 +1,5 @@
+"""Инструменты долговременной памяти для инструментов агента."""
+
 from __future__ import annotations
 
 import json
@@ -12,6 +14,8 @@ VALID_MEMORY_TYPES: set[str] = {"fact", "preference", "task", "summary", "note"}
 
 
 class SaveMemoryInput(BaseModel):
+    """Определяет параметры для сохранения записи в памяти агента с контролем типа, важности и срока жизни данных."""
+
     memory_type: str = Field(
         default="note",
         description=(
@@ -27,6 +31,8 @@ class SaveMemoryInput(BaseModel):
 
 
 class SearchMemoryInput(BaseModel):
+    """Формирует запросы к памяти агента с возможностью фильтрации по типу и ограничению количества результатов."""
+
     query: str
     memory_type: MemoryType | None = Field(
         default=None,
@@ -36,10 +42,14 @@ class SearchMemoryInput(BaseModel):
 
 
 class GetMemoryInput(BaseModel):
+    """Обеспечивает однозначное получение записи из памяти агента по уникальному идентификатору."""
+
     memory_id: str
 
 
 class UpdateMemoryInput(BaseModel):
+    """Определяет параметры для обновления существующей записи памяти с возможностью изменения ключа, типа, значения и метаданных."""
+
     memory_id: str | None = None
     key: str | None = None
     memory_type: MemoryType | None = None
@@ -50,17 +60,23 @@ class UpdateMemoryInput(BaseModel):
 
 
 class DeleteMemoryInput(BaseModel):
+    """Обеспечивает удаление записей из памяти агента по идентификатору, ключу или типу с гарантией корректного удаления."""
+
     memory_id: str | None = None
     key: str | None = None
     memory_type: MemoryType | None = None
 
 
 class ListMemoryInput(BaseModel):
+    """Определяет параметры фильтрации и ограничения для запроса списка элементов памяти, обеспечивая корректный и контролируемый доступ к данным памяти."""
+
     memory_type: MemoryType | None = None
     limit: int = Field(default=20, ge=1)
 
 
 class ClearSessionMemoryInput(BaseModel):
+    """Обеспечивает подтверждение очистки сессионной памяти, гарантируя, что операция выполняется только при явном согласии пользователя."""
+
     confirm: bool = Field(default=False)
 
 
@@ -71,6 +87,8 @@ def memory_tools(
     session_id: str,
     default_search_limit: int,
 ) -> list[StructuredTool]:
+    """Группирует операции работы с памятью пользователя, обеспечивая единый интерфейс для сохранения, поиска, обновления и удаления данных с учётом сессии и пользователя."""
+
     def save_memory(
         memory_type: str = "note",
         key: str = "",
@@ -79,11 +97,14 @@ def memory_tools(
         importance: int = 3,
         ttl_seconds: int | None = None,
     ) -> str:
+        """Гарантирует сохранение записи памяти с валидацией типа и обработкой ошибок, возвращая статус операции в стандартизированном формате."""
         normalized_memory_type, normalized_warning = _normalize_memory_type(memory_type)
         try:
             record = store.save(
                 user_id=user_id,
-                session_id=session_id,
+                # Этот tool предназначен для долговременной памяти пользователя:
+                # запись должна быть доступна в его следующих сессиях.
+                session_id=None,
                 memory_type=normalized_memory_type,
                 key=key,
                 value=value,
@@ -104,6 +125,7 @@ def memory_tools(
         memory_type: MemoryType | None = None,
         limit: int | None = None,
     ) -> str:
+        """Обеспечивает поиск памяти с учётом типа и лимита, реализуя стратегию fallback для повышения релевантности результатов."""
         effective_limit = limit or default_search_limit
         result = store.search(
             user_id=user_id,
@@ -145,6 +167,7 @@ def memory_tools(
         return _json(payload)
 
     def get_memory(memory_id: str) -> str:
+        """Возвращает конкретную запись памяти по идентификатору с гарантией информирования о её наличии или отсутствии."""
         record = store.get(memory_id, user_id=user_id)
         if record is None:
             return _json({"status": "not_found", "memory_id": memory_id})
@@ -159,6 +182,7 @@ def memory_tools(
         importance: int | None = None,
         ttl_seconds: int | None = None,
     ) -> str:
+        """Обеспечивает обновление существующей записи памяти по идентификатору или ключу с обработкой ошибок и возвратом статуса операции."""
         try:
             target_id = memory_id
             if target_id is None and key is not None:
@@ -166,7 +190,7 @@ def memory_tools(
                     user_id=user_id,
                     key=key,
                     memory_type=memory_type,
-                    session_id=session_id,
+                    session_id=None,
                 )
                 target_id = record.id if record else None
             if target_id is None:
@@ -192,6 +216,7 @@ def memory_tools(
         key: str | None = None,
         memory_type: MemoryType | None = None,
     ) -> str:
+        """Гарантирует удаление записи памяти по идентификатору или ключу с информированием о результате и обязательным указанием параметров удаления."""
         if memory_id:
             deleted = store.delete(memory_id, user_id=user_id)
             return _json(
@@ -205,7 +230,7 @@ def memory_tools(
                 user_id=user_id,
                 key=key,
                 memory_type=memory_type,
-                session_id=session_id,
+                session_id=None,
             )
             return _json(
                 {"status": "deleted", "deleted_count": deleted_count, "key": key}
@@ -213,8 +238,10 @@ def memory_tools(
         return _json({"status": "error", "message": "нужно указать memory_id или key"})
 
     def list_memories(memory_type: MemoryType | None = None, limit: int = 20) -> str:
+        """Позволяет получить список пользовательских воспоминаний с фильтрацией по типу и ограничением по количеству, гарантируя сериализацию результата для автоматизации."""
         records = store.list_memories(
             user_id=user_id,
+            session_id=session_id,
             memory_type=memory_type,
             limit=limit,
         )
@@ -226,6 +253,7 @@ def memory_tools(
         )
 
     def clear_session_memory(confirm: bool = False) -> str:
+        """Гарантирует безопасное удаление всех воспоминаний текущей сессии пользователя только после явного подтверждения."""
         if not confirm:
             return _json(
                 {
@@ -286,12 +314,14 @@ def memory_tools(
 
 
 def _json(payload: object) -> str:
+    """Формирует корректное JSON-представление данных с гарантией сохранения юникода для взаимодействия с внешними системами."""
     return json.dumps(payload, ensure_ascii=False)
 
 
 def _normalize_memory_type(
     value: str | MemoryType | None,
 ) -> tuple[MemoryType, str | None]:
+    """Обеспечивает стандартизацию типа памяти, предотвращая ошибки из-за некорректных значений и информируя о замене."""
     if value in VALID_MEMORY_TYPES:
         return value, None  # type: ignore[return-value]
     return "note", f"memory_type={value!r} заменён на note"

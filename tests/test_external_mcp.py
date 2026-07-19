@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы external_mcp."""
+
 from __future__ import annotations
 
 import json
@@ -16,7 +18,10 @@ from agent_app.tools.mcp_external import ExternalMCPToolManager
 
 
 class ExternalMCPTest(unittest.TestCase):
+    """Проверяет интеграцию и корректность работы внешних MCP-серверов, включая запуск, вызов инструментов и валидацию конфигураций."""
+
     def test_stdio_server_is_discovered_and_called(self) -> None:
+        """Проверяет, что внешний MCP-сервер, запущенный через stdio, корректно обнаруживается, вызывается и возвращает ожидаемые результаты."""
         with tempfile.TemporaryDirectory() as directory:
             server_path = Path(directory) / "external_server.py"
             server_path.write_text(
@@ -61,6 +66,7 @@ server.run(transport="stdio")
                 manager.close()
 
     def test_transport_specific_fields_are_validated(self) -> None:
+        """Проверяет, что при создании конфигурации сервера с определённым типом транспорта обязательные специфичные поля валидируются и вызывается ошибка при их отсутствии."""
         with self.assertRaises(ValidationError):
             ExternalMCPServerConfig(
                 name="invalid",
@@ -69,6 +75,7 @@ server.run(transport="stdio")
             )
 
     def test_server_names_must_be_unique(self) -> None:
+        """Проверяет, что конфигурация инструментов не допускает дублирование имён серверов, обеспечивая уникальность идентификаторов в системе."""
         server = ExternalMCPServerConfig(
             name="duplicate",
             transport="stdio",

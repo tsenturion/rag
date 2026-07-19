@@ -1,3 +1,5 @@
+"""Жизненный цикл runtime и общих ресурсов для онлайн-RAG."""
+
 from __future__ import annotations
 
 import logging
@@ -18,18 +20,34 @@ LOGGER = logging.getLogger(__name__)
 
 
 class QueryEmbedder(Protocol):
-    def embed_query(self, text: str) -> list[float]: ...
+    """Обязует реализовать построение векторного представления запроса, совместимого с используемой коллекцией для поиска."""
+
+    def embed_query(self, text: str) -> list[float]:
+        """Строит вектор запроса, совместимый с активной Qdrant collection."""
+        ...
+
+
+class ContextGuardrail(Protocol):
+    """Обеспечивает проверку и фильтрацию извлечённого контекста перед передачей в модель для предотвращения ошибок и некорректных данных."""
+
+    def inspect_context(self, text: str) -> Any:
+        """Проверяет извлечённый контекст до передачи в LLM."""
+        ...
 
 
 class OnlineRagRuntime:
+    """Обеспечивает управление жизненным циклом и взаимодействие компонентов онлайн-RAG, гарантируя согласованность конфигурации и готовность к поиску."""
+
     def __init__(
         self,
         config: AgentRagConfig,
         *,
         embedder: QueryEmbedder | None = None,
         client: QdrantClient | None = None,
+        context_guardrail: ContextGuardrail | None = None,
         auto_start: bool = True,
     ):
+        """Инициализирует состояние и зависимости для онлайн-RAG, проверяя обязательные параметры и при необходимости автоматически запускает систему."""
         if config.enabled and (
             config.tokenizer_model is None
             or config.embedding is None
@@ -44,6 +62,7 @@ class OnlineRagRuntime:
         self.vector_store_config = config.vector_store
         self.embedder = embedder
         self.client = client
+        self.context_guardrail = context_guardrail
         self.retriever: QdrantKnowledgeRetriever | None = None
         self._client_context: AbstractContextManager | None = None
         self._owns_client = client is None
@@ -62,6 +81,7 @@ class OnlineRagRuntime:
             self.start()
 
     def start(self) -> RagReadiness:
+        """Запускает и проверяет готовность онлайн-RAG, создавая необходимые компоненты и обрабатывая ошибки для обеспечения стабильной работы."""
         with self._lock:
             if not self.config.enabled:
                 return self.readiness()
@@ -98,6 +118,7 @@ class OnlineRagRuntime:
         source: str | None = None,
         section: str | None = None,
     ) -> RagRetrievalResult:
+        """Выполняет полнотекстовый поиск с векторным поиском и фильтрацией, обеспечивая обработку ошибок и применение правил безопасности контекста."""
         normalized_query = query.strip()
         if not normalized_query:
             return self._error_result(query, "Пустой поисковый запрос")
@@ -128,6 +149,16 @@ class OnlineRagRuntime:
                 source=source,
                 section=section,
             )
+            guardrail_findings = 0
+            if self.context_guardrail is not None:
+                sanitized_chunks = []
+                for chunk in chunks:
+                    decision = self.context_guardrail.inspect_context(chunk.text)
+                    guardrail_findings += len(decision.findings)
+                    sanitized_chunks.append(
+                        chunk.model_copy(update={"text": decision.text})
+                    )
+                chunks = sanitized_chunks
             context, citations, context_tokens = self.context_builder.build(chunks)
             return RagRetrievalResult(
                 status="ok" if citations else "empty",
@@ -140,12 +171,14 @@ class OnlineRagRuntime:
                 provider=self.embedding_config.provider,
                 model=self.embedding_config.model,
                 collection_name=self.vector_store_config.collection_name,
+                guardrail_findings=guardrail_findings,
             )
         except Exception as exc:
             LOGGER.exception("Ошибка online retrieval")
             return self._error_result(normalized_query, self._safe_error(exc))
 
     def readiness(self) -> RagReadiness:
+        """Предоставляет актуальное состояние готовности онлайн-RAG с деталями конфигурации и возможными ошибками для мониторинга и управления."""
         return RagReadiness(
             enabled=self.config.enabled,
             ready=(
@@ -176,6 +209,7 @@ class OnlineRagRuntime:
         )
 
     def close(self) -> None:
+        """Освобождает ресурсы и корректно завершает работу онлайн-RAG, включая закрытие клиентских соединений при владении ими."""
         with self._lock:
             self.retriever = None
             if self._owns_client and self._client_context is not None:
@@ -186,6 +220,7 @@ class OnlineRagRuntime:
                     self.client = None
 
     def _validate_collection(self, client: QdrantClient) -> None:
+        """Проверяет соответствие коллекции в векторном хранилище конфигурации и целостность данных, предотвращая некорректную работу поиска."""
         if self.embedding_config is None or self.vector_store_config is None:
             raise ValueError("Конфигурация Online RAG не задана")
         name = self.vector_store_config.collection_name
@@ -260,6 +295,7 @@ class OnlineRagRuntime:
         *,
         provider: str,
     ) -> bool:
+        """Гарантирует корректное сопоставление имён моделей эмбеддинга с учётом особенностей локальных путей и провайдера, чтобы избежать ложных несовпадений при конфигурации."""
         if actual == expected:
             return True
         if provider != "local":
@@ -269,6 +305,7 @@ class OnlineRagRuntime:
         return bool(actual_name) and actual_name.casefold() == expected_name.casefold()
 
     def _error_result(self, query: str, error: str) -> RagRetrievalResult:
+        """Гарантирует возврат стандартизированного результата с описанием ошибки и всеми необходимыми атрибутами для диагностики отказа поиска."""
         return RagRetrievalResult(
             status="unavailable",
             query=query,
@@ -292,5 +329,6 @@ class OnlineRagRuntime:
 
     @staticmethod
     def _safe_error(exc: Exception) -> str:
+        """Гарантирует безопасное отображение текста исключения для пользователя или логирования, ограничивая длину и устраняя перевод строки."""
         text = str(exc).replace("\n", " ")
         return text[:500]
