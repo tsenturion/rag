@@ -95,11 +95,13 @@ def test_readme_uses_full_pytest_suite_for_regression() -> None:
     assert "python -m pytest -q" in readme
 
 
-def test_certificate_download_keeps_tls_verification() -> None:
-    """Не разрешает отключать TLS при загрузке доверенного корневого сертификата."""
+def test_tracked_certificate_keeps_tls_verification() -> None:
+    """Связывает инструкцию GigaChat с проверенным публичным trust anchor."""
     readme = _readme()
     assert "curl.exe -k" not in readme
-    assert "curl.exe --fail --location" in readme
+    assert "data/certs/russian_trusted_root_ca_pem.crt" in readme
+    assert "936A43FEA6E8E525BCC0F81ACD9C3D21B4FC4B9B68ACEA7906D698005AFC6504" in readme
+    assert "gigachat_verify_ssl_certs: true" in readme
 
 
 def test_concrete_powershell_blocks_parse_when_pwsh_is_available() -> None:

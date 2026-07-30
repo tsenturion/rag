@@ -1273,20 +1273,24 @@ GIGACHAT_AUTH_KEY=...
 GIGACHAT_CA_BUNDLE_FILE=data/certs/russian_trusted_root_ca_pem.crt
 ```
 
-Ключ передаётся в GigaChat SDK как `credentials`, а SDK сам получает и обновляет access token через OAuth. В коде не нужно вручную вызывать `/api/v2/oauth`. API использует цепочку НУЦ Минцифры, которой нет в стандартном Python CA bundle. Скачайте корневой сертификат по инструкции [GigaChat «Использование сертификатов Минцифры»](https://developers.sber.ru/docs/ru/gigachat/certificates), например из корня проекта:
+Ключ передаётся в GigaChat SDK как `credentials`, а SDK сам получает и обновляет access token через OAuth. В коде не нужно вручную вызывать `/api/v2/oauth`. API использует цепочку НУЦ Минцифры, которой нет в стандартном Python CA bundle. Публичный корневой сертификат из инструкции [GigaChat «Использование сертификатов Минцифры»](https://developers.sber.ru/docs/ru/gigachat/certificates) уже включён в репозиторий как `data/certs/russian_trusted_root_ca_pem.crt`; после clone скачивать его отдельно не требуется.
 
 ```powershell
-New-Item -ItemType Directory -Force data/certs | Out-Null
-curl.exe --fail --location `
-  "https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt" `
-  -o data/certs/russian_trusted_root_ca_pem.crt
+$expectedSha256 = "936A43FEA6E8E525BCC0F81ACD9C3D21B4FC4B9B68ACEA7906D698005AFC6504"
+$actualSha256 = (Get-FileHash `
+  -Algorithm SHA256 `
+  -LiteralPath data/certs/russian_trusted_root_ca_pem.crt).Hash
+
+if ($actualSha256 -ne $expectedSha256) {
+  throw "SHA-256 корневого сертификата GigaChat не совпадает"
+}
 ```
 
 Путь из `GIGACHAT_CA_BUNDLE_FILE` разрешается относительно корня проекта и передаётся
 chat/embedding SDK как `ca_bundle_file`. Проверка TLS включена во всех GigaChat-профилях;
 отключать её вместо установки CA bundle не следует. В Compose каталог `./data/certs`
-подключается к API и LLM workers read-only как `/app/data/certs`; сам каталог исключён
-из Git, поскольку trust anchor должен устанавливаться и обновляться оператором окружения.
+подключается к API и LLM workers read-only как `/app/data/certs`. Git отслеживает только
+этот публичный trust anchor; остальные файлы в `data/certs` остаются исключёнными.
 
 ## GigaChat для агента
 
@@ -4267,7 +4271,7 @@ OpenAI/GigaChat/OpenWeather/Hugging Face интеграции остаются �
 
 - `.github/workflows/quality.yaml` запускается для pull request, push в перечисленные в нём ветки и вручную. Он проверяет зависимости, Ruff, агентные и оркестрационные тесты, сохраняет JUnit-отчёт, собирает Docker-образы и выполняет реальный HTTP smoke test контейнеров;
 - `.github/workflows/agent-security.yaml` выполняет локальный статический анализ Trustabl для LangChain, MCP и OpenAI-контуров, проверяет зависимости по OSV, публикует SARIF/JSON-артефакты и блокирует только находки уровня `high` или `critical`;
-- `.github/workflows/live-api.yaml` запускается только вручную и выполняет реальные запросы к выбранным внешним интеграциям через проектный код: OpenAI и GigaChat через `AgentRunner`, OpenWeatherMap через `get_weather`, Hugging Face через проверку токена Hub;
+- `.github/workflows/live-api.yaml` запускается только вручную и выполняет реальные запросы к выбранным внешним интеграциям через проектный код: OpenAI и GigaChat через `AgentRunner`, OpenWeatherMap через `get_weather`, Hugging Face через проверку токена Hub; перед GigaChat-вызовом workflow проверяет SHA-256 и срок действия включённого корневого сертификата Минцифры;
 - `.github/workflows/container-release.yaml` при теге `v*` или ручном запуске публикует `support-agent` и `code-runner` в GitHub Container Registry. Тег текущей ветки/релиза создаётся всегда, а `latest` - только для тега или ручного запуска из `main`; образы получают BuildKit cache, SBOM и provenance attestation;
 - `.github/dependabot.yml` еженедельно проверяет Python-зависимости, GitHub Actions и базовые Docker-образы.
 

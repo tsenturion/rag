@@ -41,7 +41,9 @@ data/evaluation/
 data/fine_tuning/reports/
 data/fine_tuning/runs/
 data/models/
-data/certs/
+# В репозитории хранится только публичный корневой CA для GigaChat.
+data/certs/*
+!data/certs/russian_trusted_root_ca_pem.crt
 data/raw/*
 !data/raw/.gitkeep
 !data/raw/sample.txt

@@ -31,6 +31,7 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GIGACHAT_AUTH_KEY: ${{ secrets.GIGACHAT_AUTH_KEY }}
+      GIGACHAT_CA_BUNDLE_FILE: ${{ github.workspace }}/data/certs/russian_trusted_root_ca_pem.crt
       OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
@@ -43,6 +44,18 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements-service.txt
+
+      - name: Проверить корневой сертификат GigaChat
+        if: inputs.target == 'core' || inputs.target == 'gigachat' || inputs.target == 'all'
+        shell: bash
+        run: |
+          printf '%s  %s\n' \
+            '936a43fea6e8e525bcc0f81acd9c3d21b4fc4b9b68acea7906d698005afc6504' \
+            "$GIGACHAT_CA_BUNDLE_FILE" | sha256sum --check --strict
+          openssl x509 \
+            -in "$GIGACHAT_CA_BUNDLE_FILE" \
+            -noout \
+            -checkend 86400
 
       - name: Установить зависимости API-проверки
         run: |
