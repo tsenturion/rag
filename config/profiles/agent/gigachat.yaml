@@ -1,6 +1,12 @@
 agent:
   provider: gigachat
-  model: GigaChat-2
+  model: GigaChat-3-Ultra
+  gigachat_model_priority:
+    - GigaChat-3-Ultra
+    - GigaChat-2-Max
+    - GigaChat-2-Pro
+    - GigaChat-2-Lite
+  gigachat_base_url: https://api.giga.chat/v1
   gigachat_auth_key_env: GIGACHAT_AUTH_KEY
   gigachat_scope: GIGACHAT_API_PERS
   gigachat_verify_ssl_certs: true

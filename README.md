@@ -248,6 +248,7 @@ mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port
 | `pytest`, `hypothesis`                                                                                                 | Unit-, regression-, property-based и simulation tests              | [pytest](https://docs.pytest.org/en/stable/), [Hypothesis](https://hypothesis.readthedocs.io/en/latest/)                                                                                                                    |
 | Ruff                                                                                                                   | Linting и единое форматирование Python-кода                        | [Ruff](https://docs.astral.sh/ruff/)                                                                                                                                                                                        |
 | GitHub Actions                                                                                                         | Обычные проверки, Docker smoke test и opt-in API smoke             | [GitHub Actions](https://docs.github.com/en/actions), [encrypted secrets](https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions)                                   |
+| Trustabl                                                                                                               | Статический анализ надёжности LangChain/MCP/OpenAI agent runtime    | [Trustabl Action](https://github.com/trustabl/trustabl-action), [Trustabl scanner](https://github.com/trustabl/trustabl)                                                                                                  |
 | Dependabot                                                                                                             | Контроль обновлений Python- и GitHub Actions-зависимостей          | [Dependabot](https://docs.github.com/en/code-security/dependabot)                                                                                                                                                           |
 | GHCR и SBOM                                                                                                            | Публикация контейнера и attestations состава образа                | [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry), [Docker attestations](https://docs.docker.com/build/metadata/attestations/)   |
 
@@ -1073,7 +1074,8 @@ rag-prep embed --config config/embeddings_local.yaml
 - `embedding.normalize` - L2-нормализация vectors;
 - `embedding.clear_no_proxy_for_openai` - создаёт OpenAI HTTP-клиент при очищенном `NO_PROXY/no_proxy`, но не меняет эти переменные во время самого API-запроса; это оставляет Prefect доступ к localhost и не ломает маршрут до OpenAI API;
 - `embedding.gigachat_scope` - OAuth scope GigaChat, по умолчанию `GIGACHAT_API_PERS`;
-- `embedding.gigachat_verify_ssl_certs` - проверка SSL-сертификатов для GigaChat SDK;
+- `embedding.gigachat_base_url` - актуальный API endpoint `https://api.giga.chat/v1`;
+- `embedding.gigachat_verify_ssl_certs` - проверка SSL-сертификатов для GigaChat SDK, в штатном профиле включена;
 - `embedding.gigachat_chars_per_token` - оценка token budget для GigaChat batch без отдельного tokenizer API;
 - `embedding.fail_on_validation_error` - останавливать пайплайн при ошибках validation.
 
@@ -1309,11 +1311,38 @@ rag-agent --config config/agent_gigachat.yaml --run-scenarios --scenario-report 
 В `config/agent_gigachat.yaml` основные параметры:
 
 - `agent.provider: gigachat`;
-- `agent.model` - по умолчанию `GigaChat-2`; для более сложных задач можно указать `GigaChat-2-Pro` или `GigaChat-2-Max`;
+- `agent.model: GigaChat-3-Ultra` - первая модель каскада;
+- `agent.gigachat_model_priority` - порядок резервных моделей;
+- `agent.gigachat_base_url: https://api.giga.chat/v1` - актуальный единый REST endpoint;
 - `agent.gigachat_auth_key_env` - имя переменной с Authorization key;
 - `agent.gigachat_scope` - scope для OAuth, по умолчанию `GIGACHAT_API_PERS`;
-- `agent.gigachat_verify_ssl_certs` - проверка SSL-сертификатов SDK;
+- `agent.gigachat_verify_ssl_certs: true` - обязательная проверка TLS-сертификатов SDK;
 - `agent.max_new_tokens` - передаётся в GigaChat как `max_tokens`.
+
+GigaChat вызывается по каскаду от наиболее сильной модели к более лёгкой:
+
+1. [`GigaChat-3-Ultra`](https://developers.sber.ru/docs/ru/gigachat/models/gigachat-3-ultra);
+2. [`GigaChat-2-Max`](https://developers.sber.ru/docs/ru/gigachat/models/gigachat-2-max);
+3. [`GigaChat-2-Pro`](https://developers.sber.ru/docs/ru/gigachat/models/gigachat-2-pro);
+4. [`GigaChat-2-Lite`](https://developers.sber.ru/docs/ru/gigachat/models/gigachat-2-lite).
+
+В интерфейсе документации релиз Ultra может называться «Ultra 3.5», но API ID
+остаётся `GigaChat-3-Ultra`. Для него используется
+`POST https://api.giga.chat/v1/chat/completions`. Ultra доступна физическим лицам
+в [freemium-режиме](https://developers.sber.ru/docs/ru/gigachat/tariffs/individual-tariffs);
+если она недоступна конкретному ключу, исчерпала лимит или API временно вернул
+ошибку доступности, приложение пробует следующую ступень.
+
+Переход выполняется при `403`, `404`, `429`, временных `5xx` и model-related
+`422`. Ошибки авторизации `401` и некорректные пользовательские запросы не
+маскируются fallback-ом. После успешного перехода выбранная модель
+переиспользуется до перезапуска процесса; `/ready` показывает фактические
+`llm.provider` и `llm.model`, а также исходные `configured_provider` и
+`configured_model`.
+
+Каскад относится только к provider `gigachat` и не изменяет отдельную
+конфигурацию или стратегию обновления моделей OpenAI. Ошибка OpenAI не запускает
+GigaChat-каскад и не меняет provider.
 
 LangGraph остаётся тем же: `agent -> tools -> agent`. `langchain-gigachat` поддерживает `bind_tools`, поэтому backend выполняет tools так же, как в OpenAI-варианте: модель выбирает tool call, `ToolNode` исполняет Python-функцию, затем результат возвращается модели.
 
@@ -1365,22 +1394,22 @@ rag-prep vector-store --config config/vector_store_gigachat.yaml --no-prefect
 
 ## Файлы раздела
 
-| Файл                                                          | Назначение                                                                                        |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `config/profiles/agent/gigachat.yaml`                         | Каноническое имя chat-модели и GigaChat provider identity.                                        |
-| `config/profiles/rag/gigachat.yaml`                           | Канонический GigaChat embedding/vector contract и проверяемая размерность.                        |
-| `config/agent_gigachat.yaml`                                  | Single-agent preset GigaChat с tools, memory и weather settings.                                  |
-| `config/embeddings_gigachat.yaml`                             | Batch-запуск GigaChat embeddings.                                                                 |
-| `config/vector_store_gigachat.yaml`                           | Embedded Qdrant-индекс под GigaChat vectors.                                                      |
-| `config/support_agent_gigachat_openai_embeddings.yaml`        | Host support-agent: GigaChat LLM поверх OpenAI vector store.                                      |
-| `config/support_agent_gigachat_local_embeddings.yaml`         | Host support-agent: GigaChat LLM поверх локального E5 vector store.                               |
-| `config/support_agent_docker_gigachat_openai_embeddings.yaml` | Та же комбинация в Docker/Qdrant server.                                                          |
-| `config/support_agent_docker_gigachat_local_embeddings.yaml`  | Docker-комбинация GigaChat + локальные E5 vectors.                                                |
-| `src/agent_app/llm.py`                                        | Создаёт `langchain_gigachat.GigaChat`, передаёт scope/model/retry и очищает значение credentials. |
-| `src/rag_prep/embedding_stages/embedding.py`                  | Реализует `GigaChatEmbeddingStage` и batch-вызовы embedding API.                                  |
-| `src/rag_prep/gigachat_tls.py`                                | Разрешает `GIGACHAT_CA_BUNDLE_FILE` независимо от рабочего каталога процесса.                     |
-| `src/rag_prep/config.py`                                      | Проверяет допустимые GigaChat embedding dimensions.                                               |
-| `.env.example`                                                | Показывает имена Authorization key и CA bundle, не содержит рабочего секрета.                     |
+| Файл                                                          | Назначение                                                                                                  |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `config/profiles/agent/gigachat.yaml`                         | Актуальный API endpoint и каскад chat-моделей `Ultra -> Max -> Pro -> Lite`.                                 |
+| `config/profiles/rag/gigachat.yaml`                           | Endpoint и проверяемый GigaChat embedding/vector contract.                                                  |
+| `config/agent_gigachat.yaml`                                  | Single-agent preset GigaChat с tools, memory и weather settings.                                            |
+| `config/embeddings_gigachat.yaml`                             | Batch-запуск GigaChat embeddings.                                                                           |
+| `config/vector_store_gigachat.yaml`                           | Embedded Qdrant-индекс под GigaChat vectors.                                                                |
+| `config/support_agent_gigachat_openai_embeddings.yaml`        | Host support-agent: GigaChat LLM поверх OpenAI vector store.                                                |
+| `config/support_agent_gigachat_local_embeddings.yaml`         | Host support-agent: GigaChat LLM поверх локального E5 vector store.                                         |
+| `config/support_agent_docker_gigachat_openai_embeddings.yaml` | Та же комбинация в Docker/Qdrant server.                                                                    |
+| `config/support_agent_docker_gigachat_local_embeddings.yaml`  | Docker-комбинация GigaChat + локальные E5 vectors.                                                          |
+| `src/agent_app/llm.py`                                        | Создаёт GigaChat clients, переключает ступени каскада и сохраняет фактически выбранную модель.               |
+| `src/rag_prep/embedding_stages/embedding.py`                  | Реализует `GigaChatEmbeddingStage` и передаёт настроенный endpoint в embedding API.                          |
+| `src/rag_prep/gigachat_tls.py`                                | Разрешает `GIGACHAT_CA_BUNDLE_FILE` независимо от рабочего каталога процесса.                               |
+| `src/rag_prep/config.py`                                      | Проверяет допустимые GigaChat embedding dimensions и параметры endpoint/TLS.                                |
+| `.env.example`                                                | Показывает имена Authorization key и CA bundle, не содержит рабочего секрета.                               |
 
 # Модуль агента с tools и памятью
 
@@ -1459,7 +1488,8 @@ rag-prep vector-store --config config/vector_store_gigachat.yaml --no-prefect
 - `agent.adapter_path` - необязательный путь к LoRA adapter для локального backend;
 - `agent.temperature` - температура генерации;
 - `agent.max_new_tokens` - лимит ответа локальной модели;
-- `agent.gigachat_auth_key_env`, `gigachat_scope`, `gigachat_verify_ssl_certs` - параметры GigaChat provider;
+- `agent.gigachat_model_priority` - каскад `Ultra -> Max -> Pro -> Lite`;
+- `agent.gigachat_base_url`, `gigachat_auth_key_env`, `gigachat_scope`, `gigachat_verify_ssl_certs` - endpoint, credentials и TLS-параметры GigaChat provider;
 - `agent.max_history_messages` - максимальный размер short-term buffer; при переполнении история делится только на границе полного хода `user -> assistant`;
 - `agent.max_summary_chars` - ограничение summary memory;
 - `agent.tool_error_retries` - количество повторов identical tool call после ошибочного результата, по умолчанию `1`;
@@ -2999,7 +3029,13 @@ multi_agent:
       currency: USD
     gigachat_review:
       provider: gigachat
-      model: GigaChat-2
+      model: GigaChat-3-Ultra
+      gigachat_model_priority:
+        - GigaChat-3-Ultra
+        - GigaChat-2-Max
+        - GigaChat-2-Pro
+        - GigaChat-2-Lite
+      gigachat_base_url: https://api.giga.chat/v1
       input_cost_per_million: 65.0
       output_cost_per_million: 65.0
       currency: RUB
@@ -3095,7 +3131,7 @@ rag-agent `
 - число выбранных агентов;
 - стоимость и разница single vs multi.
 
-Тарифы не зашиты в Python-код: воспроизводимые исходные значения находятся в YAML и могут быть изменены пользователем при смене модели или способа оплаты. `multi_agent.cost.input_cost_per_million`, `output_cost_per_million` и `currency` задают тариф базового `agent`, а одноимённые поля внутри `llm_profiles` - тариф конкретного provider/model. Для `gpt-5.4-nano` в OpenAI-профилях указаны `$0.20/$1.25` и `currency: USD` за 1 млн входных/выходных токенов. Для `GigaChat-2` указано `65.0/65.0` и `currency: RUB`: официальный тариф GigaChat 2 Lite не разделяет входные и выходные токены. Эти 65 ₽ следуют как из [пакетов для физических лиц](https://developers.sber.ru/docs/ru/gigachat/tariffs/individual-tariffs), так и из [pay-as-you-go тарифа для юридических лиц](https://developers.sber.ru/docs/ru/gigachat/tariffs/legal-tariffs).
+Тарифы не зашиты в Python-код: воспроизводимые исходные значения находятся в YAML и могут быть изменены пользователем при смене модели или способа оплаты. `multi_agent.cost.input_cost_per_million`, `output_cost_per_million` и `currency` задают тариф базового `agent`, а одноимённые поля внутри `llm_profiles` - тариф конкретного маршрута. Для `gpt-5.4-nano` в OpenAI-профилях указаны `$0.20/$1.25` и `currency: USD` за 1 млн входных/выходных токенов. Для GigaChat-профиля значение `65.0/65.0` является настраиваемой оценкой: Ultra работает в freemium-режиме для физических лиц, а фактическая тарификация резервных Max, Pro и Lite зависит от договора и выбранной ступени. Перед эксплуатационным расчётом стоимости сверяйте YAML с [тарифами для физических лиц](https://developers.sber.ru/docs/ru/gigachat/tariffs/individual-tariffs) или [тарифами для юридических лиц](https://developers.sber.ru/docs/ru/gigachat/tariffs/legal-tariffs).
 
 OpenAI-профиль мигрирован с deprecated `gpt-4.1-nano` на актуальный экономичный `gpt-5.4-nano`. Политика следующих миграций: сначала обновить alias и тарифы в профилях, затем выполнить unit/regression suite, live API smoke и сравнение сценариев; только после этого обновлять Docker release. Для экспериментов используется alias `gpt-5.4-nano`, а для воспроизводимого production baseline можно зафиксировать snapshot `gpt-5.4-nano-2026-03-17`. Актуальность alias, snapshot и цены проверяется по [официальной карточке GPT-5.4 nano](https://developers.openai.com/api/docs/models/gpt-5.4-nano).
 
@@ -4227,14 +4263,15 @@ OpenAI/GigaChat/OpenWeather/Hugging Face интеграции остаются �
 
 ## CI/CD и контроль поставки
 
-Репозиторий содержит три независимых GitHub Actions workflow:
+Репозиторий содержит четыре независимых GitHub Actions workflow:
 
 - `.github/workflows/quality.yaml` запускается для pull request, push в перечисленные в нём ветки и вручную. Он проверяет зависимости, Ruff, агентные и оркестрационные тесты, сохраняет JUnit-отчёт, собирает Docker-образы и выполняет реальный HTTP smoke test контейнеров;
+- `.github/workflows/agent-security.yaml` выполняет локальный статический анализ Trustabl для LangChain, MCP и OpenAI-контуров, проверяет зависимости по OSV, публикует SARIF/JSON-артефакты и блокирует только находки уровня `high` или `critical`;
 - `.github/workflows/live-api.yaml` запускается только вручную и выполняет реальные запросы к выбранным внешним интеграциям через проектный код: OpenAI и GigaChat через `AgentRunner`, OpenWeatherMap через `get_weather`, Hugging Face через проверку токена Hub;
 - `.github/workflows/container-release.yaml` при теге `v*` или ручном запуске публикует `support-agent` и `code-runner` в GitHub Container Registry. Тег текущей ветки/релиза создаётся всегда, а `latest` - только для тега или ручного запуска из `main`; образы получают BuildKit cache, SBOM и provenance attestation;
 - `.github/dependabot.yml` еженедельно проверяет Python-зависимости, GitHub Actions и базовые Docker-образы.
 
-Все сторонние Actions закреплены полными commit SHA, а рядом указан проверенный release tag. Обычный CI не использует рабочие API-ключи и не расходует токены: `config/support_agent_docker_openai_smoke.yaml` создаёт OpenAI-клиенты с placeholder key, но не отправляет provider-запросы. Smoke test поднимает Qdrant, RabbitMQ, Redis, code runner, Celery worker и support-agent, создаёт отдельную трёхмерную Qdrant-коллекцию, а затем требует успешный `/ready` со статусами LLM, RAG и orchestration worker. После readiness дополнительно проверяются Swagger/OpenAPI, обязательный API key и блокировка prompt injection.
+Все сторонние Actions закреплены полными commit SHA, а рядом указан проверенный release tag. Версия Ruff и состав его правил также зафиксированы, поэтому обновление CI runner не меняет lint-политику неявно. Trustabl работает без LLM enrichment и не получает provider API keys: исходный код анализируется внутри GitHub runner, а отчёты сохраняются как workflow artifact и SARIF. Обычный CI не использует рабочие API-ключи и не расходует токены: `config/support_agent_docker_openai_smoke.yaml` создаёт OpenAI-клиенты с placeholder key, но не отправляет provider-запросы. Smoke test поднимает Qdrant, RabbitMQ, Redis, code runner, Celery worker и support-agent, создаёт отдельную трёхмерную Qdrant-коллекцию, а затем требует успешный `/ready` со статусами LLM, RAG и orchestration worker. После readiness дополнительно проверяются Swagger/OpenAPI, обязательный API key и блокировка prompt injection.
 
 Реальные интеграции проверяются отдельно, чтобы pull request или автоматический push не создавали расходы. Выберите правильный тип секретов: откройте репозиторий GitHub → **Settings → Secrets and variables → Actions → Repository secrets** и добавьте значения с точными именами:
 
@@ -4275,4 +4312,4 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-В настройках GitHub branch protection для `main` следует сделать обязательными jobs `Python и конфигурации` и `Docker smoke test`. Публикация использует встроенный `GITHUB_TOKEN`; отдельный registry password не нужен. Для production deployment следующий environment-specific шаг должен ссылаться на immutable digest опубликованного образа, а не на `latest`.
+В настройках GitHub branch protection для `main` следует сделать обязательными jobs `Python и конфигурации`, `Docker smoke test` и `Trustabl`. Публикация использует встроенный `GITHUB_TOKEN`; отдельный registry password не нужен. Для production deployment следующий environment-specific шаг должен ссылаться на immutable digest опубликованного образа, а не на `latest`.

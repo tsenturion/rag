@@ -218,6 +218,7 @@ class EmbeddingConfig(StrictConfigModel):
     query_prefix: str = "query: "
     hub_disable_xet: bool = True
     hub_disable_symlink_warning: bool = True
+    gigachat_base_url: str = "https://api.giga.chat/v1"
     gigachat_scope: str = "GIGACHAT_API_PERS"
     gigachat_verify_ssl_certs: bool = True
     gigachat_use_prefix_query: bool = False

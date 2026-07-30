@@ -136,6 +136,7 @@ class MultiAgentRuntimeTest(unittest.TestCase):
                                 "review": MultiAgentLLMProfileConfig(
                                     provider="gigachat",
                                     model="review-model",
+                                    gigachat_model_priority=["review-model"],
                                 ),
                                 "incidents": MultiAgentLLMProfileConfig(
                                     provider="local",

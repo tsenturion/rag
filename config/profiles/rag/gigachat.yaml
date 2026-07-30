@@ -7,6 +7,7 @@ embedding:
   api_key_env: GIGACHAT_AUTH_KEY
   max_input_tokens: 512
   normalize: false
+  gigachat_base_url: https://api.giga.chat/v1
   gigachat_scope: GIGACHAT_API_PERS
   gigachat_verify_ssl_certs: true
   gigachat_use_prefix_query: false

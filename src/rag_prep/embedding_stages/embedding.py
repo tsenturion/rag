@@ -517,6 +517,7 @@ class GigaChatEmbeddingStage(EmbeddingRecordMixin):
 
         self.client = GigaChatEmbeddings(
             credentials=credentials,
+            base_url=config.gigachat_base_url,
             scope=config.gigachat_scope,
             model=config.model,
             timeout=config.timeout_seconds,

@@ -13,6 +13,13 @@ from rag_prep.config import EmbeddingConfig, VectorStoreConfig
 from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
 from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri
 
+DEFAULT_GIGACHAT_MODEL_PRIORITY = [
+    "GigaChat-3-Ultra",
+    "GigaChat-2-Max",
+    "GigaChat-2-Pro",
+    "GigaChat-2-Lite",
+]
+
 
 class StrictConfigModel(BaseModel):
     """Запрещает неизвестные поля во всех вложенных секциях конфигурации."""
@@ -43,10 +50,38 @@ class AgentConfig(StrictConfigModel):
     local_files_only: bool = True
     trust_remote_code: bool = False
     low_cpu_mem_usage: bool = True
+    gigachat_model_priority: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_GIGACHAT_MODEL_PRIORITY)
+    )
+    gigachat_base_url: str = "https://api.giga.chat/v1"
     gigachat_auth_key_env: str = "GIGACHAT_AUTH_KEY"
     gigachat_scope: str = "GIGACHAT_API_PERS"
     gigachat_verify_ssl_certs: bool = True
     gigachat_profanity_check: bool | None = None
+
+    @field_validator("gigachat_model_priority")
+    @classmethod
+    def validate_gigachat_model_priority(cls, value: list[str]) -> list[str]:
+        """Отклоняет пустые и повторяющиеся ступени маршрута GigaChat."""
+        cleaned = [model.strip() for model in value if model.strip()]
+        if not cleaned:
+            raise ValueError("gigachat_model_priority не может быть пустым")
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError("gigachat_model_priority содержит повторяющиеся модели")
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_gigachat_primary_model(self) -> AgentConfig:
+        """Связывает основную модель GigaChat с первой ступенью каскада."""
+        if (
+            self.provider == "gigachat"
+            and self.model != self.gigachat_model_priority[0]
+        ):
+            raise ValueError(
+                "Для provider=gigachat поле agent.model должно совпадать с "
+                "первым элементом agent.gigachat_model_priority"
+            )
+        return self
 
 
 class MemoryConfig(StrictConfigModel):

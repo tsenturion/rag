@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import json
 import logging
 import os
 from pathlib import Path
 import re
-from typing import Any
+from threading import RLock
+from typing import Any, Callable
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -17,6 +19,7 @@ from langchain_openai import ChatOpenAI
 from agent_app.config import AgentConfig
 from rag_prep.gigachat_tls import resolve_gigachat_ca_bundle
 
+LOGGER = logging.getLogger(__name__)
 TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 JSON_TOOL_CALL_RE = re.compile(
     r"```(?:json)?\s*(\{.*?\"name\".*?\"arguments\".*?\})\s*```",
@@ -29,7 +32,9 @@ def build_llm(config: AgentConfig) -> Any:
     if config.provider == "openai":
         return _build_openai_llm(config)
     if config.provider == "gigachat":
-        return _build_gigachat_llm(config)
+        candidates = _gigachat_candidates(config)
+        candidates[0].get()
+        return GigaChatCascadeModel(candidates)
     if config.provider == "local":
         return LocalTransformersChatModel(config)
     raise ValueError(f"Неизвестный provider LLM: {config.provider}")
@@ -65,6 +70,7 @@ def _build_gigachat_llm(config: AgentConfig) -> Any:
 
     return GigaChat(
         credentials=credentials,
+        base_url=config.gigachat_base_url,
         scope=config.gigachat_scope,
         model=config.model,
         temperature=config.temperature,
@@ -75,6 +81,201 @@ def _build_gigachat_llm(config: AgentConfig) -> Any:
         ca_bundle_file=resolve_gigachat_ca_bundle(),
         profanity_check=config.gigachat_profanity_check,
     )
+
+
+def _gigachat_candidates(config: AgentConfig) -> list[_LLMCandidate]:
+    """Строит ленивый маршрут GigaChat без устаревшего общего alias."""
+    ordered_models = config.gigachat_model_priority
+
+    candidates: list[_LLMCandidate] = []
+    for model in ordered_models:
+        model_config = config.model_copy(
+            update={
+                "provider": "gigachat",
+                "model": model,
+            }
+        )
+        candidates.append(
+            _LLMCandidate(
+                provider="gigachat",
+                model=model,
+                factory=lambda current=model_config: _build_gigachat_llm(current),
+            )
+        )
+    return candidates
+
+
+@dataclass
+class _LLMCandidate:
+    """Лениво создаёт одну ступень маршрута и переиспользует её клиент."""
+
+    provider: str
+    model: str
+    factory: Callable[[], Any]
+    instance: Any | None = None
+    lock: RLock = field(default_factory=RLock)
+
+    def get(self) -> Any:
+        """Инициализирует provider-клиент только при первой попытке вызова."""
+        with self.lock:
+            if self.instance is None:
+                self.instance = self.factory()
+            return self.instance
+
+
+@dataclass
+class _FallbackState:
+    """Хранит выбранную ступень между обычным и tool-bound интерфейсами."""
+
+    active_index: int = 0
+    lock: RLock = field(default_factory=RLock)
+
+
+class GigaChatCascadeModel:
+    """Переключает только модели GigaChat в заданном порядке при недоступности."""
+
+    supports_tool_calling = True
+
+    def __init__(
+        self,
+        candidates: list[_LLMCandidate],
+        *,
+        state: _FallbackState | None = None,
+        tools: list[Any] | None = None,
+        bind_kwargs: dict[str, Any] | None = None,
+    ):
+        """Связывает ленивые клиенты общим состоянием выбранной ступени и tools."""
+        if not candidates:
+            raise ValueError("Маршрут LLM должен содержать хотя бы одну модель")
+        self.candidates = candidates
+        self.state = state or _FallbackState()
+        self.tools = tools
+        self.bind_kwargs = bind_kwargs or {}
+        self._bound_models: dict[int, Any] = {}
+        self._bound_lock = RLock()
+
+    @property
+    def active_provider(self) -> str:
+        """Возвращает provider, выбранный последним успешным вызовом."""
+        return self.candidates[self.state.active_index].provider
+
+    @property
+    def active_model(self) -> str:
+        """Возвращает модель, выбранную последним успешным вызовом."""
+        return self.candidates[self.state.active_index].model
+
+    def bind_tools(self, tools: list[Any], **kwargs: Any) -> GigaChatCascadeModel:
+        """Привязывает одинаковые tools ко всем ступеням резервного маршрута."""
+        return GigaChatCascadeModel(
+            self.candidates,
+            state=self.state,
+            tools=list(tools),
+            bind_kwargs=kwargs,
+        )
+
+    def invoke(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        """Выполняет запрос и по контролируемой ошибке выбирает следующую модель."""
+        with self.state.lock:
+            start_index = self.state.active_index
+
+        first_error: Exception | None = None
+        failures: list[tuple[_LLMCandidate, Exception]] = []
+        for index in range(start_index, len(self.candidates)):
+            candidate = self.candidates[index]
+            try:
+                response = self._model(index).invoke(messages, *args, **kwargs)
+            except Exception as exc:
+                first_error = first_error or exc
+                failures.append((candidate, exc))
+                has_next = index + 1 < len(self.candidates)
+                if has_next and _can_fallback(exc):
+                    LOGGER.warning(
+                        "LLM %s/%s недоступна (status=%s, error=%s); "
+                        "переход к следующей модели",
+                        candidate.provider,
+                        candidate.model,
+                        _exception_status_code(exc),
+                        type(exc).__name__,
+                    )
+                    continue
+                if first_error is not exc:
+                    _add_fallback_notes(first_error, failures)
+                    raise first_error from exc
+                raise
+
+            with self.state.lock:
+                self.state.active_index = index
+            _annotate_selected_model(response, candidate)
+            return response
+
+        if first_error is None:
+            raise RuntimeError("Маршрут LLM завершился без ответа и без ошибки")
+        _add_fallback_notes(first_error, failures)
+        raise first_error
+
+    def _model(self, index: int) -> Any:
+        """Возвращает клиент ступени и один раз привязывает к нему текущие tools."""
+        candidate = self.candidates[index]
+        model = candidate.get()
+        if self.tools is None:
+            return model
+        with self._bound_lock:
+            bound = self._bound_models.get(index)
+            if bound is None:
+                bound = model.bind_tools(self.tools, **self.bind_kwargs)
+                self._bound_models[index] = bound
+            return bound
+
+
+def _can_fallback(exc: Exception) -> bool:
+    """Разрешает переход только для ошибок доступности или выбора модели."""
+    status_code = _exception_status_code(exc)
+    if status_code in {403, 404, 429, 500, 502, 503, 504}:
+        return True
+    if status_code == 422:
+        message = str(exc).lower()
+        return "model" in message or "модел" in message
+    return False
+
+
+def _exception_status_code(exc: BaseException) -> int | None:
+    """Извлекает HTTP-статус из исключения, response или цепочки причин."""
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        status_code = getattr(current, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+        response = getattr(current, "response", None)
+        response_status = getattr(response, "status_code", None)
+        if isinstance(response_status, int):
+            return response_status
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _add_fallback_notes(
+    error: Exception,
+    failures: list[tuple[_LLMCandidate, Exception]],
+) -> None:
+    """Добавляет к исходной ошибке маршрут неуспешных попыток без смены её типа."""
+    add_note = getattr(error, "add_note", None)
+    if not callable(add_note):
+        return
+    route = ", ".join(
+        f"{candidate.provider}/{candidate.model}:{type(exc).__name__}"
+        for candidate, exc in failures
+    )
+    add_note(f"Проверенный маршрут LLM: {route}")
+
+
+def _annotate_selected_model(response: Any, candidate: _LLMCandidate) -> None:
+    """Записывает фактическую модель в метаданные ответа для аудита маршрута."""
+    metadata = getattr(response, "response_metadata", None)
+    if isinstance(metadata, dict):
+        metadata["selected_provider"] = candidate.provider
+        metadata["selected_model"] = candidate.model
 
 
 def _resolve_env_secret(env_name: str, *, provider_name: str) -> str:

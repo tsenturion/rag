@@ -256,12 +256,24 @@ class SupportApplicationRuntime:
             and bool(runner["ready"])
             and bool(orchestration["ready"])
         )
+        active_provider = (
+            getattr(self._llm, "active_provider", self.config.agent.provider)
+            if self._llm is not None
+            else self.config.agent.provider
+        )
+        active_model = (
+            getattr(self._llm, "active_model", self.config.agent.model)
+            if self._llm is not None
+            else self.config.agent.model
+        )
         return {
             "ready": ready,
             "llm": {
                 "ready": llm_ready,
-                "provider": self.config.agent.provider,
-                "model": self.config.agent.model,
+                "provider": active_provider,
+                "model": active_model,
+                "configured_provider": self.config.agent.provider,
+                "configured_model": self.config.agent.model,
                 "error": self._llm_error,
             },
             "rag": rag,

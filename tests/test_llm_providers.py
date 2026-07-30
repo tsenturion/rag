@@ -32,8 +32,9 @@ def lookup_incident(incident_id: str) -> str:
 def test_build_llm_routes_explicit_provider(monkeypatch) -> None:
     """Проверяет маршрутизацию OpenAI/GigaChat/local и отказ от неявного provider."""
     configs = {
-        provider: AgentConfig(provider=provider, model="model")
-        for provider in ("openai", "gigachat", "local")
+        "openai": AgentConfig(provider="openai", model="model"),
+        "gigachat": AgentConfig(provider="gigachat", model="GigaChat-3-Ultra"),
+        "local": AgentConfig(provider="local", model="model"),
     }
     sentinels = {provider: object() for provider in configs}
     with (
@@ -44,8 +45,11 @@ def test_build_llm_routes_explicit_provider(monkeypatch) -> None:
             return_value=sentinels["local"],
         ),
     ):
-        for provider, config in configs.items():
-            assert build_llm(config) is sentinels[provider]
+        assert build_llm(configs["openai"]) is sentinels["openai"]
+        assert build_llm(configs["local"]) is sentinels["local"]
+        gigachat = build_llm(configs["gigachat"])
+        assert gigachat.active_model == "GigaChat-3-Ultra"
+        assert gigachat.candidates[0].instance is sentinels["gigachat"]
 
     # Pydantic не допускает неизвестный provider, поэтому проверяем защитную
     # ветку на объекте с тем же runtime-контрактом.
@@ -69,6 +73,7 @@ def test_openai_and_gigachat_builders_validate_secrets(monkeypatch) -> None:
     giga_config = AgentConfig(
         provider="gigachat",
         model="GigaChat-2-Pro",
+        gigachat_model_priority=["GigaChat-2-Pro"],
         gigachat_auth_key_env="TEST_GIGA_KEY",
         gigachat_verify_ssl_certs=True,
         max_new_tokens=123,

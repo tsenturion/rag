@@ -114,7 +114,12 @@ class MultiAgentLLMRegistry:
     @property
     def model_summary(self) -> str:
         """Возвращает единственную модель либо маркер смешанной схемы."""
-        models = sorted({route.model for route in self._routes.values()})
+        models = sorted(
+            {
+                getattr(route.llm, "active_model", route.model)
+                for route in self._routes.values()
+            }
+        )
         return models[0] if len(models) == 1 else "mixed"
 
     def route(self, role: str) -> LLMRoute:
@@ -131,7 +136,7 @@ class MultiAgentLLMRegistry:
                 role=role,
                 profile=route.profile,
                 provider=route.provider,
-                model=route.model,
+                model=getattr(route.llm, "active_model", route.model),
                 cost_currency=route.cost_currency,
             )
             for role, route in self._routes.items()

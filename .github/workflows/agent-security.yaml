@@ -1,0 +1,37 @@
+name: Проверка надёжности ИИ-агентов
+
+on:
+  push:
+    branches: [main, multi-agent]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+concurrency:
+  group: agent-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Trustabl
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Проверить надёжность agent runtime
+        uses: trustabl/trustabl-action@973f666d20b5fbb2e6a4511bd3846e965a08c28b # v0.4.1
+        with:
+          version: v0.1.6
+          detectors: langchain,mcp,openai_sdk
+          vuln-scan: true
+          severity-threshold: high
+          upload-sarif: true
+          upload-artifact: true
+          artifact-retention-days: "30"
+          comment-on-pr: true
