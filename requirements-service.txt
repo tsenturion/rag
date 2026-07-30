@@ -11,7 +11,7 @@ langgraph-checkpoint-sqlite==3.1.0
 mcp==1.28.1
 mlflow==3.14.0
 numpy==2.4.6
-openai==2.45.0
+openai==2.50.0
 portalocker==3.2.0
 prometheus-client==0.25.0
 PyJWT==2.13.0
