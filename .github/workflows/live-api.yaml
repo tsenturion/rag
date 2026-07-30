@@ -49,9 +49,15 @@ jobs:
         if: inputs.target == 'core' || inputs.target == 'gigachat' || inputs.target == 'all'
         shell: bash
         run: |
-          printf '%s  %s\n' \
-            '936a43fea6e8e525bcc0f81acd9c3d21b4fc4b9b68acea7906d698005afc6504' \
-            "$GIGACHAT_CA_BUNDLE_FILE" | sha256sum --check --strict
+          certificate_fingerprint="$(
+            openssl x509 \
+              -in "$GIGACHAT_CA_BUNDLE_FILE" \
+              -outform DER |
+              sha256sum |
+              cut -d ' ' -f 1
+          )"
+          test "$certificate_fingerprint" = \
+            'd26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31'
           openssl x509 \
             -in "$GIGACHAT_CA_BUNDLE_FILE" \
             -noout \

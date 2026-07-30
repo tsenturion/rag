@@ -1276,13 +1276,17 @@ GIGACHAT_CA_BUNDLE_FILE=data/certs/russian_trusted_root_ca_pem.crt
 Ключ передаётся в GigaChat SDK как `credentials`, а SDK сам получает и обновляет access token через OAuth. В коде не нужно вручную вызывать `/api/v2/oauth`. API использует цепочку НУЦ Минцифры, которой нет в стандартном Python CA bundle. Публичный корневой сертификат из инструкции [GigaChat «Использование сертификатов Минцифры»](https://developers.sber.ru/docs/ru/gigachat/certificates) уже включён в репозиторий как `data/certs/russian_trusted_root_ca_pem.crt`; после clone скачивать его отдельно не требуется.
 
 ```powershell
-$expectedSha256 = "936A43FEA6E8E525BCC0F81ACD9C3D21B4FC4B9B68ACEA7906D698005AFC6504"
-$actualSha256 = (Get-FileHash `
-  -Algorithm SHA256 `
-  -LiteralPath data/certs/russian_trusted_root_ca_pem.crt).Hash
+$expectedFingerprint = "D26D2D0231B7C39F92CC738512BA54103519E4405D68B5BD703E9788CA8ECF31"
+$actualFingerprint = (
+  openssl x509 `
+    -in data/certs/russian_trusted_root_ca_pem.crt `
+    -noout `
+    -fingerprint `
+    -sha256
+).Split("=")[1].Replace(":", "")
 
-if ($actualSha256 -ne $expectedSha256) {
-  throw "SHA-256 корневого сертификата GigaChat не совпадает"
+if ($actualFingerprint -ne $expectedFingerprint) {
+  throw "SHA-256 fingerprint корневого сертификата GigaChat не совпадает"
 }
 ```
 
@@ -4271,7 +4275,7 @@ OpenAI/GigaChat/OpenWeather/Hugging Face интеграции остаются �
 
 - `.github/workflows/quality.yaml` запускается для pull request, push в перечисленные в нём ветки и вручную. Он проверяет зависимости, Ruff, агентные и оркестрационные тесты, сохраняет JUnit-отчёт, собирает Docker-образы и выполняет реальный HTTP smoke test контейнеров;
 - `.github/workflows/agent-security.yaml` выполняет локальный статический анализ Trustabl для LangChain, MCP и OpenAI-контуров, проверяет зависимости по OSV, публикует SARIF/JSON-артефакты и блокирует только находки уровня `high` или `critical`;
-- `.github/workflows/live-api.yaml` запускается только вручную и выполняет реальные запросы к выбранным внешним интеграциям через проектный код: OpenAI и GigaChat через `AgentRunner`, OpenWeatherMap через `get_weather`, Hugging Face через проверку токена Hub; перед GigaChat-вызовом workflow проверяет SHA-256 и срок действия включённого корневого сертификата Минцифры;
+- `.github/workflows/live-api.yaml` запускается только вручную и выполняет реальные запросы к выбранным внешним интеграциям через проектный код: OpenAI и GigaChat через `AgentRunner`, OpenWeatherMap через `get_weather`, Hugging Face через проверку токена Hub; перед GigaChat-вызовом workflow проверяет SHA-256 DER-отпечаток и срок действия включённого корневого сертификата Минцифры;
 - `.github/workflows/container-release.yaml` при теге `v*` или ручном запуске публикует `support-agent` и `code-runner` в GitHub Container Registry. Тег текущей ветки/релиза создаётся всегда, а `latest` - только для тега или ручного запуска из `main`; образы получают BuildKit cache, SBOM и provenance attestation;
 - `.github/dependabot.yml` еженедельно проверяет Python-зависимости, GitHub Actions и базовые Docker-образы.
 

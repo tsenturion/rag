@@ -100,7 +100,7 @@ def test_tracked_certificate_keeps_tls_verification() -> None:
     readme = _readme()
     assert "curl.exe -k" not in readme
     assert "data/certs/russian_trusted_root_ca_pem.crt" in readme
-    assert "936A43FEA6E8E525BCC0F81ACD9C3D21B4FC4B9B68ACEA7906D698005AFC6504" in readme
+    assert "D26D2D0231B7C39F92CC738512BA54103519E4405D68B5BD703E9788CA8ECF31" in readme
     assert "gigachat_verify_ssl_certs: true" in readme
 
 
