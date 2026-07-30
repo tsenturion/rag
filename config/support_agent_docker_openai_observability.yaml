@@ -1,0 +1,3 @@
+extends:
+  - support_agent_docker_openai.yaml
+  - profiles/support/observability_docker.yaml

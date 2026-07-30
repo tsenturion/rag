@@ -1,0 +1,8 @@
+extends:
+  - multi_agent_docker_openai.yaml
+  - profiles/support/multi_agent_llm_mixed.yaml
+
+multi_agent:
+  execution_mode: parallel
+  output_dir: data/multi_agent/mixed
+  mlflow_experiment: rag-multi-agent-mixed

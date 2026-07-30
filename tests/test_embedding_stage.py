@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы embedding_stage."""
+
 from __future__ import annotations
 
 import os
@@ -13,12 +15,18 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from rag_prep.config import EmbeddingConfig  # noqa: E402
-from rag_prep.embedding_stages.embedding import OpenAIEmbeddingStage  # noqa: E402
+from rag_prep.embedding_stages.embedding import (  # noqa: E402
+    GigaChatEmbeddingStage,
+    OpenAIEmbeddingStage,
+)
 from rag_prep.models import ChunkMetadata, PreparedChunk  # noqa: E402
 
 
 class EmbeddingStageTest(unittest.TestCase):
+    """Проверяет корректность этапа эмбеддинга, включая сохранение соответствия между исходными чанками и результатами, а также корректность метаданных."""
+
     def test_openai_stage_preserves_chunk_mapping_and_metadata(self) -> None:
+        """Проверяет, что при использовании OpenAI-эмбеддинга сохраняется порядок и метаданные исходных текстовых чанков в результатах эмбеддинга."""
         client = Mock()
         client.embeddings.create.return_value = SimpleNamespace(
             data=[
@@ -58,10 +66,83 @@ class EmbeddingStageTest(unittest.TestCase):
         self.assertEqual(embedded[1].embedding, [0.0, 1.0, 0.0])
         self.assertEqual(embedded[0].metadata.embedding_dimensions, 3)
         self.assertEqual(embedded[0].metadata.embedding_run_id, "embedding-run")
-        client.embeddings.create.assert_called_once()
+        client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input=["Первый текст", "Второй текст"],
+            encoding_format="float",
+            dimensions=3,
+        )
+
+    def test_openai_request_omits_dimensions_when_not_configured(self) -> None:
+        """Проверяет, что при отсутствии настройки размеров эмбеддингов запрос к OpenAI формируется без параметра dimensions, обеспечивая корректное поведение клиента."""
+        client = Mock()
+        client.embeddings.create.return_value = SimpleNamespace(
+            data=[SimpleNamespace(index=0, embedding=[1.0, 0.0, 0.0])]
+        )
+        config = EmbeddingConfig(
+            provider="openai",
+            model="text-embedding-3-small",
+            dimensions=None,
+            api_key_env="TEST_OPENAI_API_KEY",
+            max_retries=1,
+            clear_no_proxy_for_openai=False,
+        )
+
+        with (
+            patch.dict(os.environ, {"TEST_OPENAI_API_KEY": "test-key"}),
+            patch(
+                "rag_prep.embedding_stages.embedding.OpenAI",
+                return_value=client,
+            ),
+        ):
+            result = OpenAIEmbeddingStage(config)._embed_texts(["Текст"])
+
+        self.assertEqual(result.vectors, [[1.0, 0.0, 0.0]])
+        client.embeddings.create.assert_called_once_with(
+            model="text-embedding-3-small",
+            input=["Текст"],
+            encoding_format="float",
+        )
+
+    def test_openai_and_gigachat_query_vectors_follow_normalize_policy(self) -> None:
+        """Query и passage vectors используют одинаковую L2-нормализацию."""
+        client = Mock()
+        client.embeddings.create.return_value = SimpleNamespace(
+            data=[SimpleNamespace(index=0, embedding=[3.0, 4.0])]
+        )
+        openai_config = EmbeddingConfig(
+            provider="openai",
+            model="text-embedding-3-small",
+            dimensions=2,
+            api_key_env="TEST_OPENAI_API_KEY",
+            normalize=True,
+            max_retries=1,
+            clear_no_proxy_for_openai=False,
+        )
+        with (
+            patch.dict(os.environ, {"TEST_OPENAI_API_KEY": "test-key"}),
+            patch("rag_prep.embedding_stages.embedding.OpenAI", return_value=client),
+        ):
+            openai_vector = OpenAIEmbeddingStage(openai_config).embed_query("Запрос")
+
+        gigachat = object.__new__(GigaChatEmbeddingStage)
+        gigachat.config = EmbeddingConfig(
+            provider="gigachat",
+            model="Embeddings",
+            dimensions=2,
+            api_key_env="TEST_GIGACHAT_AUTH_KEY",
+            normalize=True,
+        )
+        gigachat.client = Mock()
+        gigachat.client.embed_query.return_value = [3.0, 4.0]
+
+        self.assertAlmostEqual(openai_vector[0], 0.6, places=6)
+        self.assertAlmostEqual(openai_vector[1], 0.8, places=6)
+        self.assertEqual(gigachat.embed_query("Запрос"), openai_vector)
 
     @staticmethod
     def _chunk(chunk_id: str, text: str) -> PreparedChunk:
+        """Формирует подготовленный текстовый фрагмент с метаданными для проверки этапа создания эмбеддингов в тестах."""
         return PreparedChunk(
             text=text,
             metadata=ChunkMetadata(

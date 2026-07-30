@@ -1,3 +1,5 @@
+"""Загрузка и проверка датасета для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 import json
@@ -14,16 +16,22 @@ from llm_tuning.models import (
 
 
 class FineTuningDatasetLoader:
+    """Обеспечивает загрузку, валидацию и статистику датасетов для PEFT fine-tuning локальной LLM, гарантируя корректность и полноту данных перед обучением."""
+
     def __init__(self, config: FineTuningPipelineConfig):
+        """Готовит загрузчик с конфигурацией fine-tuning, обеспечивая доступ к путям и параметрам модели для последующих операций."""
         self.config = config
 
     def load_train(self) -> list[FineTuningExample]:
+        """Загружает тренировочный датасет, гарантируя наличие и корректность данных для обучения модели."""
         return self._load_jsonl(self.config.paths.train_jsonl)
 
     def load_eval(self) -> list[FineTuningExample]:
+        """Загружает валидационный датасет, обеспечивая корректность данных для оценки качества модели."""
         return self._load_jsonl(self.config.paths.eval_jsonl)
 
     def validate(self) -> DatasetValidationResult:
+        """Проверяет целостность и уникальность данных в тренировочном и валидационном датасетах, выявляя пересечения и оценивая параметры для безопасного fine-tuning."""
         train = self.load_train()
         eval_examples = self.load_eval()
         train_ids = {example.id for example in train}
@@ -39,6 +47,7 @@ class FineTuningDatasetLoader:
 
     @staticmethod
     def _load_jsonl(path: Path) -> list[FineTuningExample]:
+        """Загружает и валидирует JSONL-файл с примерами, гарантируя непустой и корректный формат данных, выбрасывая ошибки при нарушениях."""
         if not path.exists():
             raise FileNotFoundError(f"Файл датасета не найден: {path}")
         examples = []
@@ -60,6 +69,7 @@ class FineTuningDatasetLoader:
 
     @staticmethod
     def _stats(path: Path, examples: list[FineTuningExample]) -> DatasetStats:
+        """Вычисляет статистику по датасету, включая длины и уникальность идентификаторов, для мониторинга качества и структуры данных."""
         prompt_lengths = [
             len(ChatFormatter.prompt_text(example)) for example in examples
         ]
@@ -83,6 +93,7 @@ class FineTuningDatasetLoader:
     def _estimated_tokens_max(examples: list[FineTuningExample]) -> int:
         # Грубая оценка без загрузки tokenizer: для кириллицы 1 токен часто занимает 2-4 символа.
         # Здесь нужен только ранний sanity-check, точная обрезка делается tokenizer-ом.
+        """Оценивает максимальное количество токенов в примерах для предварительной проверки соответствия ограничению модели без использования токенизатора."""
         if not examples:
             return 0
         return max(
@@ -91,24 +102,30 @@ class FineTuningDatasetLoader:
 
 
 class ChatFormatter:
+    """Форматирует chat-примеры в полный текст, prompt и ожидаемый ответ."""
+
     @staticmethod
     def full_text(example: FineTuningExample) -> str:
+        """Гарантирует получение полного диалога в виде текста для обучения или анализа, сохраняя порядок и роли сообщений."""
         return "\n".join(
             f"{message.role}: {message.content}" for message in example.messages
         )
 
     @staticmethod
     def prompt_text(example: FineTuningExample) -> str:
+        """Гарантирует получение текста диалога без последнего сообщения, чтобы использовать как входную подсказку для генерации ответа LLM."""
         return "\n".join(
             f"{message.role}: {message.content}" for message in example.messages[:-1]
         )
 
     @staticmethod
     def prompt_messages(example: FineTuningExample) -> list[dict[str, str]]:
+        """Гарантирует сериализацию всех сообщений диалога, кроме последнего, в формате, совместимом с токенизаторами и LLM API."""
         return [message.model_dump() for message in example.messages[:-1]]
 
     @staticmethod
     def all_messages(example: FineTuningExample) -> list[dict[str, str]]:
+        """Гарантирует сериализацию всех сообщений диалога для передачи в токенизатор или сохранения в датасете."""
         return [message.model_dump() for message in example.messages]
 
     @staticmethod
@@ -118,6 +135,7 @@ class ChatFormatter:
         *,
         add_generation_prompt: bool,
     ) -> str:
+        """Гарантирует формирование текстовой подсказки по сообщениям в формате, совместимом с выбранным токенизатором и политикой генерации."""
         if getattr(tokenizer, "chat_template", None):
             return tokenizer.apply_chat_template(
                 messages,
@@ -141,8 +159,10 @@ class ChatFormatter:
 
 
 def examples_answer(example: FineTuningExample) -> str:
+    """Извлекает итоговый ответ из примера для использования в обучении и оценке модели, обеспечивая единообразный формат вывода."""
     return example.messages[-1].content
 
 
 def messages_to_dicts(messages: list[ChatMessage]) -> list[dict[str, str]]:
+    """Преобразует сообщения чата в словарный формат для сериализации и совместимости с PEFT fine-tuning процессом."""
     return [message.model_dump() for message in messages]

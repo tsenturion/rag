@@ -22,5 +22,5 @@ embedding:
 logging:
   level: INFO
   mlflow_enabled: true
-  mlflow_tracking_uri: mlruns
+  mlflow_tracking_uri: sqlite:///mlruns/mlflow.db
   mlflow_experiment: rag-embeddings

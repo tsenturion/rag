@@ -1,3 +1,5 @@
+"""Обучение PEFT-адаптера для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 import logging
@@ -15,20 +17,26 @@ LOGGER = logging.getLogger(__name__)
 
 
 class FineTuningTrainingStage:
+    """Организует процесс обучения модели с PEFT, гарантируя подготовку данных, настройку модели и сохранение результатов для воспроизводимого fine-tuning."""
+
     def __init__(self, config: FineTuningPipelineConfig):
+        """Настраивает этап обучения с конфигурацией, загружая необходимые датасеты и модели для последующего fine-tuning с учётом PEFT."""
         self.config = config
         self.dataset_loader = FineTuningDatasetLoader(config)
         self.model_loader = LocalCausalModelLoader(config)
 
     def run(self, *, run_id: str) -> TrainingResult:
+        """Запускает полный цикл fine-tuning с подготовкой данных, модели, тренера и сохранением результатов, обеспечивая воспроизводимость и контроль процесса."""
         from transformers import Trainer, TrainingArguments, set_seed
 
         started_at = utc_now()
         set_seed(self.config.run.seed)
 
         device = build_device_report(self.config.model)
-        tokenizer = self.model_loader.load_tokenizer()
         base_model = self.model_loader.load_base_model(device=device)
+        # Модель загружается первой: если сработал fallback, токенизатор берётся
+        # уже от того же model ID, а не остаётся от недоступной основной модели.
+        tokenizer = self.model_loader.load_tokenizer()
         model = self.model_loader.prepare_peft_model(base_model)
         parameter_metrics = trainable_parameter_metrics(model)
 
@@ -110,6 +118,7 @@ class FineTuningTrainingStage:
         dtype_name: str,
         run_id: str,
     ) -> Any:
+        """Формирует аргументы тренировки с учётом конфигурации и устройства, гарантируя корректную настройку параметров обучения и оптимизации."""
         training = self.config.training
         bf16 = dtype_name == "bf16" and device_name != "cpu"
         fp16 = dtype_name == "fp16" and device_name != "cpu"
@@ -152,6 +161,7 @@ class FineTuningTrainingStage:
         *,
         global_step: int,
     ) -> TrainingMetrics:
+        """Агрегирует и нормализует метрики обучения и оценки, предоставляя единый объект с ключевыми показателями для мониторинга прогресса fine-tuning."""
         return TrainingMetrics(
             train_loss=_optional_float(train_metrics.get("train_loss")),
             eval_loss=_optional_float(eval_metrics.get("eval_loss")),
@@ -170,6 +180,7 @@ class FineTuningTrainingStage:
 
     @staticmethod
     def _safe_log_history(log_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Гарантирует, что история логов обучения содержит только сериализуемые скалярные значения, предотвращая ошибки при сохранении или анализе."""
         return [
             {key: _safe_scalar(value) for key, value in item.items()}
             for item in log_history
@@ -177,12 +188,14 @@ class FineTuningTrainingStage:
 
 
 def _optional_float(value: Any) -> float | None:
+    """Преобразует значение в float или None, обеспечивая безопасное извлечение числовых параметров из любых входных данных."""
     if value is None:
         return None
     return float(value)
 
 
 def _safe_scalar(value: Any) -> Any:
+    """Обеспечивает безопасное извлечение скалярного значения из сложных объектов, предотвращая ошибки при логировании и метриках."""
     if hasattr(value, "item"):
         try:
             return value.item()

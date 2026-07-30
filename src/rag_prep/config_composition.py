@@ -1,3 +1,5 @@
+"""Композиция YAML-конфигураций для RAG-конвейера."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -21,6 +23,8 @@ def apply_rag_profile(
     target: RagProfileTarget,
 ) -> dict[str, Any]:
     """Проецирует единый RAG-профиль в схему конкретного пайплайна."""
+    # Конфигурация может повторно использоваться вызывающим кодом, поэтому удаление
+    # служебного rag_profile и последующее слияние не должны менять исходный словарь.
     result = deepcopy(raw)
     profile_reference = result.pop("rag_profile", None)
     if profile_reference is None:
@@ -41,6 +45,8 @@ def apply_rag_profile(
             "embedding": profile["embedding"],
             "vector_store": profile["vector_store"],
         }
+        # Профиль задаёт согласованные значения по умолчанию, а конкретный конфиг
+        # сохраняет последнее слово для осознанных локальных переопределений.
         result["rag"] = deep_merge(projected, _mapping(result.get("rag"), "rag"))
     elif target == "chunking":
         projected = {
@@ -72,6 +78,8 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
         if isinstance(current, dict) and isinstance(value, dict):
             merged[key] = deep_merge(current, value)
         else:
+            # Списки нельзя объединять по индексам: порядок в них обычно имеет
+            # прикладной смысл, поэтому значение из override заменяет их атомарно.
             merged[key] = deepcopy(value)
     return merged
 
@@ -81,6 +89,7 @@ def _load_composed_yaml(
     *,
     stack: tuple[Path, ...],
 ) -> dict[str, Any]:
+    """Рекурсивно загружает ``extends``, одновременно обнаруживая циклы."""
     if path in stack:
         cycle = " -> ".join(item.name for item in (*stack, path))
         raise ValueError(f"Обнаружен цикл extends: {cycle}")
@@ -94,6 +103,8 @@ def _load_composed_yaml(
 
     references = _extends_references(loaded.pop("extends", None), path)
     merged: dict[str, Any] = {}
+    # Родители применяются в указанном порядке, затем текущий файл получает
+    # наивысший приоритет. Это делает итог независимым от порядка обхода файлов.
     for reference in references:
         parent_path = _resolve_reference(path, reference)
         parent = _load_composed_yaml(parent_path, stack=(*stack, path))
@@ -102,6 +113,7 @@ def _load_composed_yaml(
 
 
 def _extends_references(value: Any, path: Path) -> list[str]:
+    """Нормализует одиночный ``extends`` и его списочную форму."""
     if value is None:
         return []
     references = [value] if isinstance(value, str) else value
@@ -115,6 +127,7 @@ def _extends_references(value: Any, path: Path) -> list[str]:
 
 
 def _resolve_reference(owner_path: Path, reference: str) -> Path:
+    """Разрешает ссылку относительно файла, в котором она объявлена."""
     reference_path = Path(reference).expanduser()
     if not reference_path.is_absolute():
         reference_path = owner_path.parent / reference_path
@@ -122,6 +135,7 @@ def _resolve_reference(owner_path: Path, reference: str) -> Path:
 
 
 def _validate_rag_profile(profile: dict[str, Any], path: Path) -> None:
+    """Проверяет схему профиля и межэтапные инварианты размерности."""
     required = ("tokenizer_model", "embedding", "vector_store")
     unexpected = sorted(set(profile) - set(required))
     if unexpected:
@@ -143,6 +157,8 @@ def _validate_rag_profile(profile: dict[str, Any], path: Path) -> None:
         )
     dimensions = embedding.get("dimensions")
     vector_size = vector_store.get("vector_size")
+    # Qdrant не примет вектор другой длины. Ошибку конфигурации важно обнаружить
+    # до сетевых вызовов и до возможного пересоздания коллекции.
     if dimensions is None or vector_size is None or dimensions != vector_size:
         raise ValueError(
             "Размерности RAG-профиля не совпадают: "
@@ -152,6 +168,7 @@ def _validate_rag_profile(profile: dict[str, Any], path: Path) -> None:
 
 
 def _mapping(value: Any, field: str) -> dict[str, Any]:
+    """Возвращает проверенный YAML mapping либо пустое значение."""
     if value is None:
         return {}
     if not isinstance(value, dict):

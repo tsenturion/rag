@@ -1,3 +1,5 @@
+"""Типизированные модели данных для проверочных сценариев агента."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -19,6 +21,8 @@ ScenarioType = Literal[
 
 
 class MemorySeed(BaseModel):
+    """Гарантирует, что каждая запись памяти для сценария содержит валидные ключ, значение, тип, теги, важность и метаданные для инициализации состояния агента."""
+
     key: str
     value: str
     memory_type: MemoryType = "fact"
@@ -28,6 +32,8 @@ class MemorySeed(BaseModel):
 
 
 class MemoryExpectation(BaseModel):
+    """Определяет ожидаемое состояние памяти агента для проверки корректности работы с памятью в сценариях."""
+
     key_contains: str | None = None
     value_contains: str | None = None
     tag: str | None = None
@@ -35,6 +41,8 @@ class MemoryExpectation(BaseModel):
 
 
 class ScenarioCriteria(BaseModel):
+    """Формализует набор требований к успешному прохождению сценария, обеспечивая прозрачный контракт проверки результата."""
+
     answer_contains: list[str] = Field(default_factory=list)
     answer_not_contains: list[str] = Field(default_factory=list)
     expected_tools: list[str] = Field(default_factory=list)
@@ -56,6 +64,8 @@ class ScenarioCriteria(BaseModel):
 
 
 class ScenarioStep(BaseModel):
+    """Определяет шаг сценария проверки агента, обеспечивая структуру для описания запроса пользователя, ожидаемого результата и критериев оценки корректности."""
+
     id: str
     test_case_id: str
     title: str
@@ -67,6 +77,8 @@ class ScenarioStep(BaseModel):
 
 
 class AgentScenario(BaseModel):
+    """Описывает структуру тестового сценария, гарантируя воспроизводимость условий и критериев проверки для агента."""
+
     id: str
     test_case_id: str
     title: str
@@ -89,6 +101,8 @@ class AgentScenario(BaseModel):
 
 
 class ScenarioSuite(BaseModel):
+    """Объединяет набор сценариев агента с параметрами сессии и путём отчёта, гарантируя целостность и удобство управления тестами."""
+
     default_user_id: str = "mvp_agent_scenarios"
     session_prefix: str = "scenario"
     report_path: Path = Path("data/agent/scenario_report.json")
@@ -96,12 +110,16 @@ class ScenarioSuite(BaseModel):
 
 
 class ScenarioCheck(BaseModel):
+    """Фиксирует результат отдельной проверки внутри сценария, обеспечивая прозрачность причин успеха или неудачи шага."""
+
     name: str
     passed: bool
     details: str = ""
 
 
 class ScenarioStepResult(BaseModel):
+    """Гарантирует воспроизводимый результат выполнения шага сценария с деталями проверки и ответом агента."""
+
     scenario_id: str
     step_id: str
     test_case_id: str
@@ -112,6 +130,8 @@ class ScenarioStepResult(BaseModel):
 
 
 class ScenarioResult(BaseModel):
+    """Формирует полный отчёт о прохождении сценария, фиксируя все шаги, проверки и итоговое состояние памяти."""
+
     id: str
     test_case_id: str
     title: str
@@ -134,6 +154,8 @@ class ScenarioResult(BaseModel):
 
 
 class ScenarioRunReport(BaseModel):
+    """Гарантирует целостный отчёт о запуске набора сценариев с фиксацией времени, пользователя и итогового статуса."""
+
     created_at: datetime = Field(default_factory=utc_now)
     config_path: str
     user_id: str
@@ -142,6 +164,7 @@ class ScenarioRunReport(BaseModel):
 
     @model_validator(mode="after")
     def empty_report_cannot_pass(self) -> "ScenarioRunReport":
+        """Проверяет, что отчёт не может считаться успешным без хотя бы одного результата сценария."""
         if self.passed and not self.results:
             raise ValueError("Пустой набор результатов не может считаться успешным")
         return self

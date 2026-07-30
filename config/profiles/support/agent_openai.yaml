@@ -4,3 +4,9 @@ agent:
   max_new_tokens: 350
   timeout_seconds: 60
   max_retries: 2
+
+multi_agent:
+  cost:
+    input_cost_per_million: 0.20
+    output_cost_per_million: 1.25
+    currency: USD

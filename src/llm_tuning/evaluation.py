@@ -1,3 +1,5 @@
+"""Оценка результатов для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 import logging
@@ -16,7 +18,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 class FineTuningEvaluationStage:
+    """Обеспечивает выполнение этапа оценки fine-tuning модели, гарантируя корректную загрузку данных и воспроизводимость метрик качества для принятия решений о качестве адаптации."""
+
     def __init__(self, config: FineTuningPipelineConfig):
+        """Гарантирует готовность экземпляра к запуску оценки, включая загрузку конфигурации, датасета и модели."""
         self.config = config
         self.dataset_loader = FineTuningDatasetLoader(config)
         self.model_loader = LocalCausalModelLoader(config)
@@ -28,18 +33,19 @@ class FineTuningEvaluationStage:
         adapter_path: Path | None = None,
         report_label: str = "baseline",
     ) -> EvaluationReport:
+        """Гарантирует воспроизводимую оценку модели или адаптера на тестовом наборе с вычислением метрик качества и подробным отчётом."""
         import torch
 
         if adapter_path is not None and not adapter_path.exists():
             raise FileNotFoundError(f"LoRA adapter не найден: {adapter_path}")
 
         device = build_device_report(self.config.model)
-        tokenizer = self.model_loader.load_tokenizer()
         model = (
             self.model_loader.load_model_with_adapter(adapter_path)
             if adapter_path is not None
             else self.model_loader.load_base_model(device=device)
         )
+        tokenizer = self.model_loader.load_tokenizer()
         model.eval()
 
         eval_examples = self._limited_examples(self.dataset_loader.load_eval())
@@ -96,6 +102,7 @@ class FineTuningEvaluationStage:
         self,
         examples: list[FineTuningExample],
     ) -> list[FineTuningExample]:
+        """Гарантирует, что для оценки используются не более заданного числа примеров, обеспечивая воспроизводимость и контроль времени выполнения."""
         limit = self.config.evaluation.max_examples
         return examples[:limit] if limit is not None else examples
 
@@ -107,6 +114,7 @@ class FineTuningEvaluationStage:
         *,
         device_name: str,
     ) -> str:
+        """Гарантирует генерацию одного ответа LLM по заданному примеру с учётом всех параметров инференса и корректной работы на выбранном устройстве."""
         generation = self.config.evaluation.generation
         prompt_text = ChatFormatter.apply_chat_template(
             tokenizer,
@@ -136,6 +144,7 @@ class FineTuningEvaluationStage:
         example: FineTuningExample,
         generated: str,
     ) -> GeneratedAnswer:
+        """Гарантирует формирование результата проверки ответа LLM с учётом обязательных и запрещённых ключевых слов, фиксируя прохождение критериев."""
         expected = examples_answer(example)
         if self.config.evaluation.required_keywords_case_sensitive:
             haystack = generated
@@ -171,6 +180,7 @@ class FineTuningEvaluationStage:
         run_id: str,
         report_label: str,
     ) -> float | None:
+        """Гарантирует вычисление метрики потерь на валидационной выборке с учётом всех параметров окружения и сохранением результатов для анализа."""
         from transformers import Trainer, TrainingArguments
 
         if not examples:

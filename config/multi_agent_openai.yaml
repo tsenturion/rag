@@ -1,0 +1,12 @@
+extends:
+  - support_agent_openai.yaml
+  - profiles/support/multi_agent.yaml
+  - profiles/support/orchestration.yaml
+
+multi_agent:
+  output_dir: data/multi_agent/openai
+  mlflow_experiment: rag-multi-agent-openai
+  cost:
+    input_cost_per_million: 0.20
+    output_cost_per_million: 1.25
+    currency: USD

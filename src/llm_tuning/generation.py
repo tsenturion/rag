@@ -1,3 +1,5 @@
+"""Генерация ответов локальной модели для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,6 +16,7 @@ class LocalGenerationStage:
     """Генерирует ответ локальной causal LM без обращения к внешнему API."""
 
     def __init__(self, config: FineTuningPipelineConfig):
+        """Готовит локальный этап генерации, гарантируя наличие конфигурации и загрузчика модели для последующего выполнения генерации текста."""
         self.config = config
         self.model_loader = LocalCausalModelLoader(config)
 
@@ -25,6 +28,7 @@ class LocalGenerationStage:
         adapter_path: Path | None = None,
         max_new_tokens: int | None = None,
     ) -> LocalGenerationResult:
+        """Выполняет генерацию текста локальной LLM с учётом заданных параметров, обеспечивая валидацию входных данных и корректное применение адаптера."""
         import torch
 
         prompt = prompt.strip()
@@ -34,12 +38,12 @@ class LocalGenerationStage:
             raise FileNotFoundError(f"LoRA adapter не найден: {adapter_path}")
 
         device = build_device_report(self.config.model)
-        tokenizer = self.model_loader.load_tokenizer()
         model = (
             self.model_loader.load_model_with_adapter(adapter_path)
             if adapter_path is not None
             else self.model_loader.load_base_model(device=device)
         )
+        tokenizer = self.model_loader.load_tokenizer()
         model.eval()
 
         messages = []

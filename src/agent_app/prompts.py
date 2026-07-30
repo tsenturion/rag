@@ -1,3 +1,5 @@
+"""Системные инструкции агента для агентного приложения."""
+
 from __future__ import annotations
 
 from agent_app.models import MemoryRecord
@@ -9,6 +11,7 @@ def system_prompt(
     memories: list[MemoryRecord],
     rag_enabled: bool = False,
 ) -> str:
+    """Формирует системный промпт с учётом памяти и режима RAG, гарантируя корректную инструкцию для поведения агента и использования инструментов."""
     memory_block = "\n".join(
         f"- [{record.memory_type}] {record.key}: {record.value}"
         for record in memories[:8]

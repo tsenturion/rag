@@ -1,3 +1,5 @@
+"""Инструменты планирования поездок для инструментов агента."""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +9,8 @@ from pydantic import BaseModel, Field
 
 
 class TravelBudgetInput(BaseModel):
+    """Определяет и проверяет параметры бюджета поездки, гарантируя корректность расчёта расходов по заданным ограничениям."""
+
     city: str = Field(default="Екатеринбург", description="Город поездки.")
     days: int = Field(default=1, ge=1, le=60, description="Количество дней поездки.")
     hotel_per_night: float = Field(
@@ -25,6 +29,8 @@ class TravelBudgetInput(BaseModel):
 
 
 class PackingAdvisorInput(BaseModel):
+    """Обеспечивает проверку параметров поездки и погодных условий для точных рекомендаций по упаковке вещей."""
+
     city: str = Field(description="Город поездки.")
     trip_goal: str = Field(default="деловая поездка", description="Цель поездки.")
     days: int = Field(default=1, ge=1, le=60, description="Количество дней поездки.")
@@ -45,6 +51,7 @@ def calculate_travel_budget(
     extra_per_day: float = 800.0,
     currency: str = "RUB",
 ) -> str:
+    """Гарантирует воспроизводимый расчёт бюджета поездки по заданным параметрам и возвращает структуру, пригодную для автоматизации и отчётности."""
     nights = max(days - 1, 0)
     hotel_total = hotel_per_night * nights
     meals_total = meals_per_day * days
@@ -74,6 +81,7 @@ def advise_packing(
     temperature: float | None = None,
     weather_description: str | None = None,
 ) -> str:
+    """Подбирает персонализированный список вещей для поездки с учётом цели, длительности и погодных условий, обеспечивая пригодность для автоматизации."""
     items = [
         "паспорт или другой документ",
         "зарядные устройства",
@@ -105,6 +113,7 @@ def advise_packing(
 
 
 def travel_tools() -> list[StructuredTool]:
+    """Гарантирует регистрацию инструментов для расчёта бюджета и сбора вещей, предоставляя их в виде структурированных объектов для интеграции с агентом."""
     return [
         StructuredTool.from_function(
             name="calculate_travel_budget",

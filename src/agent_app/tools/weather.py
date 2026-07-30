@@ -1,3 +1,5 @@
+"""Инструмент OpenWeatherMap для инструментов агента."""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +20,8 @@ logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 
 class WeatherInput(BaseModel):
+    """Гарантирует корректность и опциональность названия города для получения актуальных погодных данных."""
+
     city: str | None = Field(
         default=None,
         description="Название города. Используй город пользователя, если он есть в запросе.",
@@ -25,7 +29,10 @@ class WeatherInput(BaseModel):
 
 
 def weather_tool(config: WeatherConfig) -> StructuredTool:
+    """Гарантирует доступ к инструменту получения погодных данных с обработкой ошибок и возвратом результата в стандартизированном формате."""
+
     def get_weather(city: str | None = None) -> str:
+        """Гарантирует получение и возврат погодных данных в воспроизводимом формате JSON с обработкой ошибок и защитой секретов."""
         api_key = os.getenv(config.api_key_env)
         if not api_key:
             return json.dumps(
@@ -89,4 +96,5 @@ def weather_tool(config: WeatherConfig) -> StructuredTool:
 
 
 def _redact_weather_error(message: str) -> str:
+    """Гарантирует, что сообщения об ошибках не содержат утечек чувствительных данных API-ключа при логировании или возврате пользователю."""
     return APPID_RE.sub(r"\1<redacted>", message)

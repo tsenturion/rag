@@ -1,0 +1,28 @@
+orchestration:
+  enabled: true
+  backend: inline
+  max_pending_jobs: 500
+  state_ttl_seconds: 86400
+  idempotency_ttl_seconds: 86400
+  event_limit: 500
+  max_parallelism: 3
+  worker_concurrency: 2
+  worker_prefetch_multiplier: 1
+  task_soft_time_limit_seconds: 300
+  task_time_limit_seconds: 330
+  max_retries: 3
+  retry_backoff_seconds: 5
+  retry_backoff_max_seconds: 120
+  retry_jitter: true
+  provider_concurrency_limits:
+    openai: 8
+    gigachat: 4
+    local: 1
+  slot_lease_seconds: 600
+  camunda:
+    enabled: false
+    process_id: engineer-support-process
+    process_path: bpmn/engineer_support.bpmn
+    worker_timeout_seconds: 300
+    poll_request_timeout_seconds: 5
+    poll_interval_seconds: 1

@@ -1,3 +1,5 @@
+"""Объектно-ориентированный конвейер для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +28,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 class FineTuningPipeline:
+    """Оркестрирует этапы fine-tuning локальной LLM, обеспечивая целостность данных, контроль экспериментов и воспроизводимость результатов."""
+
     def __init__(self, config: FineTuningPipelineConfig):
+        """Гарантирует готовность пайплайна к запуску fine-tuning с корректно инициализированными зависимостями и конфигурацией."""
         self.config = config
         self.dataset_loader = FineTuningDatasetLoader(config)
         self.trainer = FineTuningTrainingStage(config)
@@ -36,11 +41,13 @@ class FineTuningPipeline:
         self.tracker = MLflowTracker(config)
 
     def validate(self) -> tuple[DatasetValidationResult, DeviceReport]:
+        """Проверяет пригодность датасета и доступность вычислительных ресурсов, обеспечивая безопасность и корректность последующих этапов."""
         dataset_validation = self.dataset_loader.validate()
         device = build_device_report(self.config.model)
         return dataset_validation, device
 
     def run_baseline(self, *, run_id: str | None = None) -> FineTuningPipelineResult:
+        """Выполняет оценку модели без дообучения, создавая эталон для сравнения и фиксируя метрики эксперимента."""
         run_id = run_id or new_run_id()
         random.seed(self.config.run.seed)
         dataset_validation, device = self.validate()
@@ -70,6 +77,7 @@ class FineTuningPipeline:
         )
 
     def run_training(self, *, run_id: str | None = None) -> FineTuningPipelineResult:
+        """Проводит полный цикл обучения с опциональной оценкой до и после, обеспечивая сохранение результатов и метрик для анализа."""
         run_id = run_id or new_run_id()
         random.seed(self.config.run.seed)
         dataset_validation, device = self.validate()
@@ -147,6 +155,7 @@ class FineTuningPipeline:
         adapter_path: Path,
         run_id: str | None = None,
     ) -> FineTuningPipelineResult:
+        """Оценивает дообученную модель на заданном адаптере, гарантируя валидность данных и фиксацию результатов."""
         run_id = run_id or new_run_id()
         dataset_validation, device = self.validate()
         self._ensure_dataset_ok(dataset_validation)
@@ -186,6 +195,7 @@ class FineTuningPipeline:
         tuned_report_path: Path,
         run_id: str | None = None,
     ) -> FineTuningPipelineResult:
+        """Сравнивает отчёты baseline и tuned, обеспечивая объективную оценку улучшений и сохранение результатов."""
         run_id = run_id or new_run_id()
         dataset_validation, device = self.validate()
         baseline = self.exporter.load_evaluation_report(baseline_report_path)
@@ -228,5 +238,6 @@ class FineTuningPipeline:
 
     @staticmethod
     def _ensure_dataset_ok(validation: DatasetValidationResult) -> None:
+        """Гарантирует отсутствие критических ошибок в датасете, прерывая процесс при нарушениях для предотвращения некорректного обучения."""
         if validation.has_errors:
             raise ValueError(f"Датасет fine-tuning не прошёл проверку: {validation}")

@@ -1,7 +1,10 @@
+"""Командный интерфейс для PEFT fine-tuning локальной LLM."""
+
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from llm_tuning.config import load_fine_tuning_config
@@ -11,7 +14,10 @@ from rag_prep.utils import setup_logging
 
 
 class RussianHelpFormatter(argparse.HelpFormatter):
+    """Гарантирует вывод справки CLI на русском языке для повышения доступности инструментов обучения."""
+
     def _format_usage(self, *args, **kwargs) -> str:
+        """Гарантирует отображение ключевого слова «использование» вместо «usage» в справке CLI."""
         return (
             super()
             ._format_usage(*args, **kwargs)
@@ -20,6 +26,7 @@ class RussianHelpFormatter(argparse.HelpFormatter):
 
 
 def _add_russian_help(parser: argparse.ArgumentParser) -> None:
+    """Гарантирует наличие русскоязычной справки и корректных заголовков для всех CLI-команд."""
     parser.add_argument(
         "-h",
         "--help",
@@ -32,6 +39,7 @@ def _add_russian_help(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Создаёт и настраивает parser аргументов командной строки."""
     parser = argparse.ArgumentParser(
         description="Локальный fine-tuning LLM через LoRA/QLoRA/PEFT.",
         add_help=False,
@@ -129,6 +137,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Запускает командный интерфейс и возвращает код завершения."""
+    _configure_stdio()
     args = build_parser().parse_args()
     command = args.command or "validate-data"
     config = load_fine_tuning_config(Path(args.config))
@@ -181,11 +191,20 @@ def main() -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _configure_stdio() -> None:
+    """Не допускает потери Unicode в отчётах и генерациях локальной модели."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def _add_simple_command(
     subparsers: argparse._SubParsersAction,
     name: str,
     help_text: str,
 ) -> None:
+    """Гарантирует регистрацию CLI-команды с русскоязычной справкой и единым стилем описания."""
     command = subparsers.add_parser(
         name,
         help=help_text,

@@ -1,18 +1,17 @@
+"""Командный интерфейс для HTTP-сервиса поддержки."""
+
 from __future__ import annotations
 
 import argparse
 import os
 from pathlib import Path
 
-import uvicorn
-from dotenv import load_dotenv
-
-from agent_app.config import load_agent_config
-from agent_app.service.app import create_app
-
 
 class RussianHelpFormatter(argparse.HelpFormatter):
+    """Гарантирует вывод справки CLI с русскоязычным заголовком для повышения удобства пользователей."""
+
     def _format_usage(self, *args, **kwargs) -> str:
+        """Обеспечивает русскоязычный заголовок раздела использования в справке командной строки."""
         return (
             super()
             ._format_usage(*args, **kwargs)
@@ -21,6 +20,9 @@ class RussianHelpFormatter(argparse.HelpFormatter):
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Создаёт и настраивает parser аргументов командной строки."""
+    from dotenv import load_dotenv
+
     load_dotenv(Path.cwd() / ".env", override=False)
     parser = argparse.ArgumentParser(
         description="Запуск HTTP API ИИ-агента поддержки инженера.",
@@ -58,10 +60,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Запускает командный интерфейс и возвращает код завершения."""
     parser = build_parser()
     args = parser.parse_args()
     if not args.config:
         parser.error("задайте --config или переменную окружения SUPPORT_AGENT_CONFIG")
+
+    # Серверные зависимости импортируются после --help и проверки обязательного
+    # пути, поэтому получение справки не создаёт FastAPI runtime.
+    import uvicorn
+
+    from agent_app.config import load_agent_config
+    from agent_app.service.app import create_app
 
     config_path = Path(args.config).expanduser().resolve()
     config = load_agent_config(config_path)

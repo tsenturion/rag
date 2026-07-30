@@ -1,3 +1,5 @@
+"""Реестр разрешённых инструментов для инструментов агента."""
+
 from __future__ import annotations
 
 from langchain_core.tools import BaseTool
@@ -7,7 +9,9 @@ from agent_app.memory.store import SQLiteMemoryStore
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.support.incidents import IncidentStore
 from agent_app.tools.calculator import calculator_tool
+from agent_app.tools.code_runner import code_runner_tool
 from agent_app.tools.datetime_tool import datetime_tool
+from agent_app.tools.filesystem import filesystem_tools
 from agent_app.tools.memory_tools import memory_tools
 from agent_app.tools.project import project_tools
 from agent_app.tools.support import support_tools
@@ -23,11 +27,14 @@ def build_tools(
     session_id: str,
     rag_runtime: OnlineRagRuntime | None = None,
     incident_store: IncidentStore | None = None,
+    external_tools: list[BaseTool] | None = None,
 ) -> list[BaseTool]:
+    """Формирует набор инструментов агента с учётом конфигурации и зависимостей, гарантируя отсутствие конфликтов имён и соответствие включённых функций."""
     tools: list[BaseTool] = [
         calculator_tool(),
         datetime_tool(),
         weather_tool(config.weather),
+        *filesystem_tools(config.file_tools),
         *travel_tools(),
         *project_tools(
             store,
@@ -40,7 +47,11 @@ def build_tools(
             session_id=session_id,
             default_search_limit=config.memory.search_limit,
         ),
+        *(external_tools or []),
     ]
+    code_tool = code_runner_tool(config.code_runner)
+    if code_tool is not None:
+        tools.append(code_tool)
     support_tool_names = {
         "search_knowledge_base",
         "find_runbook",
@@ -64,6 +75,13 @@ def build_tools(
                 session_id=session_id,
                 max_log_chars=config.tools.max_log_chars,
             )
+        )
+
+    names = [tool.name for tool in tools]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(
+            "Совпали имена локальных и внешних tools: " + ", ".join(duplicates)
         )
 
     disabled = set(config.tools.disabled)

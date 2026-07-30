@@ -1,3 +1,5 @@
+"""Проверка критериев сценария для проверочных сценариев агента."""
+
 from __future__ import annotations
 
 from agent_app.models import AgentResponse, MemoryRecord
@@ -9,6 +11,8 @@ from agent_app.scenarios.models import (
 
 
 class ScenarioEvaluator:
+    """Инкапсулирует проверку соответствия поведения агента заданным критериям сценариев и формирует исчерпывающий отчёт о прохождении."""
+
     def evaluate(
         self,
         *,
@@ -16,6 +20,7 @@ class ScenarioEvaluator:
         response: AgentResponse,
         memory_records: list[MemoryRecord],
     ) -> list[ScenarioCheck]:
+        """Гарантирует воспроизводимую проверку ответа агента по критериям сценария и возвращает полный список результатов проверок."""
         checks: list[ScenarioCheck] = []
         answer = response.answer.lower()
         tool_calls = response.tool_calls
@@ -209,6 +214,7 @@ class ScenarioEvaluator:
         memory_records: list[MemoryRecord],
         expectation: MemoryExpectation,
     ) -> bool:
+        """Гарантирует, что хотя бы одна запись памяти соответствует всем условиям ожидания сценария, включая тип, ключ, значение и теги."""
         for record in memory_records:
             if (
                 expectation.memory_type

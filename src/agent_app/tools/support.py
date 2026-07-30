@@ -1,3 +1,5 @@
+"""Инженерные инструменты поддержки для инструментов агента."""
+
 from __future__ import annotations
 
 import json
@@ -16,6 +18,8 @@ from agent_app.support.security import redact_secrets
 
 
 class KnowledgeSearchInput(BaseModel):
+    """Определяет параметры поиска по базе знаний с ограничениями на длину запроса и количество результатов, обеспечивая релевантность и управляемость поиска."""
+
     query: str = Field(min_length=2)
     top_k: int | None = Field(default=None, ge=1, le=50)
     source: str | None = None
@@ -23,11 +27,15 @@ class KnowledgeSearchInput(BaseModel):
 
 
 class LogAnalysisInput(BaseModel):
+    """Содержит проверенные данные для анализа логов, включая необязательную привязку к компоненту, что гарантирует корректность и контекстность анализа."""
+
     log_text: str = Field(min_length=1)
     component: str | None = None
 
 
 class IncidentCreateInput(BaseModel):
+    """Определяет валидированные данные для создания инцидента с приоритетом и описанием, обеспечивая полноту и точность информации для обработки инцидента."""
+
     title: str = Field(min_length=2)
     description: str = Field(min_length=2)
     priority: IncidentPriority = "medium"
@@ -35,26 +43,36 @@ class IncidentCreateInput(BaseModel):
 
 
 class IncidentGetInput(BaseModel):
+    """Обеспечивает проверку и гарантирует наличие идентификатора инцидента для корректного получения данных инцидента в системе поддержки."""
+
     incident_id: str
 
 
 class IncidentUpdateInput(BaseModel):
+    """Обеспечивает проверку идентификатора инцидента и статуса для гарантированного обновления состояния инцидента в системе поддержки."""
+
     incident_id: str
     status: IncidentStatus
 
 
 class IncidentListInput(BaseModel):
+    """Определяет параметры фильтрации и ограничения списка инцидентов, гарантируя корректный и управляемый вывод данных."""
+
     status: IncidentStatus | None = None
     current_session_only: bool = False
     limit: int = Field(default=20, ge=1, le=100)
 
 
 class DiagnosticChecklistInput(BaseModel):
+    """Обеспечивает проверку данных о компоненте и симптомах для точного формирования диагностического чеклиста в системе поддержки."""
+
     component: str
     symptoms: str
 
 
 class RunbookSearchInput(BaseModel):
+    """Гарантирует наличие описания проблемы и опционального компонента для точного поиска инструкций в базе знаний."""
+
     problem: str
     component: str | None = None
 
@@ -67,12 +85,15 @@ def support_tools(
     session_id: str,
     max_log_chars: int,
 ) -> list[StructuredTool]:
+    """Создаёт набор вспомогательных инструментов для диагностики и поддержки с учётом доступности RAG и хранилища инцидентов, обеспечивая расширенные возможности анализа и реагирования."""
+
     def search_knowledge_base(
         query: str,
         top_k: int | None = None,
         source: str | None = None,
         section: str | None = None,
     ) -> str:
+        """Выполняет поиск по базе знаний с учётом конфигурации RAG, возвращая релевантные результаты или информируя об отсутствии доступа."""
         if rag_runtime is None:
             return _json(
                 {
@@ -91,29 +112,18 @@ def support_tools(
         return result.model_dump_json()
 
     def find_runbook(problem: str, component: str | None = None) -> str:
+        """Формирует и выполняет запрос для поиска инструкций runbook по проблеме и компоненту, обеспечивая быстрый доступ к диагностическим материалам."""
         query = f"runbook инструкция диагностика {component or ''} {problem}".strip()
         return search_knowledge_base(query=query, top_k=5)
 
     def analyze_log_fragment(log_text: str, component: str | None = None) -> str:
-        if len(log_text) > max_log_chars:
-            return _json(
-                {
-                    "status": "error",
-                    "error": "log_too_large",
-                    "max_log_chars": max_log_chars,
-                    "actual_chars": len(log_text),
-                }
-            )
-        redacted = redact_secrets(log_text)
-        findings = _log_findings(redacted)
+        """Позволяет агенту структурированно анализировать фрагмент журнала и возвращает результат в формате, пригодном для автоматической диагностики и последующих действий."""
         return _json(
-            {
-                "status": "ok",
-                "component": component,
-                "findings": findings,
-                "redacted_log_preview": redacted[:1000],
-                "secrets_redacted": redacted != log_text,
-            }
+            analyze_log_fragment_payload(
+                log_text,
+                component=component,
+                max_log_chars=max_log_chars,
+            )
         )
 
     def create_incident(
@@ -122,6 +132,7 @@ def support_tools(
         priority: IncidentPriority = "medium",
         component: str | None = None,
     ) -> str:
+        """Гарантирует создание инцидента с заданными параметрами и возвращает вызывающему коду статус операции и сериализованную запись либо сообщение об ошибке."""
         try:
             record = incident_store.create(
                 user_id=user_id,
@@ -138,12 +149,14 @@ def support_tools(
             return _json({"status": "error", "message": str(exc)})
 
     def get_incident(incident_id: str) -> str:
+        """Гарантирует получение полной информации об инциденте по идентификатору или сообщает о его отсутствии."""
         record = incident_store.get(incident_id, user_id=user_id)
         if record is None:
             return _json({"status": "not_found", "incident_id": incident_id})
         return _json({"status": "found", "incident": record.model_dump(mode="json")})
 
     def update_incident_status(incident_id: str, status: IncidentStatus) -> str:
+        """Обеспечивает атомарное обновление статуса инцидента и возвращает подтверждение изменения либо уведомление об отсутствии записи."""
         record = incident_store.update_status(
             incident_id,
             user_id=user_id,
@@ -158,6 +171,7 @@ def support_tools(
         current_session_only: bool = False,
         limit: int = 20,
     ) -> str:
+        """Возвращает вызывающему коду воспроизводимый список инцидентов с учётом фильтров и лимита, гарантируя корректную сериализацию и подсчёт."""
         records = incident_store.list(
             user_id=user_id,
             session_id=session_id if current_session_only else None,
@@ -173,35 +187,8 @@ def support_tools(
         )
 
     def build_diagnostic_checklist(component: str, symptoms: str) -> str:
-        lowered = symptoms.lower()
-        steps = [
-            "Зафиксировать время начала и область влияния.",
-            f"Проверить состояние и последние изменения компонента {component}.",
-            "Собрать логи с корреляционным идентификатором и точными timestamps.",
-            "Проверить зависимости, сеть, DNS и доступность downstream-сервисов.",
-        ]
-        if any(marker in lowered for marker in ("медлен", "timeout", "таймаут")):
-            steps.extend(
-                [
-                    "Сравнить latency p50/p95/p99 с нормальным интервалом.",
-                    "Проверить saturation CPU, памяти, диска и пулов соединений.",
-                ]
-            )
-        if any(marker in lowered for marker in ("401", "403", "доступ", "auth")):
-            steps.append(
-                "Проверить срок действия credentials и права без вывода секретов."
-            )
-        steps.append(
-            "После изменения повторить проверку и зафиксировать результат в инциденте."
-        )
-        return _json(
-            {
-                "status": "ok",
-                "component": component,
-                "symptoms": redact_secrets(symptoms),
-                "steps": steps,
-            }
-        )
+        """Формирует структурированный диагностический чек-лист по компоненту и симптомам для автоматизации поиска причин инцидентов."""
+        return _json(diagnostic_checklist_payload(component, symptoms))
 
     return [
         StructuredTool.from_function(
@@ -260,6 +247,7 @@ def support_tools(
 
 
 def _log_findings(log_text: str) -> list[dict[str, str]]:
+    """Анализирует текст логов на известные паттерны ошибок и выдаёт рекомендации, обеспечивая систематическую диагностику проблем."""
     rules = (
         (
             r"(?i)out of memory|oom|нехватк[аи] памяти",
@@ -306,5 +294,62 @@ def _log_findings(log_text: str) -> list[dict[str, str]]:
     return findings
 
 
+def analyze_log_fragment_payload(
+    log_text: str,
+    *,
+    component: str | None = None,
+    max_log_chars: int = 12000,
+) -> dict[str, object]:
+    """Безопасное ядро анализа логов для LangChain tool и MCP server."""
+    if len(log_text) > max_log_chars:
+        return {
+            "status": "error",
+            "error": "log_too_large",
+            "max_log_chars": max_log_chars,
+            "actual_chars": len(log_text),
+        }
+    redacted = redact_secrets(log_text)
+    return {
+        "status": "ok",
+        "component": component,
+        "findings": _log_findings(redacted),
+        "redacted_log_preview": redacted[:1000],
+        "secrets_redacted": redacted != log_text,
+    }
+
+
+def diagnostic_checklist_payload(
+    component: str,
+    symptoms: str,
+) -> dict[str, object]:
+    """Детерминированный чек-лист без зависимости от LLM runtime."""
+    lowered = symptoms.lower()
+    steps = [
+        "Зафиксировать время начала и область влияния.",
+        f"Проверить состояние и последние изменения компонента {component}.",
+        "Собрать логи с корреляционным идентификатором и точными timestamps.",
+        "Проверить зависимости, сеть, DNS и доступность downstream-сервисов.",
+    ]
+    if any(marker in lowered for marker in ("медлен", "timeout", "таймаут")):
+        steps.extend(
+            [
+                "Сравнить latency p50/p95/p99 с нормальным интервалом.",
+                "Проверить saturation CPU, памяти, диска и пулов соединений.",
+            ]
+        )
+    if any(marker in lowered for marker in ("401", "403", "доступ", "auth")):
+        steps.append("Проверить срок действия credentials и права без вывода секретов.")
+    steps.append(
+        "После изменения повторить проверку и зафиксировать результат в инциденте."
+    )
+    return {
+        "status": "ok",
+        "component": component,
+        "symptoms": redact_secrets(symptoms),
+        "steps": steps,
+    }
+
+
 def _json(payload: object) -> str:
+    """Преобразует произвольный объект в JSON-строку с поддержкой Unicode и сериализацией нестандартных типов, гарантируя корректный формат вывода."""
     return json.dumps(payload, ensure_ascii=False, default=str)

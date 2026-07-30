@@ -1,3 +1,5 @@
+"""Объектно-ориентированный конвейер для RAG-конвейера."""
+
 from __future__ import annotations
 
 import logging
@@ -58,6 +60,7 @@ class RagPreparationPipeline:
     """ООП-фасад над стадиями подготовки данных."""
 
     def __init__(self, config: PipelineConfig):
+        """Готовит конвейер подготовки данных для RAG, обеспечивая последовательное выполнение этапов загрузки, парсинга, очистки, нормализации, дедупликации, структурирования, экспорта и трекинга."""
         self.config = config
         self.loader = LlamaIndexLoadingStage(config.loader)
         self.parser = UnstructuredParsingStage(
@@ -71,6 +74,7 @@ class RagPreparationPipeline:
         self.tracker = MLflowTracker(config)
 
     def run(self) -> PipelineResult:
+        """Обеспечивает воспроизводимый запуск подготовки данных RAG с учётом конфигурации, возвращая детальную статистику и результаты для последующей обработки и анализа."""
         random.seed(self.config.run.seed)
         run_id = new_run_id()
         LOGGER.info("Старт запуска подготовки данных RAG: %s", run_id)
@@ -126,6 +130,7 @@ class RagChunkingPipeline:
     """ООП-фасад над стадиями чанкинга."""
 
     def __init__(self, config: ChunkingPipelineConfig):
+        """Настраивает конвейер чанкинга, гарантируя корректную загрузку, разбиение, валидацию, экспорт и мониторинг чанков для RAG."""
         self.config = config
         self.loader = PreparedDocumentLoadingStage()
         self.splitter = ChunkSplittingStage(config.chunking)
@@ -134,12 +139,13 @@ class RagChunkingPipeline:
         self.tracker = MLflowTracker(config)
 
     def run(self) -> ChunkingPipelineResult:
+        """Выполняет воспроизводимый процесс чанкинга документов с валидацией и сбором метрик качества, обеспечивая готовность данных для последующих этапов."""
         random.seed(self.config.run.seed)
         run_id = new_run_id()
         LOGGER.info("Старт запуска чанкинга RAG: %s", run_id)
 
         documents = self.loader.run(self.config.paths.input_jsonl)
-        chunks = self.splitter.run(documents)
+        chunks = self.splitter.run(documents, run_id=run_id)
         validation = self.validator.run(chunks)
 
         token_counts = [chunk.metadata.chunk_token_count for chunk in chunks]
@@ -170,6 +176,7 @@ class RagChunkingPipeline:
             )
             if structure_scores
             else 0.0,
+            "no_chunks_count": validation.no_chunks_count,
             "empty_chunks_count": validation.empty_chunks_count,
             "undersized_chunks_count": validation.undersized_chunks_count,
             "oversized_chunks_count": validation.oversized_chunks_count,
@@ -201,6 +208,7 @@ class RagEmbeddingPipeline:
     """ООП-фасад над стадиями embeddings."""
 
     def __init__(self, config: EmbeddingPipelineConfig):
+        """Инициализирует конвейер эмбеддингов, обеспечивая загрузку чанков, создание эмбеддингов, их валидацию, экспорт и трекинг."""
         self.config = config
         self.loader = ChunkLoadingStage()
         self.embedder = build_embedding_stage(config.embedding)
@@ -209,6 +217,7 @@ class RagEmbeddingPipeline:
         self.tracker = MLflowTracker(config)
 
     def run(self) -> EmbeddingPipelineResult:
+        """Гарантирует воспроизводимый запуск эмбеддинга чанков с валидацией и логированием результатов для интеграции в RAG-процесс."""
         random.seed(self.config.run.seed)
         run_id = new_run_id()
         LOGGER.info("Старт запуска embeddings RAG: %s", run_id)
@@ -250,6 +259,7 @@ class RagVectorStorePipeline:
     """ООП-фасад над стадиями индексации vector store."""
 
     def __init__(self, config: VectorStorePipelineConfig):
+        """Подготавливает конвейер векторного хранилища, обеспечивая загрузку эмбеддингов, индексацию, валидацию, поиск, экспорт и мониторинг."""
         self.config = config
         self.loader = EmbeddingLoadingStage()
         self.indexer = QdrantIndexingStage(config.vector_store)
@@ -259,6 +269,7 @@ class RagVectorStorePipeline:
         self.tracker = MLflowTracker(config)
 
     def run(self) -> VectorStorePipelineResult:
+        """Обеспечивает воспроизводимый запуск построения и валидации векторного индекса с поиском и экспортом результатов для RAG."""
         random.seed(self.config.run.seed)
         run_id = new_run_id()
         LOGGER.info("Старт запуска vector store RAG: %s", run_id)

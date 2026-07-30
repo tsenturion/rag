@@ -1,3 +1,5 @@
+"""Поиск по базе знаний для онлайн-RAG."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -10,7 +12,10 @@ from rag_prep.config import VectorStoreConfig
 
 
 class QdrantKnowledgeRetriever:
+    """Обеспечивает поиск релевантных фрагментов знаний в Qdrant с фильтрацией и защитой от дубликатов, гарантируя корректность и полноту результата."""
+
     def __init__(self, config: VectorStoreConfig, client: QdrantClient):
+        """Готовит экземпляр к поиску по коллекции Qdrant, гарантируя валидную конфигурацию и соединение с хранилищем."""
         self.config = config
         self.client = client
 
@@ -22,6 +27,7 @@ class QdrantKnowledgeRetriever:
         source: str | None = None,
         section: str | None = None,
     ) -> list[RagRetrievedChunk]:
+        """Выполняет поиск релевантных фрагментов в векторном хранилище с фильтрацией по источнику и секции, гарантируя уникальность возвращаемых фрагментов."""
         response = self.client.query_points(
             collection_name=self.config.collection_name,
             query=vector,
@@ -47,6 +53,7 @@ class QdrantKnowledgeRetriever:
         source: str | None,
         section: str | None,
     ) -> qdrant_models.Filter | None:
+        """Формирует фильтр для поиска в векторном хранилище по заданным параметрам источника и секции, обеспечивая корректное ограничение области поиска."""
         conditions = []
         if source:
             conditions.append(
@@ -66,6 +73,7 @@ class QdrantKnowledgeRetriever:
 
     @staticmethod
     def _chunk(point: Any) -> RagRetrievedChunk:
+        """Преобразует сырые данные из векторного хранилища в структурированный фрагмент с метаданными, гарантируя наличие идентификаторов и корректный формат."""
         payload = point.payload or {}
         metadata = payload.get("metadata")
         if not isinstance(metadata, dict):

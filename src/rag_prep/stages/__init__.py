@@ -1,3 +1,5 @@
+"""Публичный интерфейс для подготовки документов."""
+
 from rag_prep.stages.cleaning import TextCleaningStage
 from rag_prep.stages.deduplication import DeduplicationStage
 from rag_prep.stages.exporting import ExportStage

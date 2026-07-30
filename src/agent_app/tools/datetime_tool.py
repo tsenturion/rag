@@ -1,3 +1,5 @@
+"""Инструмент текущей даты и времени для инструментов агента."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,6 +10,8 @@ from pydantic import BaseModel, Field
 
 
 class DateTimeInput(BaseModel):
+    """Определяет валидный часовой пояс IANA для корректного вычисления и отображения времени в системе."""
+
     timezone: str = Field(
         default="Asia/Yekaterinburg",
         description="Часовой пояс IANA, например Asia/Yekaterinburg или UTC.",
@@ -15,6 +19,7 @@ class DateTimeInput(BaseModel):
 
 
 def current_datetime(timezone: str = "Asia/Yekaterinburg") -> str:
+    """Возвращает текущую дату и время в заданной временной зоне с гарантией корректного формата и fallback на UTC при ошибках."""
     try:
         tz = ZoneInfo(timezone)
     except Exception:
@@ -25,6 +30,7 @@ def current_datetime(timezone: str = "Asia/Yekaterinburg") -> str:
 
 
 def datetime_tool() -> StructuredTool:
+    """Предоставляет структурированный инструмент для получения текущей даты и времени, пригодный для интеграции в систему инструментов агента."""
     return StructuredTool.from_function(
         name="current_datetime",
         description="Используй этот tool, когда пользователь спрашивает текущую дату или время.",

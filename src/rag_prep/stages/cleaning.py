@@ -1,3 +1,5 @@
+"""Очистка текста для подготовки документов."""
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +19,7 @@ class TextCleaningStage:
     """Удаляет шум парсинга и текстовые артефакты без чанкинга."""
 
     def __init__(self, config: CleaningConfig):
+        """Настраивает этап очистки текста, компилируя паттерны для удаления и выделения шаблонов, обеспечивая фильтрацию нежелательного контента."""
         self.config = config
         self.drop_patterns = [
             re.compile(pattern, re.IGNORECASE) for pattern in config.drop_patterns
@@ -27,6 +30,7 @@ class TextCleaningStage:
         ]
 
     def run(self, elements: list[RawElement]) -> list[ProcessedElement]:
+        """Фильтрует и очищает текстовые элементы, отбрасывая короткие и нежелательные по паттернам, добавляя метрики качества для последующей обработки."""
         cleaned: list[ProcessedElement] = []
         normalized_text_counts = Counter(
             self._repeat_key(element.text) for element in elements
@@ -58,6 +62,7 @@ class TextCleaningStage:
         return cleaned
 
     def _clean_text(self, text: str) -> str:
+        """Гарантирует удаление управляющих символов и нормализацию пробелов для воспроизводимой предобработки текста перед анализом."""
         cleaned = text.replace("\ufeff", "")
         if self.config.remove_control_chars:
             cleaned = CONTROL_CHARS_RE.sub(" ", cleaned)
@@ -67,6 +72,7 @@ class TextCleaningStage:
         return cleaned.strip()
 
     def _quality_signals(self, text: str, repeated_count: int) -> dict[str, object]:
+        """Вычисляет метрики осмысленности и вероятности мусора, чтобы фильтрация документов могла опираться на количественные признаки качества."""
         tokens = re.findall(r"\w+", text, flags=re.UNICODE)
         alpha_chars = sum(1 for char in text if char.isalpha())
         alnum_chars = sum(1 for char in text if char.isalnum())
@@ -102,12 +108,14 @@ class TextCleaningStage:
 
     @staticmethod
     def _repeat_key(text: str) -> str:
+        """Гарантирует идентичность ключа для повторяющихся текстов независимо от регистра и лишних пробелов."""
         return WHITESPACE_RE.sub(" ", text.strip().lower())
 
     @staticmethod
     def _garbage_score(
         text: str, alpha_chars: int, alnum_chars: int, printable_chars: int
     ) -> float:
+        """Оценивает вероятность того, что текст является мусорным, по доле алфавитных, печатных и непечатных символов."""
         length = max(len(text), 1)
         non_printable_ratio = 1.0 - (printable_chars / length)
         alpha_ratio = alpha_chars / length

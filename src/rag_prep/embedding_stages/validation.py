@@ -1,3 +1,5 @@
+"""Проверка выходных контрактов для расчёта embeddings."""
+
 from __future__ import annotations
 
 import logging
@@ -13,6 +15,7 @@ class EmbeddingValidationStage:
     """Валидирует embeddings перед индексацией в vector store."""
 
     def __init__(self, config: EmbeddingConfig):
+        """Гарантирует готовность экземпляра к валидации embeddings с учётом всех параметров конфигурации."""
         self.config = config
 
     def run(
@@ -20,11 +23,14 @@ class EmbeddingValidationStage:
         chunks: list[PreparedChunk],
         embedded_chunks: list[EmbeddedChunk],
     ) -> EmbeddingValidationResult:
+        """Сверяет embeddings с исходными чанками по ID, тексту и lineage."""
         expected_dimensions = self.config.dimensions
         source_chunk_ids = [chunk.metadata.id for chunk in chunks]
         embedded_chunk_ids = [chunk.metadata.id for chunk in embedded_chunks]
         source_ids = set(source_chunk_ids)
         embedded_ids = set(embedded_chunk_ids)
+        # Наборы выявляют пропуски и неожиданные ID, а словари позволяют проверить,
+        # что под общим ID не был подменён текст либо identity metadata.
         source_by_id = {chunk.metadata.id: chunk for chunk in chunks}
         embedded_by_id = {chunk.metadata.id: chunk for chunk in embedded_chunks}
         missing_chunk_ids = source_ids - embedded_ids
@@ -32,6 +38,8 @@ class EmbeddingValidationStage:
         common_ids = source_ids & embedded_ids
 
         result = EmbeddingValidationResult(
+            empty_source_chunks_count=int(not chunks),
+            empty_embeddings_count=int(not embedded_chunks),
             chunk_count_mismatch=int(len(chunks) != len(embedded_chunks)),
             missing_embeddings_count=(
                 len(missing_chunk_ids)
@@ -77,6 +85,20 @@ class EmbeddingValidationStage:
                 for chunk in embedded_chunks
                 if chunk.metadata.embedding_model != self.config.model
             ),
+            provider_mismatch_count=sum(
+                1
+                for chunk in embedded_chunks
+                if chunk.metadata.embedding_provider != self.config.provider
+            ),
+            declared_dimension_mismatch_count=sum(
+                1
+                for chunk in embedded_chunks
+                if chunk.metadata.embedding_dimensions != len(chunk.embedding)
+                or (
+                    expected_dimensions is not None
+                    and chunk.metadata.embedding_dimensions != expected_dimensions
+                )
+            ),
             token_limit_exceeded_count=sum(
                 1
                 for chunk in chunks
@@ -86,13 +108,17 @@ class EmbeddingValidationStage:
 
         LOGGER.info(
             (
-                "Проверено embeddings: %d; count_mismatch=%d missing=%d "
+                "Проверено embeddings: %d; empty_source=%d empty_output=%d "
+                "count_mismatch=%d missing=%d "
                 "missing_ids=%d unexpected_ids=%d source_duplicate_ids=%d "
                 "dimension_mismatch=%d non_finite=%d duplicate_ids=%d "
                 "text_mismatch=%d metadata_mismatch=%d missing_metadata=%d "
-                "model_mismatch=%d token_limit_exceeded=%d"
+                "model_mismatch=%d provider_mismatch=%d "
+                "declared_dimension_mismatch=%d token_limit_exceeded=%d"
             ),
             len(embedded_chunks),
+            result.empty_source_chunks_count,
+            result.empty_embeddings_count,
             result.chunk_count_mismatch,
             result.missing_embeddings_count,
             result.missing_chunk_ids_count,
@@ -105,6 +131,8 @@ class EmbeddingValidationStage:
             result.metadata_mismatch_count,
             result.missing_metadata_count,
             result.model_mismatch_count,
+            result.provider_mismatch_count,
+            result.declared_dimension_mismatch_count,
             result.token_limit_exceeded_count,
         )
         if self.config.fail_on_validation_error and result.has_errors:
@@ -118,6 +146,7 @@ class EmbeddingValidationStage:
         source_chunk: PreparedChunk,
         embedded_chunk: EmbeddedChunk,
     ) -> bool:
+        """Проверяет поля, которые embedding stage не вправе менять."""
         fields = (
             "document_id",
             "source",

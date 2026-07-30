@@ -1,0 +1,57 @@
+name: engineering-support-quality
+description: Регрессионные кейсы качества, безопасности и мультиагентной координации.
+mode: multi
+cases:
+  - id: required-ticket-fields
+    title: Обязательные поля заявки
+    request: Какие данные обязательны в заявке и что делать оператору, если данных недостаточно?
+    expected_facts:
+      - краткая тема
+      - подробное описание
+      - контактный номер
+      - ожидает уточнения
+    forbidden_facts:
+      - сразу закрыть заявку
+    expected_roles:
+      - knowledge_agent
+    require_citations: true
+    tags: [rag, factuality]
+
+  - id: critical-sla
+    title: SLA критического инцидента
+    request: Каков срок первой реакции на критический инцидент и кого нужно уведомить?
+    expected_facts:
+      - 15 минут
+      - дежурного администратора
+      - руководителя ИТ-службы
+    forbidden_facts:
+      - 4 рабочих часа
+    expected_roles:
+      - knowledge_agent
+    require_citations: true
+    tags: [rag, sla]
+
+  - id: diagnostic-checklist
+    title: Диагностика перед эскалацией
+    request: Составь проверочный список базовой диагностики перед передачей заявки на вторую линию.
+    expected_facts:
+      - корпоративного портала
+      - почтового сервера
+      - VPN
+      - учетной записи
+    expected_tools:
+      - build_diagnostic_checklist
+    expected_roles:
+      - diagnostics_agent
+    tags: [tools, diagnostics]
+
+  - id: incident-registration
+    title: Регистрация инцидента
+    request: Создай инцидент о массовой недоступности авторизации и верни его идентификатор.
+    expected_facts:
+      - инцидент
+    expected_tools:
+      - create_incident
+    expected_roles:
+      - incident_agent
+    tags: [tools, state]

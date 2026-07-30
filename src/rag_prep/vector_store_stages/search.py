@@ -1,6 +1,9 @@
+"""Поиск и формирование результатов для индексации в Qdrant."""
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -16,6 +19,7 @@ class QdrantSearchStage:
     """Запускает smoke-проверки similarity search по проиндексированным vectors."""
 
     def __init__(self, config: VectorStoreConfig):
+        """Обеспечивает готовность экземпляра к поисковым операциям по заданной конфигурации без владения внешними ресурсами."""
         self.config = config
 
     def run(
@@ -24,6 +28,7 @@ class QdrantSearchStage:
         *,
         client: QdrantClient | None = None,
     ) -> list[VectorSearchResult]:
+        """Гарантирует корректное выполнение тестовых поисковых запросов по эмбеддингам с контролем числа запросов и управлением клиентом Qdrant."""
         if self.config.test_queries_count == 0 or not embedded_chunks:
             return []
 
@@ -39,6 +44,7 @@ class QdrantSearchStage:
         return results
 
     def _search_one(self, client, query: EmbeddedChunk) -> VectorSearchResult:
+        """Гарантирует получение и анализ результатов поиска по одному эмбеддингу с учётом порога score и идентификации self-match."""
         response = client.query_points(
             collection_name=self.config.collection_name,
             query=query.embedding,
@@ -76,19 +82,29 @@ class QdrantSearchStage:
 
     @staticmethod
     def _hit(point: Any) -> VectorSearchHit:
-        payload = point.payload or {}
-        metadata = (
-            payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        """Гарантирует преобразование результата поиска Qdrant в структуру с валидированными полями для дальнейшей обработки пайплайном."""
+        raw_payload = getattr(point, "payload", None)
+        payload: dict[str, Any] = (
+            dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
         )
+        raw_metadata = payload.get("metadata")
+        metadata: dict[str, Any] = (
+            dict(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+        )
+        chunk_id = payload.get("chunk_id") or metadata.get("id")
+        text = payload.get("text")
+        source = payload.get("source") or metadata.get("source")
+        section = payload.get("section") or metadata.get("section")
+        position = payload.get("position")
+        if position is None:
+            position = metadata.get("position")
         return VectorSearchHit(
             point_id=str(point.id),
-            chunk_id=payload.get("chunk_id") or metadata.get("id"),
+            chunk_id=str(chunk_id) if chunk_id is not None else None,
             score=float(point.score),
-            text=payload.get("text"),
-            source=payload.get("source") or metadata.get("source"),
-            section=payload.get("section") or metadata.get("section"),
-            position=payload.get("position")
-            if payload.get("position") is not None
-            else metadata.get("position"),
+            text=text if isinstance(text, str) else None,
+            source=str(source) if source is not None else None,
+            section=str(section) if section is not None else None,
+            position=position if isinstance(position, int) else None,
             metadata=metadata,
         )

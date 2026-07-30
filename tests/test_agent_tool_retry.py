@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы agent_tool_retry."""
+
 from __future__ import annotations
 
 import json
@@ -21,16 +23,22 @@ from agent_app.graph import AgentRunner  # noqa: E402
 
 
 class FlakyInput(BaseModel):
+    """Определяет структуру входных данных с полем value для проверки повторных вызовов инструментов с нестабильным поведением."""
+
     value: str
 
 
 class RetryAfterErrorModel:
+    """Моделирует поведение с повторным вызовом инструмента после ошибки, гарантируя успешный результат при повторной попытке."""
+
     supports_tool_calling = True
 
     def bind_tools(self, _tools):
+        """Проверяет, что связывание инструментов не изменяет состояние модели и возвращает тот же экземпляр."""
         return self
 
     def invoke(self, messages):
+        """Проверяет, что после первой неудачи модель инициирует повторный вызов инструмента и возвращает успешный результат при повторе."""
         results = [message for message in messages if isinstance(message, ToolMessage)]
         if len(results) >= 2:
             return AIMessage(content="Повторная попытка выполнена успешно.")
@@ -48,10 +56,14 @@ class RetryAfterErrorModel:
 
 
 class AgentToolRetryTest(unittest.TestCase):
+    """Проверяет подсистему повторных вызовов инструментов при временных ошибках для обеспечения устойчивости агентов."""
+
     def test_identical_call_is_retried_once_after_tool_error(self) -> None:
+        """Проверяет, что при временной ошибке инструмент вызывается повторно ровно один раз и возвращает успешный результат при повторе."""
         invocations = 0
 
         def flaky(value: str) -> str:
+            """Проверяет, что инструмент возвращает ошибку при первом вызове и успешный результат при повторном для тестирования механизма повторов."""
             nonlocal invocations
             invocations += 1
             if invocations == 1:

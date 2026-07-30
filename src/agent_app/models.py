@@ -1,3 +1,5 @@
+"""Типизированные модели данных для агентного приложения."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -11,6 +13,7 @@ from agent_app.rag.models import RagCitation
 
 
 def utc_now() -> datetime:
+    """Возвращает текущее время в UTC с информацией о часовом поясе."""
     return datetime.now(timezone.utc)
 
 
@@ -19,6 +22,8 @@ MemorySource = Literal["user", "assistant", "tool", "system"]
 
 
 class MemoryRecord(BaseModel):
+    """Гарантирует целостность и отслеживаемость единицы памяти агента с учётом типа, источника, важности и сроков хранения."""
+
     id: str
     user_id: str
     session_id: str | None = None
@@ -37,23 +42,31 @@ class MemoryRecord(BaseModel):
 
 
 class MemorySearchResult(BaseModel):
+    """Гарантирует воспроизводимый результат поиска по памяти агента с указанием исходного запроса и количества найденных записей."""
+
     records: list[MemoryRecord] = Field(default_factory=list)
     query: str | None = None
     count: int = 0
 
 
 class AgentTraceState(BaseModel):
+    """Хранит состояние трассировки агента с произвольными данными, обеспечивая сохранение и передачу контекста выполнения."""
+
     name: str
     data: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentToolResult(BaseModel):
+    """Гарантирует однозначное представление результата вызова инструмента агента с признаком ошибки для трассировки."""
+
     name: str | None = None
     content: str
     is_error: bool = False
 
 
 class AgentTrace(BaseModel):
+    """Гарантирует полную трассировку принятия решений и изменений состояния агента в ходе обработки пользовательского запроса."""
+
     user_request: str
     start_state: AgentTraceState
     intermediate_states: list[AgentTraceState] = Field(default_factory=list)
@@ -70,6 +83,8 @@ class AgentTrace(BaseModel):
 
 
 class AgentRetrievalInfo(BaseModel):
+    """Гарантирует вызывающему коду прозрачный контракт о статусе, объёме и источнике извлечённых данных для трассировки и аудита работы retrieval-подсистемы."""
+
     status: str
     retrieved_count: int = 0
     used_count: int = 0
@@ -81,6 +96,8 @@ class AgentRetrievalInfo(BaseModel):
 
 
 class AgentResponse(BaseModel):
+    """Гарантирует вызывающему коду целостное описание результата работы агента, пригодное для автоматизации, аудита и пользовательского интерфейса."""
+
     answer: str
     user_id: str
     session_id: str
@@ -91,6 +108,8 @@ class AgentResponse(BaseModel):
 
 
 class AgentState(TypedDict):
+    """Определяет структуру состояния агента, включая сообщения и идентификаторы сессии и пользователя, гарантируя целостность и контроль циклов выполнения."""
+
     messages: Annotated[list[BaseMessage], add_messages]
     user_id: str
     session_id: str

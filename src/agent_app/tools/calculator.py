@@ -1,3 +1,5 @@
+"""Безопасные арифметические инструменты для инструментов агента."""
+
 from __future__ import annotations
 
 import ast
@@ -9,6 +11,8 @@ from pydantic import BaseModel, Field
 
 
 class CalculatorInput(BaseModel):
+    """Обеспечивает проверку математического выражения, гарантируя корректность формата для последующих вычислений."""
+
     expression: str = Field(description="Математическое выражение, например: 128 * 47")
 
 
@@ -26,6 +30,7 @@ OPERATORS = {
 
 
 def calculate(expression: str) -> str:
+    """Гарантирует безопасное вычисление арифметического выражения с обработкой ошибок для CLI и инструментов агента."""
     try:
         tree = ast.parse(expression, mode="eval")
         result = _eval_node(tree.body)
@@ -35,6 +40,7 @@ def calculate(expression: str) -> str:
 
 
 def _eval_node(node: ast.AST) -> Any:
+    """Гарантирует корректную и безопасную рекурсивную обработку AST арифметических выражений без сторонних эффектов."""
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return node.value
     if isinstance(node, ast.BinOp) and type(node.op) in OPERATORS:
@@ -47,6 +53,7 @@ def _eval_node(node: ast.AST) -> Any:
 
 
 def calculator_tool() -> StructuredTool:
+    """Гарантирует регистрацию калькулятора как структурированного инструмента с контрактом безопасного вычисления выражений."""
     return StructuredTool.from_function(
         name="calculator",
         description=(

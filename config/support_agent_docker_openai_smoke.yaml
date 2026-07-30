@@ -1,0 +1,19 @@
+extends: multi_agent_docker_openai.yaml
+
+# CI проверяет readiness RAG, RabbitMQ/Redis/Celery и API без платных LLM-вызовов.
+rag:
+  embedding:
+    dimensions: 3
+  vector_store:
+    collection_name: rag_ci_smoke
+    vector_size: 3
+
+multi_agent:
+  mlflow_enabled: false
+
+orchestration:
+  camunda:
+    enabled: false
+
+observability:
+  enabled: false

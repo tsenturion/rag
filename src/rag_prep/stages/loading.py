@@ -1,3 +1,5 @@
+"""Загрузка входных данных для подготовки документов."""
+
 from __future__ import annotations
 
 import logging
@@ -17,9 +19,11 @@ class LlamaIndexLoadingStage:
     """Находит поддерживаемые файлы через directory reader из LlamaIndex."""
 
     def __init__(self, config: LoaderConfig):
+        """Готовит экземпляр к загрузке исходных файлов, фиксируя ограничения и правила отбора."""
         self.config = config
 
     def run(self, input_dir: Path) -> list[SourceFile]:
+        """Гарантирует воспроизводимую загрузку исходных файлов с учётом фильтрации, лимитов и обработки ошибок отсутствия данных."""
         if not input_dir.exists():
             raise FileNotFoundError(f"Входная директория не существует: {input_dir}")
 
@@ -41,10 +45,16 @@ class LlamaIndexLoadingStage:
         sources = [
             self._to_source_file(path, input_dir=input_dir) for path in sorted(files)
         ]
+        if not sources:
+            raise ValueError(
+                "Входной корпус пуст: не найдено ни одного поддерживаемого файла "
+                f"в {input_dir}"
+            )
         LOGGER.info("Загружено исходных файлов: %d из %s", len(sources), input_dir)
         return sources
 
     def _to_source_file(self, path: Path, *, input_dir: Path) -> SourceFile:
+        """Гарантирует создание полной метаинформации о файле для отслеживания источника и контроля целостности."""
         stat = path.stat()
         resolved_path = path.resolve()
         try:

@@ -1,3 +1,5 @@
+"""Запуск воспроизводимых сценариев для проверочных сценариев агента."""
+
 from __future__ import annotations
 
 import json
@@ -20,11 +22,14 @@ from agent_app.scenarios.models import (
     ScenarioSuite,
 )
 from agent_app.support.incidents import IncidentStore
+from agent_app.tools.mcp_external import ExternalMCPToolManager
 
 LOGGER = logging.getLogger(__name__)
 
 
 class ScenarioRunner:
+    """Организует выполнение и оценку сценариев, гарантируя корректную инициализацию зависимостей и сбор результатов."""
+
     def __init__(
         self,
         config: AgentAppConfig,
@@ -32,6 +37,7 @@ class ScenarioRunner:
         *,
         config_path: str,
     ):
+        """Готовит экземпляр к запуску сценариев, создавая все необходимые подключения и менеджеры для работы тестовой среды."""
         self.config = config
         self.suite = suite
         self.config_path = config_path
@@ -40,11 +46,15 @@ class ScenarioRunner:
         self._shared_llm: Any | None = None
         self._shared_rag = OnlineRagRuntime(config.rag) if config.rag.enabled else None
         self._incident_store = IncidentStore(config.tools.incident_sqlite_path)
+        self._external_mcp_manager = ExternalMCPToolManager(config.tools.mcp_servers)
+        self._external_tools = self._external_mcp_manager.start()
 
     def run_all(self) -> ScenarioRunReport:
+        """Запускает все сценарии из набора, обеспечивая комплексную проверку поведения агента и формируя итоговый отчёт о прохождении."""
         return self._report(self.suite.scenarios)
 
     def run_one(self, scenario_id: str) -> ScenarioRunReport:
+        """Запускает конкретный сценарий по идентификатору, гарантируя выполнение только существующего сценария и формируя отчёт о его результате."""
         scenarios = [
             scenario for scenario in self.suite.scenarios if scenario.id == scenario_id
         ]
@@ -56,6 +66,7 @@ class ScenarioRunner:
         return self._report(scenarios)
 
     def write_report(self, report: ScenarioRunReport, path: Path | None = None) -> Path:
+        """Сохраняет отчёт о выполнении сценариев в файл, обеспечивая доступность результатов для последующего анализа и аудита."""
         report_path = path or self.suite.report_path
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(
@@ -66,10 +77,13 @@ class ScenarioRunner:
         return report_path
 
     def close(self) -> None:
+        """Освобождает внешние ресурсы и закрывает связанные менеджеры, предотвращая утечки и обеспечивая корректное завершение работы."""
+        self._external_mcp_manager.close()
         if self._shared_rag is not None:
             self._shared_rag.close()
 
     def _report(self, scenarios: list[AgentScenario]) -> ScenarioRunReport:
+        """Формирует итоговый отчёт по списку сценариев, агрегируя результаты их выполнения и определяя общий статус прохождения."""
         results = [self._run_scenario(scenario) for scenario in scenarios]
         return ScenarioRunReport(
             config_path=self.config_path,
@@ -79,6 +93,7 @@ class ScenarioRunner:
         )
 
     def _run_scenario(self, scenario: AgentScenario) -> ScenarioResult:
+        """Выполняет отдельный сценарий с управлением состоянием памяти и обработкой ошибок, гарантируя корректность и полноту результатов."""
         started_at = utc_now()
         user_id = f"{self.suite.default_user_id}_{scenario.id}"
         session_id = f"{self.suite.session_prefix}_{scenario.id}"
@@ -93,6 +108,7 @@ class ScenarioRunner:
             llm=self._shared_llm,
             rag_runtime=self._shared_rag,
             incident_store=self._incident_store,
+            external_tools=self._external_tools,
         )
         if self._shared_llm is None:
             self._shared_llm = runner.llm
@@ -131,7 +147,11 @@ class ScenarioRunner:
                 )
                 continue
             all_tool_calls.extend(response.tool_calls)
-            memory_after_step = self.store.list_memories(user_id=user_id, limit=200)
+            memory_after_step = self.store.list_memories(
+                user_id=user_id,
+                session_id=session_id,
+                limit=200,
+            )
             checks = self.evaluator.evaluate(
                 criteria=step.criteria,
                 response=response,
@@ -149,7 +169,11 @@ class ScenarioRunner:
                 )
             )
 
-        memory_after = self.store.list_memories(user_id=user_id, limit=200)
+        memory_after = self.store.list_memories(
+            user_id=user_id,
+            session_id=session_id,
+            limit=200,
+        )
         if step_results:
             scenario_checks.extend(
                 self.evaluator.evaluate(
@@ -212,6 +236,7 @@ class ScenarioRunner:
         user_id: str,
         session_id: str,
     ) -> None:
+        """Инициализирует память пользователя начальными данными сценария, обеспечивая воспроизводимость контекста для тестирования."""
         for item in scenario.initial_memory:
             self.store.save(
                 user_id=user_id,

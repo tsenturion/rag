@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы agent_loop_guard."""
+
 from __future__ import annotations
 
 import sys
@@ -19,15 +21,20 @@ from agent_app.graph import AgentRunner  # noqa: E402
 
 
 class RepeatingToolModel:
+    """Моделирует инструмент с повторяющимися вызовами, гарантируя отслеживание количества вызовов для тестирования защиты от бесконечных циклов."""
+
     supports_tool_calling = True
 
     def __init__(self) -> None:
+        """Готовит тестовую модель к отслеживанию количества вызовов для проверки защиты от зацикливания."""
         self.calls = 0
 
     def bind_tools(self, _tools: list[Any]) -> "RepeatingToolModel":
+        """Проверяет, что связывание инструментов не влияет на поведение тестовой модели в сценариях регрессионного тестирования."""
         return self
 
     def invoke(self, _messages: list[Any]) -> AIMessage:
+        """Проверяет, что при каждом вызове генерируется новый tool_call с уникальным идентификатором для тестирования защиты от зацикливания."""
         self.calls += 1
         return AIMessage(
             content="",
@@ -43,7 +50,10 @@ class RepeatingToolModel:
 
 
 class ChangingToolModel(RepeatingToolModel):
+    """Моделирует инструмент с изменяющимися параметрами вызовов, гарантируя уникальность каждого вызова для проверки реакции защиты на изменяющиеся запросы."""
+
     def invoke(self, _messages: list[Any]) -> AIMessage:
+        """Проверяет, что последовательные tool_call отличаются параметрами и идентификаторами для тестирования реакции guard на изменяющиеся вызовы."""
         self.calls += 1
         return AIMessage(
             content="",
@@ -59,7 +69,10 @@ class ChangingToolModel(RepeatingToolModel):
 
 
 class AgentLoopGuardTest(unittest.TestCase):
+    """Проверяет подсистему защиты от зацикливания в агенте, гарантируя корректное обнаружение и остановку бесконечных циклов в различных конфигурациях."""
+
     def test_loop_guard_works_for_all_agent_provider_configs(self) -> None:
+        """Проверяет, что при бесконечном повторении одного инструмента агент корректно срабатывает защита от циклов, прерывая выполнение до достижения лимита рекурсии и возвращая статус отмены без ошибок."""
         config_paths = [
             PROJECT_ROOT / "config" / "agent_openai.yaml",
             PROJECT_ROOT / "config" / "agent_local.yaml",
@@ -103,6 +116,7 @@ class AgentLoopGuardTest(unittest.TestCase):
                 self.assertNotIn("Ошибка выполнения агента", response.answer)
 
     def test_changing_tool_loop_stops_before_graph_recursion_limit(self) -> None:
+        """Проверяет, что при цикле с постоянно меняющимися аргументами агент срабатывает защита от бесконечных циклов до достижения лимита рекурсии, корректно отменяя выполнение и не вызывая ошибок."""
         config_paths = [
             PROJECT_ROOT / "config" / "agent_openai.yaml",
             PROJECT_ROOT / "config" / "agent_local.yaml",

@@ -1,6 +1,9 @@
+"""Регрессионные тесты для подсистемы artifact_transaction."""
+
 from __future__ import annotations
 
 import os
+import json
 import sys
 import tempfile
 import unittest
@@ -14,11 +17,17 @@ if str(SRC_ROOT) not in sys.path:
 
 from rag_prep.config import PathConfig, PipelineConfig  # noqa: E402
 from rag_prep.stages.exporting import ExportStage  # noqa: E402
-from rag_prep.utils import artifact_set_transaction  # noqa: E402
+from rag_prep.utils import (  # noqa: E402
+    artifact_set_transaction,
+    recover_artifact_transactions,
+)
 
 
 class ArtifactTransactionTest(unittest.TestCase):
+    """Проверяет корректность транзакционного поведения при экспорте артефактов, гарантируя сохранность предыдущего набора при ошибках записи."""
+
     def test_export_failure_keeps_previous_artifact_set(self) -> None:
+        """Проверяет, что при ошибке записи в процессе экспорта сохраняется предыдущий набор артефактов без изменений и не создаются временные файлы."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             output_dir = Path(temporary_dir)
             paths = self._targets(output_dir)
@@ -38,6 +47,7 @@ class ArtifactTransactionTest(unittest.TestCase):
             self.assertEqual(list(output_dir.glob(".artifact-set-*")), [])
 
     def test_commit_failure_rolls_back_every_target(self) -> None:
+        """Проверяет, что при сбое переименования в транзакции коммита все изменения откатываются, и предыдущий набор артефактов восстанавливается."""
         with tempfile.TemporaryDirectory() as temporary_dir:
             output_dir = Path(temporary_dir)
             targets = self._targets(output_dir)
@@ -46,6 +56,7 @@ class ArtifactTransactionTest(unittest.TestCase):
             failed = False
 
             def failing_replace(source, destination):
+                """Имитирует сбой на втором rename транзакционного commit."""
                 nonlocal failed
                 source_path = Path(source)
                 destination_path = Path(destination)
@@ -69,8 +80,51 @@ class ArtifactTransactionTest(unittest.TestCase):
             self._assert_old_set(targets)
             self.assertEqual(list(output_dir.glob(".artifact-set-*")), [])
 
+    def test_recovery_rolls_back_process_crash_during_commit(self) -> None:
+        """Восстанавливает весь старый набор по durable prepared journal."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            targets = self._targets(output_dir)
+            self._write_old_set(targets)
+            staging = output_dir / ".artifact-set-crashed"
+            staging.mkdir()
+            entries = []
+            for index, target in enumerate(targets):
+                backup = staging / f".backup-{index:03d}-{target.name}"
+                backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+                entries.append(
+                    {
+                        "target": str(target.resolve()),
+                        "backup": str(backup.resolve()),
+                        "existed": True,
+                    }
+                )
+                target.write_text(f"new:{target.name}", encoding="utf-8")
+            (staging / "journal.json").write_text(
+                json.dumps({"version": 1, "state": "prepared", "entries": entries}),
+                encoding="utf-8",
+            )
+
+            recover_artifact_transactions(output_dir)
+
+            self._assert_old_set(targets)
+            self.assertFalse(staging.exists())
+
+    def test_recovery_does_not_write_to_consistent_input_directory(self) -> None:
+        """Не создаёт lock при чтении готового артефакта без recovery-журналов."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            (output_dir / "manifest.json").write_text("{}", encoding="utf-8")
+
+            with patch(
+                "rag_prep.utils.portalocker.Lock",
+                side_effect=AssertionError("lock не должен создаваться"),
+            ):
+                recover_artifact_transactions(output_dir)
+
     @staticmethod
     def _targets(output_dir: Path) -> list[Path]:
+        """Проверяет, что список целевых файлов для транзакции воспроизводим и соответствует ожидаемой структуре выходных артефактов."""
         return [
             output_dir / "documents.json",
             output_dir / "documents.jsonl",
@@ -79,10 +133,12 @@ class ArtifactTransactionTest(unittest.TestCase):
 
     @staticmethod
     def _write_old_set(paths: list[Path]) -> None:
+        """Обеспечивает воспроизводимость тестов, записывая фиксированные данные в указанные пути для проверки корректности транзакций с артефактами."""
         for path in paths:
             path.write_text(f"old:{path.name}", encoding="utf-8")
 
     def _assert_old_set(self, paths: list[Path]) -> None:
+        """Гарантирует целостность данных, проверяя, что содержимое файлов соответствует ожидаемому состоянию после операций с артефактами."""
         for path in paths:
             self.assertEqual(path.read_text(encoding="utf-8"), f"old:{path.name}")
 

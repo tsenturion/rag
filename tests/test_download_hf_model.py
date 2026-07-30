@@ -1,3 +1,5 @@
+"""Регрессионные тесты для подсистемы download_hf_model."""
+
 from __future__ import annotations
 
 import io
@@ -17,11 +19,15 @@ build_parser = MODULE.build_parser
 
 
 class DownloadHfModelCliTest(unittest.TestCase):
+    """Проверяет корректность CLI для загрузки моделей Hugging Face, включая обязательные параметры и совместимость контрактов."""
+
     def test_model_and_destination_are_required(self) -> None:
+        """Проверяет, что при отсутствии обязательных параметров модели и пути загрузки CLI завершает работу с ошибкой."""
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             build_parser().parse_args([])
 
     def test_qwen_and_e5_use_the_same_cli_contract(self) -> None:
+        """Проверяет, что для разных моделей CLI принимает и обрабатывает параметры в одинаковом формате и с одинаковыми результатами."""
         cases = (
             (
                 "Qwen/Qwen2.5-1.5B-Instruct",

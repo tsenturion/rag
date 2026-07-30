@@ -1,0 +1,9 @@
+extends: security_jwt.yaml
+
+observability:
+  enabled: true
+  environment: docker
+  otlp_http_endpoint: http://otel-collector:4318
+  trace_sample_ratio: 1.0
+  instrument_http_clients: true
+  instrument_celery: true
