@@ -30,7 +30,7 @@ opentelemetry-instrumentation-fastapi>=0.65b0,<1
 opentelemetry-instrumentation-httpx>=0.65b0,<1
 opentelemetry-instrumentation-celery>=0.65b0,<1
 prefect>=3.7.8
-pydantic>=2.12.5,<2.13
+pydantic>=2.12.5,<2.14
 python-dotenv>=1.2.2
 python-magic-bin>=0.4.14; platform_system == "Windows"
 PyYAML>=6.0.3
