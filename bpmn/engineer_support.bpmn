@@ -1,91 +1,406 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
-                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
-                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
-                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
-                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
-                  id="Definitions_engineer_support"
-                  targetNamespace="http://rag.example/engineer-support"
-                  exporter="Camunda Modeler"
-                  exporterVersion="5.42.0">
-  <bpmn:process id="engineer-support-process" name="Поддержка инженера" isExecutable="true">
-    <bpmn:startEvent id="start" name="Получен запрос">
-      <bpmn:outgoing>flow_start_validate</bpmn:outgoing>
-    </bpmn:startEvent>
-    <bpmn:serviceTask id="validate" name="Проверить запрос">
-      <bpmn:extensionElements>
-        <zeebe:taskDefinition type="validate-support-request" retries="3" />
-      </bpmn:extensionElements>
-      <bpmn:incoming>flow_start_validate</bpmn:incoming>
-      <bpmn:outgoing>flow_validate_classify</bpmn:outgoing>
-    </bpmn:serviceTask>
-    <bpmn:serviceTask id="classify" name="Классифицировать риск">
-      <bpmn:extensionElements>
-        <zeebe:taskDefinition type="classify-support-risk" retries="3" />
-      </bpmn:extensionElements>
-      <bpmn:incoming>flow_validate_classify</bpmn:incoming>
-      <bpmn:outgoing>flow_classify_gateway</bpmn:outgoing>
-    </bpmn:serviceTask>
-    <bpmn:exclusiveGateway id="risk_gateway" name="Высокий риск?" default="flow_standard_merge">
-      <bpmn:incoming>flow_classify_gateway</bpmn:incoming>
-      <bpmn:outgoing>flow_high_approval</bpmn:outgoing>
-      <bpmn:outgoing>flow_standard_merge</bpmn:outgoing>
-    </bpmn:exclusiveGateway>
-    <bpmn:userTask id="manual_approval" name="Ручное согласование">
-      <bpmn:extensionElements>
-        <zeebe:userTask />
-        <zeebe:assignmentDefinition candidateUsers="demo" />
-      </bpmn:extensionElements>
-      <bpmn:incoming>flow_high_approval</bpmn:incoming>
-      <bpmn:outgoing>flow_approval_merge</bpmn:outgoing>
-    </bpmn:userTask>
-    <bpmn:exclusiveGateway id="approval_merge">
-      <bpmn:incoming>flow_standard_merge</bpmn:incoming>
-      <bpmn:incoming>flow_approval_merge</bpmn:incoming>
-      <bpmn:outgoing>flow_merge_agent</bpmn:outgoing>
-    </bpmn:exclusiveGateway>
-    <bpmn:serviceTask id="agent" name="Выполнить агентный план">
-      <bpmn:extensionElements>
-        <zeebe:taskDefinition type="run-support-agent" retries="3" />
-      </bpmn:extensionElements>
-      <bpmn:incoming>flow_merge_agent</bpmn:incoming>
-      <bpmn:outgoing>flow_agent_verify</bpmn:outgoing>
-    </bpmn:serviceTask>
-    <bpmn:serviceTask id="verify" name="Проверить результат">
-      <bpmn:extensionElements>
-        <zeebe:taskDefinition type="verify-support-result" retries="3" />
-      </bpmn:extensionElements>
-      <bpmn:incoming>flow_agent_verify</bpmn:incoming>
-      <bpmn:outgoing>flow_verify_gateway</bpmn:outgoing>
-    </bpmn:serviceTask>
-    <bpmn:exclusiveGateway id="verification_gateway" name="Результат принят?" default="flow_escalated">
-      <bpmn:incoming>flow_verify_gateway</bpmn:incoming>
-      <bpmn:outgoing>flow_completed</bpmn:outgoing>
-      <bpmn:outgoing>flow_escalated</bpmn:outgoing>
-    </bpmn:exclusiveGateway>
-    <bpmn:endEvent id="completed" name="Завершено">
-      <bpmn:incoming>flow_completed</bpmn:incoming>
-    </bpmn:endEvent>
-    <bpmn:endEvent id="escalated" name="Эскалация">
-      <bpmn:incoming>flow_escalated</bpmn:incoming>
-      <bpmn:escalationEventDefinition escalationRef="Escalation_verification_failed" />
-    </bpmn:endEvent>
-
-    <bpmn:sequenceFlow id="flow_start_validate" sourceRef="start" targetRef="validate" />
-    <bpmn:sequenceFlow id="flow_validate_classify" sourceRef="validate" targetRef="classify" />
-    <bpmn:sequenceFlow id="flow_classify_gateway" sourceRef="classify" targetRef="risk_gateway" />
-    <bpmn:sequenceFlow id="flow_high_approval" sourceRef="risk_gateway" targetRef="manual_approval">
-      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">= requiresApproval = true</bpmn:conditionExpression>
-    </bpmn:sequenceFlow>
-    <bpmn:sequenceFlow id="flow_standard_merge" sourceRef="risk_gateway" targetRef="approval_merge" />
-    <bpmn:sequenceFlow id="flow_approval_merge" sourceRef="manual_approval" targetRef="approval_merge" />
-    <bpmn:sequenceFlow id="flow_merge_agent" sourceRef="approval_merge" targetRef="agent" />
-    <bpmn:sequenceFlow id="flow_agent_verify" sourceRef="agent" targetRef="verify" />
-    <bpmn:sequenceFlow id="flow_verify_gateway" sourceRef="verify" targetRef="verification_gateway" />
-    <bpmn:sequenceFlow id="flow_completed" sourceRef="verification_gateway" targetRef="completed">
-      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">= verificationPassed = true</bpmn:conditionExpression>
-    </bpmn:sequenceFlow>
-    <bpmn:sequenceFlow id="flow_escalated" sourceRef="verification_gateway" targetRef="escalated" />
-  </bpmn:process>
-  <bpmn:escalation id="Escalation_verification_failed" name="Результат не прошёл проверку" escalationCode="VERIFICATION_FAILED" />
-</bpmn:definitions>
+<bpmn2:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:bpsim="http://www.bpsim.org/schemas/1.0" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:drools="http://www.jboss.org/drools" id="_fmrWAH7mED-nPs16igQBwg" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd http://www.jboss.org/drools drools.xsd http://www.bpsim.org/schemas/1.0 bpsim.xsd http://www.omg.org/spec/DD/20100524/DC DC.xsd http://www.omg.org/spec/DD/20100524/DI DI.xsd " exporter="jBPM Process Modeler" exporterVersion="2.0" targetNamespace="http://www.omg.org/bpmn20">
+  <bpmn2:itemDefinition id="_manual_approval_SkippableInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_PriorityInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_CommentInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_DescriptionInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_CreatedByInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_TaskNameInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_GroupIdInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_ContentInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_NotStartedReassignInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_NotCompletedReassignInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_NotStartedNotifyInputXItem" structureRef="Object"/>
+  <bpmn2:itemDefinition id="_manual_approval_NotCompletedNotifyInputXItem" structureRef="Object"/>
+  <bpmn2:collaboration id="_F8B87479-7B94-49E0-AF4C-DB00AAC8C436" name="Default Collaboration">
+    <bpmn2:participant id="_DFE64CDC-F752-4693-8A3B-98D007D77ADF" name="Pool Participant" processRef="engineer_support"/>
+  </bpmn2:collaboration>
+  <bpmn2:process id="engineer_support" drools:packageName="com.example" drools:version="1.0" drools:adHoc="false" name="engineer_support" isExecutable="true" processType="Public">
+    <bpmn2:sequenceFlow id="flow_start_validate" sourceRef="start" targetRef="validate"/>
+    <bpmn2:sequenceFlow id="flow_validate_classify" sourceRef="validate" targetRef="classify"/>
+    <bpmn2:sequenceFlow id="flow_classify_gateway" sourceRef="classify" targetRef="risk_gateway"/>
+    <bpmn2:sequenceFlow id="flow_high_approval" sourceRef="risk_gateway" targetRef="manual_approval">
+      <bpmn2:conditionExpression xsi:type="bpmn2:tFormalExpression" language="http://www.java.com/java"><![CDATA[
+        = requiresApproval = true
+      ]]></bpmn2:conditionExpression>
+    </bpmn2:sequenceFlow>
+    <bpmn2:sequenceFlow id="flow_approval_merge" sourceRef="manual_approval" targetRef="approval_merge"/>
+    <bpmn2:sequenceFlow id="flow_standard_merge" sourceRef="risk_gateway" targetRef="approval_merge"/>
+    <bpmn2:sequenceFlow id="flow_merge_agent" sourceRef="approval_merge" targetRef="agent"/>
+    <bpmn2:sequenceFlow id="flow_agent_verify" sourceRef="agent" targetRef="verify"/>
+    <bpmn2:sequenceFlow id="flow_verify_gateway" sourceRef="verify" targetRef="verification_gateway"/>
+    <bpmn2:sequenceFlow id="flow_completed" sourceRef="verification_gateway" targetRef="completed">
+      <bpmn2:conditionExpression xsi:type="bpmn2:tFormalExpression" language="http://www.java.com/java"><![CDATA[
+        = verificationPassed = true
+      ]]></bpmn2:conditionExpression>
+    </bpmn2:sequenceFlow>
+    <bpmn2:sequenceFlow id="flow_escalated" sourceRef="verification_gateway" targetRef="escalated"/>
+    <bpmn2:startEvent id="start" name="Получен запрос">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Получен запрос]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:outgoing>flow_start_validate</bpmn2:outgoing>
+    </bpmn2:startEvent>
+    <bpmn2:task id="validate" drools:taskName="" name="Проверить запрос">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Проверить запрос]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_start_validate</bpmn2:incoming>
+      <bpmn2:outgoing>flow_validate_classify</bpmn2:outgoing>
+      <bpmn2:ioSpecification>
+        <bpmn2:dataInput id="validate_TaskNameInputX" drools:dtype="Object" name="TaskName"/>
+        <bpmn2:inputSet>
+          <bpmn2:dataInputRefs>validate_TaskNameInputX</bpmn2:dataInputRefs>
+        </bpmn2:inputSet>
+      </bpmn2:ioSpecification>
+      <bpmn2:dataInputAssociation>
+        <bpmn2:targetRef>validate_TaskNameInputX</bpmn2:targetRef>
+        <bpmn2:assignment>
+          <bpmn2:from xsi:type="bpmn2:tFormalExpression"><![CDATA[Task]]></bpmn2:from>
+          <bpmn2:to xsi:type="bpmn2:tFormalExpression"><![CDATA[validate_TaskNameInputX]]></bpmn2:to>
+        </bpmn2:assignment>
+      </bpmn2:dataInputAssociation>
+    </bpmn2:task>
+    <bpmn2:task id="classify" drools:taskName="" name="Классифицировать риск">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Классифицировать риск]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_validate_classify</bpmn2:incoming>
+      <bpmn2:outgoing>flow_classify_gateway</bpmn2:outgoing>
+      <bpmn2:ioSpecification>
+        <bpmn2:dataInput id="classify_TaskNameInputX" drools:dtype="Object" name="TaskName"/>
+        <bpmn2:inputSet>
+          <bpmn2:dataInputRefs>classify_TaskNameInputX</bpmn2:dataInputRefs>
+        </bpmn2:inputSet>
+      </bpmn2:ioSpecification>
+      <bpmn2:dataInputAssociation>
+        <bpmn2:targetRef>classify_TaskNameInputX</bpmn2:targetRef>
+        <bpmn2:assignment>
+          <bpmn2:from xsi:type="bpmn2:tFormalExpression"><![CDATA[Task]]></bpmn2:from>
+          <bpmn2:to xsi:type="bpmn2:tFormalExpression"><![CDATA[classify_TaskNameInputX]]></bpmn2:to>
+        </bpmn2:assignment>
+      </bpmn2:dataInputAssociation>
+    </bpmn2:task>
+    <bpmn2:exclusiveGateway id="risk_gateway" name="Высокий риск?" gatewayDirection="Diverging">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Высокий риск?]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_classify_gateway</bpmn2:incoming>
+      <bpmn2:outgoing>flow_standard_merge</bpmn2:outgoing>
+      <bpmn2:outgoing>flow_high_approval</bpmn2:outgoing>
+    </bpmn2:exclusiveGateway>
+    <bpmn2:userTask id="manual_approval" name="Ручное согласование">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Ручное согласование]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_high_approval</bpmn2:incoming>
+      <bpmn2:outgoing>flow_approval_merge</bpmn2:outgoing>
+      <bpmn2:ioSpecification>
+        <bpmn2:dataInput id="manual_approval_TaskNameInputX" drools:dtype="Object" itemSubjectRef="_manual_approval_TaskNameInputXItem" name="TaskName"/>
+        <bpmn2:dataInput id="manual_approval_SkippableInputX" drools:dtype="Object" itemSubjectRef="_manual_approval_SkippableInputXItem" name="Skippable"/>
+        <bpmn2:inputSet>
+          <bpmn2:dataInputRefs>manual_approval_TaskNameInputX</bpmn2:dataInputRefs>
+          <bpmn2:dataInputRefs>manual_approval_SkippableInputX</bpmn2:dataInputRefs>
+        </bpmn2:inputSet>
+      </bpmn2:ioSpecification>
+      <bpmn2:dataInputAssociation>
+        <bpmn2:targetRef>manual_approval_TaskNameInputX</bpmn2:targetRef>
+        <bpmn2:assignment>
+          <bpmn2:from xsi:type="bpmn2:tFormalExpression"><![CDATA[Task]]></bpmn2:from>
+          <bpmn2:to xsi:type="bpmn2:tFormalExpression"><![CDATA[manual_approval_TaskNameInputX]]></bpmn2:to>
+        </bpmn2:assignment>
+      </bpmn2:dataInputAssociation>
+      <bpmn2:dataInputAssociation>
+        <bpmn2:targetRef>manual_approval_SkippableInputX</bpmn2:targetRef>
+        <bpmn2:assignment>
+          <bpmn2:from xsi:type="bpmn2:tFormalExpression"><![CDATA[false]]></bpmn2:from>
+          <bpmn2:to xsi:type="bpmn2:tFormalExpression"><![CDATA[manual_approval_SkippableInputX]]></bpmn2:to>
+        </bpmn2:assignment>
+      </bpmn2:dataInputAssociation>
+    </bpmn2:userTask>
+    <bpmn2:exclusiveGateway id="approval_merge" gatewayDirection="Converging">
+      <bpmn2:incoming>flow_standard_merge</bpmn2:incoming>
+      <bpmn2:incoming>flow_approval_merge</bpmn2:incoming>
+      <bpmn2:outgoing>flow_merge_agent</bpmn2:outgoing>
+    </bpmn2:exclusiveGateway>
+    <bpmn2:task id="agent" drools:taskName="" name="Выполнить агентный план">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Выполнить агентный план]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_merge_agent</bpmn2:incoming>
+      <bpmn2:outgoing>flow_agent_verify</bpmn2:outgoing>
+      <bpmn2:ioSpecification>
+        <bpmn2:dataInput id="agent_TaskNameInputX" drools:dtype="Object" name="TaskName"/>
+        <bpmn2:inputSet>
+          <bpmn2:dataInputRefs>agent_TaskNameInputX</bpmn2:dataInputRefs>
+        </bpmn2:inputSet>
+      </bpmn2:ioSpecification>
+      <bpmn2:dataInputAssociation>
+        <bpmn2:targetRef>agent_TaskNameInputX</bpmn2:targetRef>
+        <bpmn2:assignment>
+          <bpmn2:from xsi:type="bpmn2:tFormalExpression"><![CDATA[Task]]></bpmn2:from>
+          <bpmn2:to xsi:type="bpmn2:tFormalExpression"><![CDATA[agent_TaskNameInputX]]></bpmn2:to>
+        </bpmn2:assignment>
+      </bpmn2:dataInputAssociation>
+    </bpmn2:task>
+    <bpmn2:task id="verify" drools:taskName="" name="Проверить результат">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Проверить результат]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_agent_verify</bpmn2:incoming>
+      <bpmn2:outgoing>flow_verify_gateway</bpmn2:outgoing>
+      <bpmn2:ioSpecification>
+        <bpmn2:dataInput id="verify_TaskNameInputX" drools:dtype="Object" name="TaskName"/>
+        <bpmn2:inputSet>
+          <bpmn2:dataInputRefs>verify_TaskNameInputX</bpmn2:dataInputRefs>
+        </bpmn2:inputSet>
+      </bpmn2:ioSpecification>
+      <bpmn2:dataInputAssociation>
+        <bpmn2:targetRef>verify_TaskNameInputX</bpmn2:targetRef>
+        <bpmn2:assignment>
+          <bpmn2:from xsi:type="bpmn2:tFormalExpression"><![CDATA[Task]]></bpmn2:from>
+          <bpmn2:to xsi:type="bpmn2:tFormalExpression"><![CDATA[verify_TaskNameInputX]]></bpmn2:to>
+        </bpmn2:assignment>
+      </bpmn2:dataInputAssociation>
+    </bpmn2:task>
+    <bpmn2:exclusiveGateway id="verification_gateway" name="Результат принят?" gatewayDirection="Diverging">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Результат принят?]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_verify_gateway</bpmn2:incoming>
+      <bpmn2:outgoing>flow_escalated</bpmn2:outgoing>
+      <bpmn2:outgoing>flow_completed</bpmn2:outgoing>
+    </bpmn2:exclusiveGateway>
+    <bpmn2:endEvent id="completed" name="Завершено">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Завершено]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_completed</bpmn2:incoming>
+    </bpmn2:endEvent>
+    <bpmn2:endEvent id="escalated" name="Эскалация">
+      <bpmn2:extensionElements>
+        <drools:metaData name="elementname">
+          <drools:metaValue><![CDATA[Эскалация]]></drools:metaValue>
+        </drools:metaData>
+      </bpmn2:extensionElements>
+      <bpmn2:incoming>flow_escalated</bpmn2:incoming>
+    </bpmn2:endEvent>
+  </bpmn2:process>
+  <bpmndi:BPMNDiagram>
+    <bpmndi:BPMNPlane bpmnElement="engineer_support">
+      <bpmndi:BPMNShape id="shape_escalated" bpmnElement="escalated">
+        <dc:Bounds height="56" width="56" x="1620" y="280"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_completed" bpmnElement="completed">
+        <dc:Bounds height="56" width="56" x="1620" y="150"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_verification_gateway" bpmnElement="verification_gateway">
+        <dc:Bounds height="56" width="56" x="1460" y="195"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_verify" bpmnElement="verify">
+        <dc:Bounds height="80" width="120" x="1270" y="180"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_agent" bpmnElement="agent">
+        <dc:Bounds height="80" width="120" x="1080" y="180"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_approval_merge" bpmnElement="approval_merge">
+        <dc:Bounds height="56" width="56" x="950" y="195"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_manual_approval" bpmnElement="manual_approval">
+        <dc:Bounds height="78" width="135" x="717" y="107"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_risk_gateway" bpmnElement="risk_gateway">
+        <dc:Bounds height="56" width="56" x="622" y="195"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_classify" bpmnElement="classify">
+        <dc:Bounds height="88" width="166" x="408" y="179"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_validate" bpmnElement="validate">
+        <dc:Bounds height="81" width="119" x="250" y="180"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="shape_start" bpmnElement="start">
+        <dc:Bounds height="56" width="56" x="150" y="200"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="edge_shape_verification_gateway_to_shape_escalated" bpmnElement="flow_escalated">
+        <di:waypoint x="1510" y="220"/>
+        <di:waypoint x="1620" y="298"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_verification_gateway_to_shape_completed" bpmnElement="flow_completed">
+        <di:waypoint x="1510" y="220"/>
+        <di:waypoint x="1620" y="168"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_verify_to_shape_verification_gateway" bpmnElement="flow_verify_gateway">
+        <di:waypoint x="1390" y="220"/>
+        <di:waypoint x="1460" y="220"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_agent_to_shape_verify" bpmnElement="flow_agent_verify">
+        <di:waypoint x="1200" y="220"/>
+        <di:waypoint x="1270" y="220"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_approval_merge_to_shape_agent" bpmnElement="flow_merge_agent">
+        <di:waypoint x="1000" y="220"/>
+        <di:waypoint x="1080" y="220"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_risk_gateway_to_shape_approval_merge" bpmnElement="flow_standard_merge">
+        <di:waypoint x="672" y="220"/>
+        <di:waypoint x="950" y="220"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_manual_approval_to_shape_approval_merge" bpmnElement="flow_approval_merge">
+        <di:waypoint x="852" y="146"/>
+        <di:waypoint x="950" y="220"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_risk_gateway_to_shape_manual_approval" bpmnElement="flow_high_approval">
+        <di:waypoint x="647" y="195"/>
+        <di:waypoint x="717" y="146"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_classify_to_shape_risk_gateway" bpmnElement="flow_classify_gateway">
+        <di:waypoint x="574" y="223"/>
+        <di:waypoint x="622" y="220"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_validate_to_shape_classify" bpmnElement="flow_validate_classify">
+        <di:waypoint x="369" y="220.5"/>
+        <di:waypoint x="408" y="223"/>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="edge_shape_start_to_shape_validate" bpmnElement="flow_start_validate">
+        <di:waypoint x="186" y="218"/>
+        <di:waypoint x="250" y="220.5"/>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+  <bpmn2:relationship type="BPSimData">
+    <bpmn2:extensionElements>
+      <bpsim:BPSimData>
+        <bpsim:Scenario id="default" name="Simulationscenario">
+          <bpsim:ScenarioParameters/>
+          <bpsim:ElementParameters elementRef="verify">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="agent">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="manual_approval">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="classify">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="validate">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+            <bpsim:ResourceParameters>
+              <bpsim:Availability>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Availability>
+              <bpsim:Quantity>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:Quantity>
+            </bpsim:ResourceParameters>
+            <bpsim:CostParameters>
+              <bpsim:UnitCost>
+                <bpsim:FloatingParameter value="0"/>
+              </bpsim:UnitCost>
+            </bpsim:CostParameters>
+          </bpsim:ElementParameters>
+          <bpsim:ElementParameters elementRef="start">
+            <bpsim:TimeParameters>
+              <bpsim:ProcessingTime>
+                <bpsim:NormalDistribution mean="0" standardDeviation="0"/>
+              </bpsim:ProcessingTime>
+            </bpsim:TimeParameters>
+          </bpsim:ElementParameters>
+        </bpsim:Scenario>
+      </bpsim:BPSimData>
+    </bpmn2:extensionElements>
+    <bpmn2:source>_fmrWAH7mED-nPs16igQBwg</bpmn2:source>
+    <bpmn2:target>_fmrWAH7mED-nPs16igQBwg</bpmn2:target>
+  </bpmn2:relationship>
+</bpmn2:definitions>
