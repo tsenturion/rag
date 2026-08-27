@@ -44,6 +44,8 @@ class ScenarioEvaluator:
             "functions.",
             "<tool_call",
             '"tool_calls"',
+            "начало недоверенных данных инструмента",
+            "начало данных инструмента",
         )
         checks.extend(
             [

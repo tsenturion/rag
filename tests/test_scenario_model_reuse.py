@@ -16,7 +16,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from agent_app.config import load_agent_config  # noqa: E402
-from agent_app.scenarios.models import ScenarioSuite  # noqa: E402
+from agent_app.models import AgentResponse  # noqa: E402
+from agent_app.scenarios.evaluator import ScenarioEvaluator  # noqa: E402
+from agent_app.scenarios.models import ScenarioCriteria, ScenarioSuite  # noqa: E402
 from agent_app.scenarios.runner import ScenarioRunner  # noqa: E402
 
 
@@ -75,6 +77,23 @@ class ScenarioModelReuseTest(unittest.TestCase):
 
         self.assertTrue(report.passed)
         build_llm.assert_called_once()
+
+    def test_scenario_rejects_internal_tool_guardrail_markers(self) -> None:
+        """Служебная обёртка результата tool не считается чистым ответом."""
+        checks = ScenarioEvaluator().evaluate(
+            criteria=ScenarioCriteria(),
+            response=AgentResponse(
+                answer=("Результат: [НАЧАЛО НЕДОВЕРЕННЫХ ДАННЫХ ИНСТРУМЕНТА]"),
+                user_id="engineer",
+                session_id="scenario",
+            ),
+            memory_records=[],
+        )
+
+        protocol_check = next(
+            check for check in checks if check.name == "answer_protocol_clean"
+        )
+        self.assertFalse(protocol_check.passed)
 
 
 if __name__ == "__main__":

@@ -102,7 +102,9 @@ def evaluate_output(
 def _extract_claims(answer: str) -> list[str]:
     """Делит ответ на проверяемые утверждения для консервативной groundedness-оценки."""
     claims = []
-    for value in re.split(r"(?:[.!?]+|\n+|;\s*)", answer):
+    # Точка между цифрами относится к номеру раздела, версии или десятичному
+    # числу. Конечная точка после такого номера по-прежнему является границей.
+    for value in re.split(r"(?:[!?]+|\.(?!\d)|\n+|;\s*)", answer):
         claim = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", value).strip()
         if normalize(claim):
             claims.append(claim)

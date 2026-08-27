@@ -20,9 +20,11 @@ from agent_app.config import (  # noqa: E402
     AgentAppConfig,
     AgentRagConfig,
     AgentToolsConfig,
+    GuardrailsConfig,
     MemoryConfig,
 )
 from agent_app.graph import AgentRunner  # noqa: E402
+from agent_app.guardrails import GuardrailPipeline  # noqa: E402
 from agent_app.models import AgentToolResult  # noqa: E402
 from agent_app.rag.models import RagCitation, RagRetrievalResult  # noqa: E402
 from agent_app.support.incidents import IncidentStore  # noqa: E402
@@ -201,11 +203,17 @@ class SupportAgentTest(unittest.TestCase):
                 [
                     AgentToolResult(
                         name="calculate_travel_budget",
-                        content=('{"city":"Казань","total":29000,"currency":"RUB"}'),
+                        content=GuardrailPipeline(GuardrailsConfig())
+                        .inspect_tool_output(
+                            '{"city":"Казань","total":29000,"currency":"RUB"}'
+                        )
+                        .text,
                     ),
                     AgentToolResult(
                         name="advise_packing",
-                        content='{"items":["ноутбук","паспорт"]}',
+                        content=GuardrailPipeline(GuardrailsConfig())
+                        .inspect_tool_output('{"items":["ноутбук","паспорт"]}')
+                        .text,
                     ),
                 ],
             )
@@ -214,6 +222,39 @@ class SupportAgentTest(unittest.TestCase):
         self.assertIn("Ключевые результаты tools", answer)
         self.assertIn("бюджет 29000 RUB", answer)
         self.assertIn("ноутбук", answer)
+        self.assertNotIn("НЕДОВЕРЕННЫХ ДАННЫХ", answer)
+        self.assertNotIn("НАЧАЛО ДАННЫХ ИНСТРУМЕНТА", answer)
+
+    def test_long_project_summary_is_unwrapped_and_compacted_before_limit(self) -> None:
+        """Длинный project payload не теряет конец обёртки и не попадает в ответ."""
+        payload = json.dumps(
+            {
+                "project_name": "Agent Demo",
+                "project": {"description": "длинное описание " * 300},
+                "tasks_count": 2,
+                "status_counts": {"done": 1, "todo": 1},
+                "tasks": [],
+            },
+            ensure_ascii=False,
+        )
+        wrapped = GuardrailPipeline(GuardrailsConfig()).inspect_tool_output(payload)
+        results = AgentRunner._tool_results(
+            [
+                ToolMessage(
+                    content=wrapped.text,
+                    name="summarize_project_state",
+                    tool_call_id="summary-call",
+                )
+            ]
+        )
+
+        formatted = AgentRunner._format_tool_result_for_answer(results[0])
+
+        self.assertLess(len(results[0].content), 2000)
+        self.assertIn("проект Agent Demo", formatted)
+        self.assertIn("done: 1", formatted)
+        self.assertNotIn("НЕДОВЕРЕННЫХ ДАННЫХ", formatted)
+        self.assertNotIn("длинное описание", formatted)
 
     def test_serialized_tool_call_is_repaired_before_response(self) -> None:
         """Проверяет, что сериализованные вызовы инструментов корректно восстанавливаются перед формированием ответа, исключая некорректные поля и обеспечивая валидность ответа."""

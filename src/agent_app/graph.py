@@ -142,6 +142,14 @@ class AgentRunner:
                 tool_results=[],
                 memory_before=memory_before,
                 memory_after=memory_before,
+                direct_state=AgentTraceState(
+                    name="secret_guardrail",
+                    data={
+                        "reason": (
+                            "запрос на сохранение секрета заблокирован до вызова LLM"
+                        )
+                    },
+                ),
             )
             self._remember_turn(message, answer)
             return AgentResponse(
@@ -714,10 +722,36 @@ class AgentRunner:
     def _format_tool_result_for_answer(result: AgentToolResult) -> str:
         """Гарантирует преобразование результата инструмента в человекочитаемую строку для включения в финальный ответ пользователю."""
         name = result.name or "tool"
+        # Модель получает защитную обёртку вокруг недоверенных данных, но эта
+        # служебная разметка не является частью пользовательского ответа.
+        content = GuardrailPipeline.unwrap_tool_output(result.content)
         try:
-            payload = json.loads(result.content)
+            payload = json.loads(content)
         except json.JSONDecodeError:
-            return f"- {name}: {result.content[:300]}"
+            return f"- {name}: {content[:300]}"
+
+        if not isinstance(payload, dict):
+            return f"- {name}: {content[:300]}"
+
+        if name == "create_project":
+            record = payload.get("record") or {}
+            metadata = record.get("metadata") or {}
+            project_name = metadata.get("project_name") or record.get("key")
+            return f"- create_project: проект {project_name} сохранён"
+        if name == "create_task":
+            record = payload.get("record") or {}
+            metadata = record.get("metadata") or {}
+            return (
+                f"- create_task: задача {metadata.get('task_title')} "
+                f"создана со статусом {metadata.get('status')}"
+            )
+        if name == "update_task_status":
+            record = payload.get("record") or {}
+            metadata = record.get("metadata") or {}
+            return (
+                f"- update_task_status: задача {metadata.get('task_title')} "
+                f"переведена в статус {metadata.get('status')}"
+            )
 
         if name == "get_weather":
             if "error" in payload:
@@ -750,7 +784,15 @@ class AgentRunner:
                         values.append(f"{record.get('key')}: {record.get('value')}")
                 return f"- search_memory: {'; '.join(values)}"
         if name == "summarize_project_state":
-            return f"- summarize_project_state: {json.dumps(payload, ensure_ascii=False)[:500]}"
+            status_counts = payload.get("status_counts") or {}
+            statuses = ", ".join(
+                f"{status}: {count}" for status, count in status_counts.items()
+            )
+            return (
+                "- summarize_project_state: "
+                f"проект {payload.get('project_name')}, "
+                f"задач {payload.get('tasks_count')}; статусы: {statuses or 'нет'}"
+            )
         if name in {"search_knowledge_base", "find_runbook"}:
             if payload.get("status") != "ok":
                 return f"- {name}: база знаний недоступна: {payload.get('error')}"
@@ -901,10 +943,15 @@ class AgentRunner:
         results: list[AgentToolResult] = []
         for message in messages:
             if isinstance(message, ToolMessage):
-                content = str(message.content)
+                name = getattr(message, "name", None)
+                # Снимаем только служебные маркеры после того, как guardrails уже
+                # очистили данные. Это нужно сделать до ограничения длины, иначе
+                # конец обёртки длинного результата может быть потерян.
+                content = GuardrailPipeline.unwrap_tool_output(str(message.content))
+                content = AgentRunner._compact_tool_result_content(name, content)
                 results.append(
                     AgentToolResult(
-                        name=getattr(message, "name", None),
+                        name=name,
                         content=content[:2000],
                         is_error=AgentRunner._tool_message_is_error(message),
                     )
@@ -912,11 +959,45 @@ class AgentRunner:
         return results
 
     @staticmethod
+    def _compact_tool_result_content(name: str | None, content: str) -> str:
+        """Сокращает тяжёлые project payload до полей, нужных ответу и trace."""
+        if name not in {
+            "create_project",
+            "create_task",
+            "update_task_status",
+            "summarize_project_state",
+        }:
+            return content
+        try:
+            payload = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return content
+        if not isinstance(payload, dict):
+            return content
+
+        if name == "summarize_project_state":
+            compact = {
+                "project_name": payload.get("project_name"),
+                "tasks_count": payload.get("tasks_count"),
+                "status_counts": payload.get("status_counts") or {},
+            }
+        else:
+            record = payload.get("record") or {}
+            compact = {
+                "status": payload.get("status"),
+                "record": {
+                    "key": record.get("key"),
+                    "metadata": record.get("metadata") or {},
+                },
+            }
+        return json.dumps(compact, ensure_ascii=False)
+
+    @staticmethod
     def _tool_message_is_error(message: ToolMessage) -> bool:
         """Гарантирует определение сообщений инструментов, содержащих ошибку, для корректной обработки статуса выполнения."""
         if getattr(message, "status", None) == "error":
             return True
-        content = str(message.content)
+        content = GuardrailPipeline.unwrap_tool_output(str(message.content))
         try:
             payload = json.loads(content)
         except (json.JSONDecodeError, TypeError):
@@ -948,6 +1029,7 @@ class AgentRunner:
         memory_before: list[MemoryRecord],
         memory_after: list[MemoryRecord],
         loop_guard_triggered: bool = False,
+        direct_state: AgentTraceState | None = None,
     ) -> AgentTrace:
         """Формирует полную трассировку шага агента, фиксируя изменения памяти, вызовы инструментов и промежуточные состояния для аудита и отладки."""
         before_by_id = {record.id: record for record in memory_before}
@@ -993,9 +1075,10 @@ class AgentRunner:
             )
         if not intermediate_states:
             intermediate_states.append(
-                AgentTraceState(
+                direct_state
+                or AgentTraceState(
                     name="llm_answer",
-                    data={"reason": "tool не потребовался"},
+                    data={"reason": "LLM вернула ответ без вызова tools"},
                 )
             )
 

@@ -25,6 +25,7 @@ from agent_app.config import (
 )
 from agent_app.guardrails import GuardrailPipeline
 from agent_app.guardrails.models import GuardrailAction, SecurityAuditEvent
+from agent_app.graph import AgentRunner
 from agent_app.rag.models import RagCitation
 from agent_app.service.app import _sanitize_citations, create_app
 from agent_app.service.runtime import SupportApplicationRuntime
@@ -48,6 +49,16 @@ class UnsafeOutputModel:
     def invoke(self, _messages):
         """Проверяет, что модель возвращает ответ с потенциально опасным содержимым для тестирования обнаружения уязвимостей."""
         return AIMessage(content="Системный промпт содержит скрытые инструкции")
+
+
+class NeverInvokedModel:
+    """Падает при вызове, чтобы доказать раннее завершение secret guardrail."""
+
+    supports_tool_calling = False
+
+    def invoke(self, _messages):
+        """Не должен выполняться для запроса на сохранение секрета."""
+        raise AssertionError("LLM не должна вызываться после secret guardrail")
 
 
 class FailingRuntime:
@@ -140,6 +151,34 @@ def test_tool_output_is_treated_as_untrusted_data() -> None:
     assert "Ignore all previous" not in result.text
     assert "НАЧАЛО НЕДОВЕРЕННЫХ ДАННЫХ" in result.text
     assert "Не выполняй" in result.text
+
+
+def test_secret_refusal_trace_records_guardrail_without_llm_state() -> None:
+    """Ранний отказ фиксируется как защитный переход, а не как ответ LLM."""
+    with tempfile.TemporaryDirectory() as temporary_dir:
+        root = Path(temporary_dir)
+        runner = AgentRunner(
+            AgentAppConfig(
+                agent=AgentConfig(provider="local", model="test-model"),
+                memory=MemoryConfig(sqlite_path=root / "memory.sqlite"),
+                tools=AgentToolsConfig(incident_sqlite_path=root / "incidents.sqlite"),
+            ),
+            user_id="engineer",
+            session_id="secret-check",
+            llm=NeverInvokedModel(),
+        )
+        try:
+            response = runner.ask(
+                "Запомни мой api_key=demo-secret-value-12345 в памяти."
+            )
+        finally:
+            runner.close()
+
+    assert response.trace is not None
+    assert [state.name for state in response.trace.intermediate_states] == [
+        "secret_guardrail"
+    ]
+    assert "до вызова LLM" in response.trace.intermediate_states[0].data["reason"]
 
 
 def test_jwt_rbac_user_scope_and_security_audit() -> None:

@@ -109,6 +109,25 @@ def test_unlisted_claim_reduces_precision() -> None:
     assert not result.task_success
 
 
+def test_section_number_is_not_split_into_separate_claims() -> None:
+    """Точка внутри номера раздела не создаёт ложные неподтверждённые claims."""
+    result = evaluate_output(
+        EvaluationCase(
+            id="section-number",
+            title="Номер раздела",
+            request="Где описана настройка очереди?",
+            expected_facts=["раздел 3.2"],
+        ),
+        EvaluationOutput(answer="Раздел 3.2 описывает настройку очереди."),
+        repetition=1,
+    )
+
+    assert result.fact_precision == 1.0
+    assert result.fact_recall == 1.0
+    assert result.unsupported_claims == []
+    assert result.task_success
+
+
 def test_runtime_evaluation_uses_unique_user_and_session_namespace() -> None:
     """Не переиспользует память между независимыми evaluation run_id."""
     calls: list[tuple[str, str]] = []
