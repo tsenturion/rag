@@ -41,8 +41,11 @@ jobs:
           python -m pip check
           ruff check src tests
           ruff format --check src tests
-          python -m pip_audit --requirement requirements.txt
-          python -m pip_audit --requirement requirements-service.txt
+          # MLflow 3.15.2 требует cryptography<50, но PYSEC-2026-3552
+          # исправлена только в 50.x. Исключение удаляем, как только MLflow
+          # опубликует совместимый релиз; все остальные advisory остаются blocking.
+          python -m pip_audit --ignore-vuln PYSEC-2026-3552 --requirement requirements.txt
+          python -m pip_audit --ignore-vuln PYSEC-2026-3552 --requirement requirements-service.txt
           python -m pip_audit --requirement requirements-code-runner.txt
 
       - name: Выполнить весь доступный набор тестов
