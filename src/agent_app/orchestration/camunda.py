@@ -5,9 +5,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import datetime, timezone
+import json
+import logging
 import os
 from pathlib import Path
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
+from xml.etree import ElementTree as ET
 
 from camunda_orchestration_sdk import (
     CamundaAsyncClient,
@@ -17,8 +21,11 @@ from camunda_orchestration_sdk import (
     JobFailure,
     ProcessCreationById,
     ProcessInstanceCreationInstructionByIdVariables,
+    UserTaskCompletionRequest,
+    UserTaskCompletionRequestVariables,
     WorkerConfig,
 )
+from camunda_orchestration_sdk.errors import NotFoundError
 
 from agent_app.config import AgentAppConfig
 from agent_app.orchestration.models import (
@@ -26,17 +33,112 @@ from agent_app.orchestration.models import (
     OrchestrationJob,
     OrchestrationPattern,
 )
-from agent_app.orchestration.service import OrchestrationService
+
+if TYPE_CHECKING:
+    from agent_app.orchestration.service import OrchestrationService
+
+LOGGER = logging.getLogger(__name__)
+_BPMN_NS = "http://www.omg.org/spec/BPMN/20100524/MODEL"
+_ZEEBE_NS = "http://camunda.org/schema/zeebe/1.0"
+_TERMINAL_PROCESS_STATES = {"COMPLETED", "TERMINATED", "CANCELED"}
 
 
-def deploy_process(config: AgentAppConfig) -> dict[str, Any]:
-    """Гарантирует регистрацию BPMN-процесса в Camunda и сообщает вызывающему коду идентификаторы развёрнутых ресурсов или ошибку при отсутствии файла."""
-    process_path = config.orchestration.camunda.process_path
-    if not process_path.is_file():
-        raise FileNotFoundError(f"BPMN-файл не найден: {process_path}")
-    with CamundaClient() as client:
-        result = client.deploy_resources_from_files([process_path])
-    return _to_dict(result)
+def validate_process_model(config: AgentAppConfig) -> dict[str, Any]:
+    """Проверяет, что BPMN и связанные формы существуют, а все service task имеют зарегистрированный обработчик."""
+    camunda = config.orchestration.camunda
+    if not camunda.process_path.is_file():
+        raise FileNotFoundError(f"BPMN-файл не найден: {camunda.process_path}")
+    missing_forms = [str(path) for path in camunda.form_paths if not path.is_file()]
+    if missing_forms:
+        raise FileNotFoundError(
+            "Не найдены связанные Camunda Forms: " + ", ".join(missing_forms)
+        )
+
+    root = ET.parse(camunda.process_path).getroot()
+    process = root.find(f".//{{{_BPMN_NS}}}process")
+    if process is None:
+        raise ValueError("BPMN не содержит исполняемый process")
+    process_id = str(process.get("id", ""))
+    if process_id != camunda.process_id:
+        raise ValueError(
+            f"BPMN process id {process_id!r} не совпадает с {camunda.process_id!r}"
+        )
+    if process.get("isExecutable") != "true":
+        raise ValueError(f"BPMN process {process_id!r} не помечен isExecutable=true")
+
+    form_ids: set[str] = set()
+    for path in camunda.form_paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        form_id = str(payload.get("id", "")).strip()
+        if not form_id:
+            raise ValueError(f"Camunda Form не содержит id: {path}")
+        form_ids.add(form_id)
+    referenced_form_ids = {
+        str(node.get("formId"))
+        for node in process.findall(f".//{{{_ZEEBE_NS}}}formDefinition")
+        if node.get("formId")
+    }
+    unresolved_forms = sorted(referenced_form_ids - form_ids)
+    if unresolved_forms:
+        raise ValueError(
+            "BPMN ссылается на отсутствующие Camunda Forms: "
+            + ", ".join(unresolved_forms)
+        )
+
+    model_job_types = {
+        str(node.get("type"))
+        for node in process.findall(f".//{{{_ZEEBE_NS}}}taskDefinition")
+        if node.get("type")
+    }
+    registered_job_types = set(_configured_job_types(config).values())
+    missing_workers = sorted(model_job_types - registered_job_types)
+    missing_tasks = sorted(registered_job_types - model_job_types)
+    if missing_workers:
+        raise ValueError(
+            "В BPMN есть service task без worker: " + ", ".join(missing_workers)
+        )
+    if missing_tasks:
+        raise ValueError(
+            "В конфигурации есть worker без service task: " + ", ".join(missing_tasks)
+        )
+    return {
+        "process_id": process_id,
+        "job_types": sorted(model_job_types),
+        "form_ids": sorted(form_ids),
+        "resources": [
+            str(camunda.process_path),
+            *(str(path) for path in camunda.form_paths),
+        ],
+    }
+
+
+def deploy_process(
+    config: AgentAppConfig,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Разворачивает BPMN и формы только при изменении модели, не создавая лишние версии процесса."""
+    model = validate_process_model(config)
+    camunda = config.orchestration.camunda
+    resources = [camunda.process_path, *camunda.form_paths]
+    with _sync_client(config) as client:
+        latest = _latest_process_definition(client, camunda.process_id)
+        if latest is not None and not force:
+            deployed_xml = client.get_process_definition_xml(
+                latest["processDefinitionKey"]
+            )
+            local_xml = camunda.process_path.read_text(encoding="utf-8")
+            if _normalized_resource(deployed_xml) == _normalized_resource(local_xml):
+                return {
+                    "deployed": False,
+                    "reason": "unchanged",
+                    "process_definition": latest,
+                    "model": model,
+                }
+        result = client.deploy_resources_from_files(resources)
+    payload = _to_dict(result)
+    payload.update({"deployed": True, "model": model})
+    return payload
 
 
 def start_process(
@@ -62,9 +164,134 @@ def start_process(
         process_definition_id=config.orchestration.camunda.process_id,
         variables=variables,
     )
-    with CamundaClient() as client:
+    with _sync_client(config) as client:
         result = client.create_process_instance(data=request)
     return _to_dict(result)
+
+
+def process_status(config: AgentAppConfig, process_instance_key: str) -> dict[str, Any]:
+    """Возвращает состояние, инциденты и активные ручные задачи конкретного экземпляра процесса."""
+    with _sync_client(config) as client:
+        process = _to_dict(client.get_process_instance(process_instance_key))
+        incidents: list[dict[str, Any]] = []
+        if process.get("hasIncident"):
+            incidents = _to_dict(
+                client.search_process_instance_incidents(process_instance_key)
+            ).get("items", [])
+        user_tasks: list[dict[str, Any]] = []
+        if process.get("state") == "ACTIVE" and not incidents:
+            user_tasks = [
+                item
+                for item in _to_dict(client.search_user_tasks()).get("items", [])
+                if str(item.get("processInstanceKey")) == str(process_instance_key)
+                and item.get("state") == "CREATED"
+            ]
+    return {
+        "process": process,
+        "incidents": incidents,
+        "user_tasks": user_tasks,
+    }
+
+
+def wait_for_process(
+    config: AgentAppConfig,
+    process_instance_key: str,
+    *,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Ожидает терминального состояния, ручной задачи или инцидента и возвращает наблюдаемый результат процесса."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            status = process_status(config, process_instance_key)
+        except NotFoundError:
+            # Команда создания подтверждается журналом Zeebe раньше, чем RDBMS
+            # secondary storage начинает отдавать экземпляр через Search API.
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Процесс {process_instance_key} не появился в secondary storage "
+                    f"за {timeout_seconds:g} с"
+                ) from None
+            time.sleep(config.orchestration.camunda.poll_interval_seconds)
+            continue
+        process = status["process"]
+        if (
+            str(process.get("state")) in _TERMINAL_PROCESS_STATES
+            or bool(process.get("hasIncident"))
+            or bool(status["user_tasks"])
+        ):
+            return status
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Процесс {process_instance_key} не достиг наблюдаемого состояния "
+                f"за {timeout_seconds:g} с"
+            )
+        time.sleep(config.orchestration.camunda.poll_interval_seconds)
+
+
+def complete_approval(
+    config: AgentAppConfig,
+    process_instance_key: str,
+    *,
+    approved: bool,
+) -> dict[str, Any]:
+    """Завершает ручное согласование и записывает решение, используемое следующим BPMN gateway."""
+    with _sync_client(config) as client:
+        tasks = [
+            item
+            for item in _to_dict(client.search_user_tasks()).get("items", [])
+            if str(item.get("processInstanceKey")) == str(process_instance_key)
+            and item.get("elementId") == "approval"
+            and item.get("state") == "CREATED"
+        ]
+        if len(tasks) != 1:
+            raise LookupError(
+                f"Для процесса {process_instance_key} ожидалась одна активная задача "
+                f"approval, найдено: {len(tasks)}"
+            )
+        task = tasks[0]
+        variables = UserTaskCompletionRequestVariables.from_dict(
+            {"approvalGranted": approved}
+        )
+        client.complete_user_task(
+            task["userTaskKey"],
+            data=UserTaskCompletionRequest(
+                variables=variables,
+                action="approve" if approved else "reject",
+            ),
+        )
+    return {
+        "process_instance_key": str(process_instance_key),
+        "user_task_key": str(task["userTaskKey"]),
+        "approved": approved,
+    }
+
+
+def diagnose_camunda(config: AgentAppConfig) -> dict[str, Any]:
+    """Проверяет REST-соединение, локальные ресурсы и актуальность развёрнутой версии процесса."""
+    model = validate_process_model(config)
+    camunda = config.orchestration.camunda
+    with _sync_client(config) as client:
+        topology = _to_dict(client.get_topology())
+        latest = _latest_process_definition(client, camunda.process_id)
+        deployment_current = False
+        if latest is not None:
+            deployed_xml = client.get_process_definition_xml(
+                latest["processDefinitionKey"]
+            )
+            deployment_current = _normalized_resource(
+                deployed_xml
+            ) == _normalized_resource(camunda.process_path.read_text(encoding="utf-8"))
+    return {
+        "connected": True,
+        "rest_address": os.getenv("CAMUNDA_REST_ADDRESS", "http://localhost:8080/v2"),
+        "gateway_version": topology.get("gatewayVersion"),
+        "brokers": topology.get("brokers", []),
+        "model": model,
+        "process_deployed": latest is not None,
+        "bpmn_current": deployment_current,
+        "process_definition": latest,
+    }
 
 
 class CamundaAgentWorker:
@@ -78,20 +305,28 @@ class CamundaAgentWorker:
     ):
         """Готовит экземпляр к запуску воркера, обеспечивая владение сервисом оркестрации и доступ к конфигурации."""
         self.config = config
-        self.service = service or OrchestrationService(config)
-        self._owns_service = service is None
+        owns_service = service is None
+        if service is None:
+            # Deploy/status CLI не должны загружать LangGraph, LLM и vector store.
+            from agent_app.orchestration.service import OrchestrationService
+
+            service = OrchestrationService(config)
+        self.service = service
+        self._owns_service = owns_service
 
     async def run(self) -> None:
         """Гарантирует регистрацию всех обработчиков задач Camunda и запуск асинхронного цикла обработки до остановки."""
         worker_config = self.config.orchestration.camunda
         timeout_ms = worker_config.worker_timeout_seconds * 1000
         poll_timeout_ms = worker_config.poll_request_timeout_seconds * 1000
-        async with CamundaAsyncClient() as client:
+        validate_process_model(self.config)
+        async with _async_client(self.config) as client:
             registrations = (
                 (worker_config.job_type_validate, self.validate_request),
                 (worker_config.job_type_classify, self.classify_risk),
                 (worker_config.job_type_agent, self.run_agent),
                 (worker_config.job_type_verify, self.verify_result),
+                (worker_config.job_type_notify, self.handle_invalid_request),
             )
             for job_type, callback in registrations:
                 client.create_job_worker(
@@ -225,6 +460,79 @@ class CamundaAgentWorker:
                 else "Ответ отсутствует, слишком короткий или задание не завершено"
             ),
         }
+
+    async def handle_invalid_request(self, job: ConnectedJobContext) -> dict[str, Any]:
+        """Фиксирует отклонение некорректного запроса и завершает BPMN error path без зависшей задачи."""
+        variables = job.variables.to_dict()
+        missing = [
+            name
+            for name in ("message", "userId", "sessionId")
+            if not str(variables.get(name, "")).strip()
+        ]
+        reason = (
+            "Не заполнены обязательные поля: " + ", ".join(missing)
+            if missing
+            else "Запрос отклонён обработчиком валидации"
+        )
+        LOGGER.warning(
+            "Camunda отклонила запрос process_instance=%s: %s",
+            job.process_instance_key,
+            reason,
+        )
+        return {
+            "requestStatus": "rejected",
+            "rejectionReason": reason,
+            "errorHandled": True,
+            "errorHandledAt": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+def _configured_job_types(config: AgentAppConfig) -> dict[str, str]:
+    """Возвращает единственный источник истины для типов BPMN-задач, обслуживаемых Python worker."""
+    camunda = config.orchestration.camunda
+    return {
+        "validate": camunda.job_type_validate,
+        "classify": camunda.job_type_classify,
+        "agent": camunda.job_type_agent,
+        "verify": camunda.job_type_verify,
+        "notify": camunda.job_type_notify,
+    }
+
+
+def _client_httpx_args(config: AgentAppConfig) -> dict[str, Any]:
+    """Не позволяет системному proxy перехватывать локальный Camunda REST, сохраняя явную настройку для удалённого кластера."""
+    return {
+        "httpx_args": {
+            "trust_env": config.orchestration.camunda.use_environment_proxy,
+        }
+    }
+
+
+def _sync_client(config: AgentAppConfig) -> CamundaClient:
+    """Создаёт синхронный SDK-клиент с сетевой политикой выбранного профиля."""
+    return CamundaClient(**_client_httpx_args(config))
+
+
+def _async_client(config: AgentAppConfig) -> CamundaAsyncClient:
+    """Создаёт асинхронный SDK-клиент для long-poll job workers."""
+    return CamundaAsyncClient(**_client_httpx_args(config))
+
+
+def _latest_process_definition(
+    client: CamundaClient,
+    process_id: str,
+) -> dict[str, Any] | None:
+    """Находит последнюю развёрнутую версию процесса среди результатов Camunda Search API."""
+    items = _to_dict(client.search_process_definitions()).get("items", [])
+    matching = [item for item in items if item.get("processDefinitionId") == process_id]
+    if not matching:
+        return None
+    return max(matching, key=lambda item: int(item.get("version", 0)))
+
+
+def _normalized_resource(value: str) -> str:
+    """Нормализует только окончания строк, сохраняя содержательное сравнение XML-ресурса."""
+    return value.replace("\r\n", "\n").strip()
 
 
 def _to_dict(value: Any) -> dict[str, Any]:

@@ -539,6 +539,10 @@ class CamundaConfig(StrictConfigModel):
     enabled: bool = False
     process_id: str = "engineer-support-process"
     process_path: Path = Path("bpmn/engineer_support.bpmn")
+    form_paths: list[Path] = Field(
+        default_factory=lambda: [Path("bpmn/engineer_support_approval.form")]
+    )
+    use_environment_proxy: bool = False
     worker_timeout_seconds: int = Field(default=300, ge=10, le=3600)
     poll_request_timeout_seconds: int = Field(default=5, ge=1, le=25)
     poll_interval_seconds: float = Field(default=1.0, gt=0, le=30)
@@ -546,6 +550,7 @@ class CamundaConfig(StrictConfigModel):
     job_type_classify: str = "classify-support-risk"
     job_type_agent: str = "run-support-agent"
     job_type_verify: str = "verify-support-result"
+    job_type_notify: str = "notify-invalid-request"
 
 
 class OrchestrationConfig(StrictConfigModel):
@@ -694,6 +699,10 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
     process_path = config.orchestration.camunda.process_path
     if not process_path.is_absolute():
         process_path = base_dir / process_path
+    form_paths = [
+        path if path.is_absolute() else base_dir / path
+        for path in config.orchestration.camunda.form_paths
+    ]
     workspace_path = config.file_tools.workspace_path
     if not workspace_path.is_absolute():
         workspace_path = base_dir / workspace_path
@@ -739,7 +748,10 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
             "orchestration": config.orchestration.model_copy(
                 update={
                     "camunda": config.orchestration.camunda.model_copy(
-                        update={"process_path": process_path.resolve()}
+                        update={
+                            "process_path": process_path.resolve(),
+                            "form_paths": [path.resolve() for path in form_paths],
+                        }
                     )
                 }
             ),

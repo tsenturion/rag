@@ -1,4 +1,5 @@
-a2a-sdk==1.1.1
+a2a-sdk==1.1.2
+protobuf==6.33.6
 detect-secrets==1.5.0
 fastapi==0.139.2
 gigachat==0.2.1

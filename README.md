@@ -2871,7 +2871,7 @@ flowchart LR
     ExternalMCPClient["Внешний MCP client"] -- "MCP" --> OwnMCP
 ```
 
-A2A используется для взаимодействия независимых агентных приложений. Реализация основана на официальном `a2a-sdk==1.1.1` и предоставляет:
+A2A используется для взаимодействия независимых агентных приложений. Реализация основана на официальном `a2a-sdk==1.1.2` и предоставляет:
 
 - Agent Card: `GET /.well-known/agent-card.json`;
 - JSON-RPC: `POST /a2a`;
@@ -3082,7 +3082,7 @@ rag-agent `
 Фактический маршрут каждой роли возвращается в `response.llm_routes`, сохраняется в `result.json` и `manifest.json`, отображается в `/ready` и передаётся в MLflow. Token budget остаётся общим для запуска, а стоимость каждого вызова считается по `input_cost_per_million`, `output_cost_per_million` и `currency` его профиля. Для ролей с базовым `agent` используются тарифы из `multi_agent.cost`.
 
 Проверенная stable-комбинация сервисного слоя закреплена в `requirements-service.txt`:
-FastAPI `0.139.2`, Starlette `1.3.1`, SSE-Starlette `3.4.5`, A2A SDK `1.1.1`, MCP SDK
+FastAPI `0.139.2`, Starlette `1.3.1`, SSE-Starlette `3.4.6`, A2A SDK `1.1.2`, MCP SDK
 `1.28.1` и MLflow `3.14.0`. Переход на Starlette 1.x устраняет известные уязвимости
 ветки 0.52.x; совместимость подтверждается полным FastAPI/A2A/MCP/service test suite,
 `pip check` и `pip-audit` для всех трёх requirements-файлов. Устаревший
@@ -3496,6 +3496,7 @@ flowchart LR
 | `grafana`              | `observability`         | Показывает подготовленные dashboards из Prometheus и Jaeger; логин задаётся `GRAFANA_ADMIN_USER`/`GRAFANA_ADMIN_PASSWORD`.                                                 | UI `http://127.0.0.1:3000`                                                       |
 | `camunda-data-init`    | `bpmn`                  | Одноразово подготавливает права именованного volume Camunda. Состояние `Exited (0)` после выполнения является нормальным, а не падением.                                   | Публичного endpoint нет                                                          |
 | `camunda`              | `bpmn`                  | Локальный Camunda 8 engine с Operate/Tasklist для детерминированной части BPMN. Должен работать постоянно.                                                                 | Web `http://127.0.0.1:8088`, gRPC `127.0.0.1:26500`, management `127.0.0.1:9600` |
+| `camunda-process-init` | `bpmn`                  | Одноразово проверяет и идемпотентно разворачивает BPMN вместе со связанной формой. `Exited (0)` означает, что ресурсы готовы.                                               | Публичного endpoint нет                                                          |
 | `camunda-worker`       | `bpmn`                  | External job worker связывает BPMN service task с orchestration/agent runtime. Работает постоянно, публичный порт ему не нужен.                                            | Публичного endpoint нет                                                          |
 
 Именованные записи `qdrant_data`, `agent_data`, `multi_agent_data`, `mlruns_data`,
@@ -3609,9 +3610,10 @@ python -m pytest `
 | `src/agent_app/orchestration/tasks.py`                      | Celery task с retries/backoff, status transitions и late acknowledgements.                          |
 | `src/agent_app/orchestration/service.py`                    | Единый submit/get/wait/cancel/status фасад для inline и Celery backends.                            |
 | `src/agent_app/orchestration/worker_cli.py`                 | CLI `rag-orchestration-worker` и безопасная загрузка worker config/.env.                            |
-| `src/agent_app/orchestration/camunda.py`                    | Deploy/start/status и external job workers Camunda.                                                 |
-| `src/agent_app/orchestration/camunda_cli.py`                | CLI `rag-camunda` для BPMN lifecycle.                                                               |
-| `bpmn/engineer_support.bpmn`                                | Детерминированный процесс validate/classify/approval/agent/verify/escalate.                         |
+| `src/agent_app/orchestration/camunda.py`                    | Проверка/deploy/start/status/approval и пять REST job workers Camunda.                              |
+| `src/agent_app/orchestration/camunda_cli.py`                | CLI `rag-camunda` для диагностики и полного BPMN lifecycle.                                         |
+| `bpmn/engineer_support.bpmn`                                | Исполняемый процесс validate/classify/approval/agent/verify/error handling.                         |
+| `bpmn/engineer_support_approval.form`                       | Связанная Camunda Form, записывающая решение `approvalGranted`.                                    |
 | `config/camunda/application-h2.yaml`                        | Локальная Camunda-конфигурация с H2 для учебного Compose.                                           |
 | `config/profiles/support/orchestration.yaml`                | Общие patterns, limits, retries, deadlines и inline defaults.                                       |
 | `config/profiles/support/orchestration_docker.yaml`         | Celery/Redis/RabbitMQ/Camunda endpoints внутри Compose.                                             |
@@ -3877,10 +3879,14 @@ Camunda управляет проверяемой бизнес-логикой, �
 flowchart LR
     Start(["Запрос"]) --> Validate["Проверка обязательных полей"]
     Validate --> Classify["Классификация риска"]
+    Validate -- "BPMN error" --> RejectInvalid["Зафиксировать отклонение"]
+    RejectInvalid --> InvalidEnd(["Некорректный запрос"])
     Classify --> Risk{"Высокий риск?"}
     Risk -- "да" --> Approval["User Task: ручное согласование"]
     Risk -- "нет" --> Merge["Продолжить"]
-    Approval --> Merge
+    Approval --> Decision{"Согласовано?"}
+    Decision -- "да" --> Merge
+    Decision -- "нет" --> Rejected(["Отклонено"])
     Merge --> Agent["Celery: dynamic agent plan"]
     Agent --> Verify["Детерминированная проверка результата"]
     Verify --> Accepted{"Проверка пройдена?"}
@@ -3895,6 +3901,8 @@ docker compose --profile bpmn up -d --build
 docker compose --profile bpmn ps
 ```
 
+Сервис `camunda-process-init` дожидается readiness движка, валидирует соответствие всех BPMN job types Python-обработчикам и разворачивает `engineer_support.bpmn` вместе с `engineer_support_approval.form`. Только после его успешного завершения стартует `camunda-worker`. Один процесс worker регистрирует пять независимых long-poll обработчиков: `validate-support-request`, `classify-support-risk`, `run-support-agent`, `verify-support-result` и `notify-invalid-request`; отдельный контейнер на каждый job type не требуется.
+
 Для команд с host Python в `.env` нужны:
 
 ```dotenv
@@ -3902,25 +3910,65 @@ CAMUNDA_REST_ADDRESS=http://127.0.0.1:8088/v2
 CAMUNDA_AUTH_STRATEGY=NONE
 ```
 
-Развернуть BPMN и запустить экземпляр обычного риска:
+В этом Compose-профиле порты не соединяются дополнительным мостом:
+
+- `http://127.0.0.1:8088` - внешний HTTP-порт интерфейсов Camunda и Orchestration Cluster REST API; Python SDK использует `http://127.0.0.1:8088/v2`, а worker внутри сети Compose - `http://camunda:8080/v2`;
+- `127.0.0.1:26500` - Zeebe gRPC endpoint для клиентов, которые явно работают по gRPC; текущий `camunda-orchestration-sdk` является REST SDK и не использует этот порт;
+- `http://127.0.0.1:9600` - management/health endpoint движка.
+
+В Camunda Modeler 5.50 выберите `Camunda 8 Self-Managed`, задайте Cluster endpoint `http://127.0.0.1:8088/v2` и Authentication `None`. Открывать следует проектный файл `bpmn/engineer_support.bpmn`; связанная форма находится рядом. Ручной deploy из Modeler допустим, но штатный Compose уже разворачивает оба ресурса одной операцией.
+
+Проверить соединение, job types, связанные form IDs и актуальность BPMN deployment:
+
+```powershell
+rag-camunda --config config/multi_agent_docker_openai.yaml doctor
+```
+
+Ручной deploy идемпотентен: неизменённый BPMN не создаёт новую версию. `--force` нужен, если изменилось только содержимое связанной `.form` без изменения ссылки в BPMN:
 
 ```powershell
 rag-camunda --config config/multi_agent_docker_openai.yaml deploy
+rag-camunda --config config/multi_agent_docker_openai.yaml deploy --force
+```
 
+Запустить экземпляр обычного риска и дождаться завершения, ручной задачи или инцидента:
+
+```powershell
 rag-camunda `
   --config config/multi_agent_docker_openai.yaml `
   start `
   --message "Разбери инцидент с timeout API" `
   --user-id engineer-1 `
   --session-id camunda-incident-1 `
-  --risk-level medium
+  --risk-level medium `
+  --wait `
+  --wait-timeout 300
 ```
 
-Operate доступен на `http://127.0.0.1:8088/operate`, Tasklist - на `http://127.0.0.1:8088/tasklist`, локальные учётные данные - `demo/demo`. Для `risk_level=high` процесс остановится на User Task, назначенной пользователю `demo`; после ручного завершения продолжится агентный шаг. Python worker запускается сервисом `camunda-worker` и использует официальный `camunda-orchestration-sdk`.
+В JSON-команды `start` поле `started.processInstanceKey` содержит ключ экземпляра. Его состояние можно запросить отдельно:
+
+```powershell
+rag-camunda `
+  --config config/multi_agent_docker_openai.yaml `
+  status `
+  --process-instance-key 2251799813685249
+```
+
+Для `risk_level=high` процесс остановится на User Task, назначенной пользователю `demo`. Operate доступен на `http://127.0.0.1:8088/operate`, Tasklist - на `http://127.0.0.1:8088/tasklist`, локальные учётные данные - `demo/demo`. Форма содержит флажок `approvalGranted`: установленный флажок продолжает агентный шаг, снятый завершает ветку как отклонённую. То же решение можно воспроизводимо передать через CLI:
+
+```powershell
+rag-camunda `
+  --config config/multi_agent_docker_openai.yaml `
+  approve `
+  --process-instance-key 2251799813685249 `
+  --decision approve
+```
+
+Если валидация входных переменных выбрасывает BPMN error `INVALID_SUPPORT_REQUEST`, boundary event переводит процесс в `notify-invalid-request`. Пятый worker фиксирует причину в `rejectionReason` и завершает ветку без зависшей external task.
 
 `orchestration.camunda.poll_request_timeout_seconds` по умолчанию равен `5`: это long-poll ниже инфраструктурного HTTP timeout. Не увеличивайте его до граничного значения reverse proxy, иначе пустой poll может завершаться `503`, хотя сам worker продолжит работу.
 
-Официальные материалы: [Celery configuration](https://docs.celeryq.dev/en/stable/userguide/configuration.html), [RabbitMQ priority queues](https://www.rabbitmq.com/docs/priority), [RabbitMQ transient queue compatibility](https://www.rabbitmq.com/docs/4.2/queues), [Camunda Python SDK](https://docs.camunda.io/docs/apis-tools/python-sdk/), [Camunda job workers](https://docs.camunda.io/docs/apis-tools/python-sdk/job-workers/), [Camunda Docker Compose quickstart](https://docs.camunda.io/docs/self-managed/quickstart/developer-quickstart/docker-compose/).
+Официальные материалы: [Celery configuration](https://docs.celeryq.dev/en/stable/userguide/configuration.html), [RabbitMQ priority queues](https://www.rabbitmq.com/docs/priority), [RabbitMQ transient queue compatibility](https://www.rabbitmq.com/docs/4.2/queues), [Camunda Python SDK](https://docs.camunda.io/docs/apis-tools/python-sdk/), [Camunda job workers](https://docs.camunda.io/docs/apis-tools/python-sdk/job-workers/), [Camunda Docker Compose quickstart](https://docs.camunda.io/docs/self-managed/quickstart/developer-quickstart/docker-compose/), [подключение Desktop Modeler](https://docs.camunda.io/docs/self-managed/components/modeler/desktop-modeler/connect-to-self-managed/), [связанные Camunda Forms](https://docs.camunda.io/docs/components/modeler/forms/utilizing-forms/).
 
 ## Наблюдаемость и воспроизводимость
 

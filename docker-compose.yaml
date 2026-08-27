@@ -307,8 +307,33 @@ services:
       camunda-data-init:
         condition: service_completed_successfully
 
+  camunda-process-init:
+    image: rag-support-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["bpmn"]
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      SUPPORT_AGENT_CONFIG: ${SUPPORT_AGENT_CONFIG:?Задайте multi-agent Docker-конфиг в .env}
+      CAMUNDA_REST_ADDRESS: http://camunda:8080/v2
+      CAMUNDA_AUTH_STRATEGY: NONE
+    command:
+      - rag-camunda
+      - --config
+      - ${SUPPORT_AGENT_CONFIG:?Задайте multi-agent Docker-конфиг в .env}
+      - deploy
+    depends_on:
+      camunda:
+        condition: service_healthy
+
   camunda-worker:
     image: rag-support-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     profiles: ["bpmn"]
     restart: unless-stopped
     env_file:
@@ -335,8 +360,8 @@ services:
       - default
       - code_runner_internal
     depends_on:
-      camunda:
-        condition: service_healthy
+      camunda-process-init:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
       redis:

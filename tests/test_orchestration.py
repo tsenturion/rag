@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 import os
+import json
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from pathlib import Path
@@ -15,6 +16,7 @@ from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
 import jwt
+from camunda_orchestration_sdk.errors import NotFoundError
 from fastapi.testclient import TestClient
 
 from agent_app.config import (
@@ -26,7 +28,7 @@ from agent_app.config import (
     MultiAgentLLMProfileConfig,
     OrchestrationConfig,
 )
-from agent_app.orchestration.camunda import CamundaAgentWorker
+from agent_app.orchestration.camunda import CamundaAgentWorker, wait_for_process
 from agent_app.orchestration.engine import OrchestrationEngine
 from agent_app.orchestration.errors import QueueCapacityError
 from agent_app.orchestration.models import (
@@ -786,6 +788,17 @@ class InfrastructureContractTest(unittest.IsolatedAsyncioTestCase):
                 validated = await worker.validate_request(job)
                 classified = await worker.classify_risk(job)
                 verified = await worker.verify_result(job)
+                invalid_job = SimpleNamespace(
+                    variables=SimpleNamespace(
+                        to_dict=lambda: {
+                            "message": "",
+                            "userId": "engineer",
+                            "sessionId": "incident-42",
+                        }
+                    ),
+                    process_instance_key="2251799813685250",
+                )
+                rejected = await worker.handle_invalid_request(invalid_job)
                 first_agent_run = await worker.run_agent(job)
                 deduplicated_agent_run = await worker.run_agent(job)
             finally:
@@ -794,6 +807,9 @@ class InfrastructureContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(validated["requestValid"])
         self.assertTrue(classified["requiresApproval"])
         self.assertTrue(verified["verificationPassed"])
+        self.assertTrue(rejected["errorHandled"])
+        self.assertEqual(rejected["requestStatus"], "rejected")
+        self.assertIn("message", rejected["rejectionReason"])
         self.assertEqual(
             first_agent_run["orchestrationJobId"],
             deduplicated_agent_run["orchestrationJobId"],
@@ -803,9 +819,65 @@ class InfrastructureContractTest(unittest.IsolatedAsyncioTestCase):
         """Проверяет, что BPMN-файл содержит корректный XML с определёнными элементами процесса и задачами агентов, необходимыми для работы оркестрации."""
         root = ET.parse("bpmn/engineer_support.bpmn").getroot()
         xml = ET.tostring(root, encoding="unicode")
+        namespaces = {
+            "bpmn": "http://www.omg.org/spec/BPMN/20100524/MODEL",
+            "zeebe": "http://camunda.org/schema/zeebe/1.0",
+        }
+        job_types = {
+            item.attrib["type"]
+            for item in root.findall(".//zeebe:taskDefinition", namespaces)
+        }
+        approval = root.find(".//bpmn:userTask[@id='approval']", namespaces)
+        assert approval is not None
+        assignment = approval.find(".//zeebe:assignmentDefinition", namespaces)
+        form_definition = approval.find(".//zeebe:formDefinition", namespaces)
+
         self.assertIn("engineer-support-process", xml)
-        self.assertIn("run-support-agent", xml)
-        self.assertIn("verify-support-result", xml)
+        self.assertEqual(
+            job_types,
+            {
+                "validate-support-request",
+                "classify-support-risk",
+                "run-support-agent",
+                "verify-support-result",
+                "notify-invalid-request",
+            },
+        )
+        self.assertEqual(assignment.attrib["assignee"], "demo")
+        self.assertEqual(form_definition.attrib["formId"], "engineer-support-approval")
+        self.assertIn("approvalGranted = true", xml)
+
+        form = json.loads(
+            Path("bpmn/engineer_support_approval.form").read_text(encoding="utf-8")
+        )
+        self.assertEqual(form["id"], "engineer-support-approval")
+        self.assertTrue(
+            any(item.get("key") == "approvalGranted" for item in form["components"])
+        )
+
+    def test_camunda_wait_tolerates_secondary_storage_delay(self) -> None:
+        """Проверяет повтор чтения после временного 404 между созданием Zeebe instance и экспортом в RDBMS."""
+        delayed = NotFoundError(status_code=404, content=b"not exported yet")
+        completed = {
+            "process": {"state": "COMPLETED", "hasIncident": False},
+            "incidents": [],
+            "user_tasks": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            with (
+                patch(
+                    "agent_app.orchestration.camunda.process_status",
+                    side_effect=[delayed, completed],
+                ),
+                patch("agent_app.orchestration.camunda.time.sleep"),
+            ):
+                result = wait_for_process(
+                    _config(Path(temporary_dir)),
+                    "2251799813685249",
+                    timeout_seconds=2,
+                )
+
+        self.assertEqual(result["process"]["state"], "COMPLETED")
 
 
 if __name__ == "__main__":

@@ -23,6 +23,14 @@ orchestration:
     enabled: false
     process_id: engineer-support-process
     process_path: bpmn/engineer_support.bpmn
+    form_paths:
+      - bpmn/engineer_support_approval.form
+    use_environment_proxy: false
     worker_timeout_seconds: 300
     poll_request_timeout_seconds: 5
     poll_interval_seconds: 1
+    job_type_validate: validate-support-request
+    job_type_classify: classify-support-risk
+    job_type_agent: run-support-agent
+    job_type_verify: verify-support-result
+    job_type_notify: notify-invalid-request

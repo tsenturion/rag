@@ -44,6 +44,22 @@ def test_support_and_camunda_workers_have_readiness_healthchecks() -> None:
     assert "camunda-worker.health" in " ".join(camunda_health["test"])
 
 
+def test_camunda_process_is_deployed_before_worker_starts() -> None:
+    """Гарантирует автоматический deploy BPMN и формы перед регистрацией job workers."""
+    compose = yaml.safe_load(
+        (PROJECT_ROOT / "docker-compose.yaml").read_text(encoding="utf-8")
+    )
+    process_init = compose["services"]["camunda-process-init"]
+    worker_dependencies = compose["services"]["camunda-worker"]["depends_on"]
+
+    assert process_init["command"][-1] == "deploy"
+    assert process_init["depends_on"]["camunda"]["condition"] == "service_healthy"
+    assert (
+        worker_dependencies["camunda-process-init"]["condition"]
+        == "service_completed_successfully"
+    )
+
+
 def test_feature_branch_release_cannot_publish_latest() -> None:
     """Ограничивает mutable-тег latest основной веткой и release-тегами."""
     workflow = (
