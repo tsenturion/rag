@@ -4,7 +4,7 @@ detect-secrets==1.5.0
 fastapi==0.139.2
 gigachat==0.2.1
 httpx2==2.7.0
-langchain-core==1.5.1
+langchain-core==1.6.0
 langchain-gigachat==0.5.1
 langchain-openai==1.4.1
 langgraph==1.2.10
