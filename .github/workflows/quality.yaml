@@ -41,11 +41,12 @@ jobs:
           python -m pip check
           ruff check src tests
           ruff format --check src tests
-          # MLflow 3.15.2 требует cryptography<50, но PYSEC-2026-3552
-          # исправлена только в 50.x. Исключение удаляем, как только MLflow
-          # опубликует совместимый релиз; все остальные advisory остаются blocking.
-          python -m pip_audit --ignore-vuln PYSEC-2026-3552 --requirement requirements.txt
-          python -m pip_audit --ignore-vuln PYSEC-2026-3552 --requirement requirements-service.txt
+          # MLflow 3.15.2 требует cryptography<50, а исправленный релиз для
+          # CVE-2026-71211 ещё не опубликован. Оба исключения ограничены MLflow:
+          # проект не включает AI Gateway и не расшифровывает входящие PKCS#7.
+          # Удаляем исключения сразу после появления совместимой версии MLflow.
+          python -m pip_audit --ignore-vuln PYSEC-2026-3552 --ignore-vuln CVE-2026-71211 --requirement requirements.txt
+          python -m pip_audit --ignore-vuln PYSEC-2026-3552 --ignore-vuln CVE-2026-71211 --requirement requirements-service.txt
           python -m pip_audit --requirement requirements-code-runner.txt
 
       - name: Выполнить весь доступный набор тестов
@@ -157,6 +158,36 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8000/docs)" = "200"
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8000/openapi.json)" = "200"
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8000/v1/multi-agent/runs/00000000-0000-0000-0000-000000000000)" = "401"
+          curl --fail --silent --show-error \
+            --header 'X-API-Key: ci-support-secret-with-at-least-32-chars' \
+            http://127.0.0.1:8000/v1/app/config > /tmp/app-config.json
+          curl --fail --silent --show-error \
+            --header 'X-API-Key: ci-support-secret-with-at-least-32-chars' \
+            http://127.0.0.1:8000/v1/auth/me > /tmp/identity.json
+          curl --fail --silent --show-error \
+            --header 'X-API-Key: ci-support-secret-with-at-least-32-chars' \
+            'http://127.0.0.1:8000/v1/sessions?user_id=ci&limit=10' > /tmp/sessions.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          app_config = json.loads(Path('/tmp/app-config.json').read_text())
+          identity = json.loads(Path('/tmp/identity.json').read_text())
+          sessions = json.loads(Path('/tmp/sessions.json').read_text())
+          assert app_config['provider'] == 'openai'
+          assert app_config['features']['chat'] is True
+          assert identity['auth_method'] == 'api_key'
+          assert sessions == {'user_id': 'ci', 'items': [], 'next_cursor': None, 'limit': 10}
+          PY
+          curl --fail --silent --show-error \
+            --request OPTIONS \
+            --header 'Origin: http://localhost:5173' \
+            --header 'Access-Control-Request-Method: GET' \
+            --header 'Access-Control-Request-Headers: X-API-Key' \
+            --dump-header /tmp/cors-headers.txt \
+            --output /dev/null \
+            http://127.0.0.1:8000/v1/auth/me
+          grep --ignore-case --quiet '^access-control-allow-origin: http://localhost:5173' /tmp/cors-headers.txt
           status=$(curl --silent --output /tmp/guardrail.json --write-out '%{http_code}' \
             --request POST http://127.0.0.1:8000/v1/chat \
             --header 'Content-Type: application/json' \

@@ -17,7 +17,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from agent_app.cli import build_parser as build_agent_parser  # noqa: E402
-from agent_app.config import AgentConfig, load_agent_config  # noqa: E402
+from agent_app.config import (  # noqa: E402
+    AgentConfig,
+    AgentServiceConfig,
+    load_agent_config,
+)
 from agent_app.service.cli import build_parser  # noqa: E402
 from rag_prep.cli import build_parser as build_rag_parser  # noqa: E402
 from rag_prep.config import ChunkingConfig, EmbeddingConfig, VectorStoreConfig  # noqa: E402
@@ -47,6 +51,31 @@ class SupportProviderConfigsTest(unittest.TestCase):
                 args = build_parser().parse_args([])
 
         self.assertEqual(args.config, "config/support_agent_local.yaml")
+
+    def test_cors_origins_can_be_overridden_for_frontend_environment(self) -> None:
+        """Разделяет Vite origins разных окружений без копирования YAML-профилей."""
+        with patch.dict(
+            os.environ,
+            {
+                "SUPPORT_CORS_ORIGINS": (
+                    '["https://support.example.test", "http://127.0.0.1:5173/"]'
+                )
+            },
+        ):
+            config = load_agent_config(
+                PROJECT_ROOT / "config" / "support_agent_local.yaml"
+            )
+
+        self.assertEqual(
+            config.service.cors_origins,
+            ["https://support.example.test", "http://127.0.0.1:5173"],
+        )
+
+    def test_cors_origins_reject_wildcards_and_urls_with_paths(self) -> None:
+        """Не допускает опасный wildcard и URL вместо origin в CORS-политике."""
+        for origin in ("*", "https://example.test/application"):
+            with self.subTest(origin=origin), self.assertRaises(ValidationError):
+                AgentServiceConfig(cors_origins=[origin])
 
     def test_rag_profile_is_shared_by_all_pipeline_stages(self) -> None:
         """Проверяет, что профиль RAG последовательно используется во всех этапах обработки данных для каждого провайдера."""

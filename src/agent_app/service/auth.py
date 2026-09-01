@@ -84,16 +84,21 @@ class AuthManager:
     @staticmethod
     def authorize(principal: Principal, permission: Permission) -> None:
         """Гарантирует отказ в доступе с ошибкой 403, если у субъекта нет требуемого разрешения."""
-        permissions = {
-            value
-            for role in principal.roles
-            for value in ROLE_PERMISSIONS.get(role, set())
-        }
+        permissions = AuthManager.permissions(principal)
         if permission not in permissions:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Недостаточно прав: требуется {permission.value}.",
             )
+
+    @staticmethod
+    def permissions(principal: Principal) -> set[Permission]:
+        """Объединяет разрешения всех проверенных ролей субъекта."""
+        return {
+            permission
+            for role in principal.roles
+            for permission in ROLE_PERMISSIONS.get(role, set())
+        }
 
     def enforce_user_scope(self, principal: Principal, user_id: str) -> None:
         """Гарантирует, что пользователь может работать только со своими данными, если политика безопасности это требует."""

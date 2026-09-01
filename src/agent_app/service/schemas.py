@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent_app.models import AgentResponse
+from agent_app.models import AgentResponse, ConversationMessage
 from agent_app.guardrails.models import HumanReviewRecord, SecurityAuditEvent
 from agent_app.multi_agent.models import (
     MultiAgentComparisonReport,
@@ -115,6 +115,62 @@ class SecurityAuditResponse(BaseModel):
     """Гарантирует вызывающему коду полный список событий аудита безопасности для последующего анализа или отображения."""
 
     events: list[SecurityAuditEvent]
+
+
+class AppFeatureFlags(BaseModel):
+    """Описывает включённые backend-возможности для построения интерфейса."""
+
+    chat: bool = True
+    streaming: bool = True
+    rag: bool
+    multi_agent: bool
+    orchestration: bool
+    human_review: bool
+    a2a: bool
+    mcp: bool
+
+
+class AppAuthenticationConfig(BaseModel):
+    """Сообщает frontend допустимые способы входа без раскрытия секретов."""
+
+    api_key_enabled: bool
+    jwt_enabled: bool
+    user_scope_enforced: bool
+    api_key_header: str = "X-API-Key"
+    bearer_scheme: str = "Bearer"
+
+
+class AppLimitsConfig(BaseModel):
+    """Публикует ограничения, необходимые клиентской валидации запросов."""
+
+    request_max_chars: int
+    max_history_messages: int
+    rate_limit_enabled: bool
+    rate_limit_requests_per_minute: int | None = None
+    rate_limit_burst: int | None = None
+
+
+class AppConfigResponse(BaseModel):
+    """Предоставляет безопасный bootstrap-конфиг для web-приложения."""
+
+    api_version: str = "v1"
+    service: str = "engineer-support-agent"
+    provider: str
+    model: str
+    features: AppFeatureFlags
+    authentication: AppAuthenticationConfig
+    limits: AppLimitsConfig
+    openapi_url: str = "/openapi.json"
+    docs_url: str = "/docs"
+
+
+class CurrentPrincipalResponse(BaseModel):
+    """Возвращает проверенную identity и права текущего HTTP-клиента."""
+
+    subject: str
+    roles: list[str] = Field(default_factory=list)
+    permissions: list[str] = Field(default_factory=list)
+    auth_method: str
 
 
 class MultiAgentCompareRequest(ChatRequest):
@@ -236,6 +292,14 @@ class SessionResponse(BaseModel):
 
     user_id: str = Field(description="Владелец сессии.")
     session_id: str = Field(description="Идентификатор сессии.")
+    updated_at: datetime | None = Field(
+        default=None,
+        description="Время последнего сохранённого хода диалога.",
+    )
+    messages: list[ConversationMessage] = Field(
+        default_factory=list,
+        description="Сохранённые пользовательские и агентские сообщения.",
+    )
     memory: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Доступные пользователю записи долговременной памяти.",
@@ -250,6 +314,24 @@ class SessionResponse(BaseModel):
             "Последние сообщения persistent multi-agent checkpoint этой сессии."
         ),
     )
+
+
+class SessionSummary(BaseModel):
+    """Представляет одну строку списка диалогов для навигации frontend."""
+
+    session_id: str
+    updated_at: datetime
+    message_count: int = Field(ge=0)
+    preview: str
+
+
+class SessionListResponse(BaseModel):
+    """Возвращает страницу диалогов пользователя и непрозрачный cursor."""
+
+    user_id: str
+    items: list[SessionSummary] = Field(default_factory=list)
+    next_cursor: str | None = None
+    limit: int = Field(ge=1, le=100)
 
 
 class DeleteSessionResponse(BaseModel):
@@ -280,6 +362,14 @@ class HealthResponse(BaseModel):
     )
 
 
+class ApiValidationDetail(BaseModel):
+    """Описывает одно поле некорректного HTTP-запроса без исходного значения."""
+
+    field: str
+    message: str
+    type: str
+
+
 class ApiError(BaseModel):
     """Структурирует информацию об ошибках API, предоставляя машиночитаемый код, описание и корреляционный идентификатор для отладки."""
 
@@ -300,4 +390,8 @@ class ApiError(BaseModel):
     request_id: str | None = Field(
         default=None,
         description="Корреляционный идентификатор запроса.",
+    )
+    details: list[ApiValidationDetail] = Field(
+        default_factory=list,
+        description="Ошибки отдельных полей; заполнены для validation_error.",
     )

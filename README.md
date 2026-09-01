@@ -205,6 +205,10 @@ mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port
 | `sse-starlette`                   | Потоковые ответы `/v1/chat/stream` по Server-Sent Events     | [sse-starlette](https://github.com/sysid/sse-starlette), [SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html)                                         |
 | OpenAPI, Swagger UI, ReDoc        | Контракт API и интерактивная документация `/docs` и `/redoc` | [OpenAPI](https://spec.openapis.org/oas/latest.html), [Swagger UI](https://swagger.io/tools/swagger-ui/), [ReDoc](https://redocly.com/docs/redoc/)                              |
 | Postman                           | Импорт OpenAPI, environment variables и ручная проверка API  | [Postman](https://learning.postman.com/docs/getting-started/overview/), [environments](https://learning.postman.com/docs/sending-requests/variables/managing-environments/)     |
+| Vite                              | Будущий dev/preview server web-клиента и CORS origins        | [Vite](https://vite.dev/guide/), [server options](https://vite.dev/config/server-options.html)                                                                                 |
+| React или Vue                     | Будущий компонентный web-интерфейс поверх одного API         | [React](https://react.dev/), [Vue](https://vuejs.org/guide/introduction.html)                                                                                                  |
+| Tailwind CSS                      | Будущий utility-first слой оформления интерфейса             | [Tailwind CSS](https://tailwindcss.com/docs/installation/using-vite)                                                                                                          |
+| `openapi-typescript`              | Будущая генерация TypeScript-типов из backend-контракта      | [openapi-typescript](https://openapi-ts.dev/introduction)                                                                                                                     |
 | `PyJWT` и RBAC                    | JWT-аутентификация, роли и разграничение доступа             | [PyJWT](https://pyjwt.readthedocs.io/en/stable/), [JWT RFC 7519](https://www.rfc-editor.org/rfc/rfc7519), [NIST RBAC](https://csrc.nist.gov/projects/role-based-access-control) |
 | Docker, Docker Compose            | Воспроизводимый образ, сервисы и локальный deploy            | [Dockerfile](https://docs.docker.com/reference/dockerfile/), [Docker Compose](https://docs.docker.com/compose/)                                                                 |
 
@@ -2056,9 +2060,11 @@ llm-tune --config config/fine_tuning.yaml compare --baseline-report data/fine_tu
 | `src/agent_app/service/app.py`                                              | Создаёт routes, lifespan, Swagger/OpenAPI, health/readiness, metrics, auth, guardrails и API multi-agent/orchestration.                                         |
 | `src/agent_app/service/runtime.py`                                          | Управляет session cache, shared RAG/LLM resources и жизненным циклом `AgentRunner`.                                                                             |
 | `src/agent_app/service/schemas.py`                                          | Request/response модели chat, SSE, memory, incidents, reviews и orchestration API.                                                                              |
+| `src/agent_app/service/pagination.py`                                       | Кодирует и проверяет непрозрачный cursor стабильной пагинации списка диалогов.                                                                                   |
 | `src/agent_app/service/auth.py`                                             | API key/JWT authentication, role mapping, RBAC и user-scope enforcement.                                                                                        |
 | `src/agent_app/service/rate_limit.py`                                       | Реализует user-scoped token bucket для прямых LLM/A2A/MCP-вызовов.                                                                                              |
 | `src/agent_app/service/cli.py`                                              | CLI `rag-support`, выбор конфига и запуск Uvicorn.                                                                                                              |
+| `src/agent_app/service/openapi_cli.py`                                      | CLI `rag-support-openapi`, атомарно экспортирующий реальную FastAPI-схему без запуска LLM.                                                                       |
 | `src/agent_app/rag/__init__.py`                                             | Экспортирует online RAG API.                                                                                                                                    |
 | `src/agent_app/rag/models.py`                                               | Модели citations, retrieval result и context item.                                                                                                              |
 | `src/agent_app/rag/retriever.py`                                            | Считает query embedding и выполняет Qdrant search с provider-compatible vector size.                                                                            |
@@ -2095,13 +2101,14 @@ llm-tune --config config/fine_tuning.yaml compare --baseline-report data/fine_tu
 | `tests/test_support_agent.py`                                               | Проверяет инженерные tools, memory и RAG-поведение агента.                                                                                                      |
 | `tests/test_support_configs.py`                                             | Загружает все host/Docker/composed presets и проверяет их контракты.                                                                                            |
 | `tests/test_support_service.py`                                             | Проверяет HTTP routes, SSE, lifecycle, sessions и readiness.                                                                                                    |
+| `tests/test_openapi_export.py`                                              | Проверяет статический OpenAPI-контракт для генерации frontend-клиента.                                                                                          |
 | `tests/test_code_runner.py`                                                 | Проверяет auth, AST restrictions, timeout и output limits изолированного runner.                                                                                |
 
 ## Архитектура support-сервиса
 
 ```mermaid
 flowchart LR
-    Client["API-клиент"] --> API["FastAPI"]
+    Client["API-клиент / будущий Vite SPA"] --> API["FastAPI"]
     API --> Sessions["Session manager"]
     Sessions --> Graph["LangGraph AgentRunner"]
     Graph --> LLM["OpenAI / GigaChat / local Qwen"]
@@ -2124,7 +2131,7 @@ flowchart LR
 - tools выполняют поиск документации, анализ логов, формирование чек-листа и операции с инцидентами;
 - buffer, summary и long-term memory сохраняют контекст диалога и изолируют данные по `user_id`;
 - API поддерживает обычный запрос, SSE, просмотр и очистку сессии, health/readiness и Prometheus metrics;
-- Docker Compose воспроизводимо запускает Qdrant, индексатор готовых embeddings и support-сервис.
+- Docker Compose воспроизводимо запускает Qdrant, Redis rate limiter, индексатор готовых embeddings и support-сервис.
 
 Системные требования и допущения:
 
@@ -2339,8 +2346,11 @@ Invoke-RestMethod `
 
 Endpoints:
 
+- `GET /v1/app/config` - публичные feature flags, способы авторизации и клиентские лимиты без секретов;
+- `GET /v1/auth/me` - проверенная identity, роли и эффективные разрешения текущего клиента;
 - `POST /v1/chat` - обычный ответ;
 - `POST /v1/chat/stream` - SSE events `started`, затем `result` или безопасный `error`;
+- `GET /v1/sessions?user_id=...&limit=...&cursor=...` - список диалогов с cursor-пагинацией;
 - `GET /v1/sessions/{session_id}?user_id=...` - память и incidents сессии;
 - `DELETE /v1/sessions/{session_id}?user_id=...` - очистка session memory и runner cache;
 - `GET /health`;
@@ -2348,6 +2358,89 @@ Endpoints:
 - `GET /metrics` - Prometheus format.
 
 Для API-key режима передаётся `X-API-Key`. Значение читается из `SUPPORT_SERVICE_API_KEY`; ключ не должен находиться в YAML или Docker image.
+
+## Backend-контракт для будущего web-интерфейса
+
+На этом этапе frontend-пакет и Node.js-зависимости намеренно не создаются. Backend уже
+подготовлен к следующему этапу с Vite и одним из компонентных фреймворков React или Vue;
+Tailwind будет подключаться только в самом web-приложении и не влияет на HTTP-контракт.
+
+Frontend начинает работу с `GET /v1/app/config`. Ответ позволяет включать элементы
+интерфейса по реальным возможностям выбранного backend-профиля, показывает лимит длины
+сообщения и сообщает, включены ли JWT, RAG, multi-agent, orchestration и human review.
+Секреты, локальные пути и provider credentials этот endpoint не возвращает. После
+аутентификации `GET /v1/auth/me` возвращает проверенные роли и разрешения, поэтому
+клиенту не нужно самостоятельно интерпретировать JWT claims.
+
+Список диалогов загружается через `GET /v1/sessions`. Параметр `cursor` непрозрачен:
+frontend передаёт `next_cursor` следующему запросу без декодирования. Детальная карточка
+сессии дополнительно содержит сохранённые сообщения с ролями `user` и `assistant`.
+Cursor-пагинация не пропускает и не дублирует диалоги при одинаковом времени обновления.
+Таблица `conversation_history` существующей SQLite-базы используется без изменения
+схемы. Миграция storage на PostgreSQL относится к отдельному следующему этапу; до неё
+сервис по-прежнему запускается с одним API worker.
+
+Ошибки всех validation-запросов имеют единый контракт:
+
+```json
+{
+  "error": "validation_error",
+  "message": "Запрос не соответствует API-схеме.",
+  "request_id": "...",
+  "details": [
+    {
+      "field": "body.session_id",
+      "message": "Field required",
+      "type": "missing"
+    }
+  ]
+}
+```
+
+Исходные значения некорректных полей в `details` не возвращаются. `request_id` можно
+передать заранее через `X-Request-ID` или получить из ответа и использовать для поиска
+структурированного server log.
+
+Стандартные Vite origins уже разрешены в `config/profiles/support/base.yaml`:
+`http://127.0.0.1:5173`, `http://localhost:5173` и соответствующие preview origins на
+порту `4173`. Для другого окружения задайте без изменения YAML:
+
+```dotenv
+SUPPORT_CORS_ORIGINS=https://support.example.com,https://support-preview.example.com
+```
+
+Также принимается JSON-массив строк. Wildcard `*`, URL с путём и не-HTTP(S) значения
+отклоняются при загрузке конфигурации. Для frontend используются заголовки
+`Authorization`, `Content-Type`, `X-Request-ID`; ответы открывают браузеру
+`X-Request-ID` и `Retry-After`. Cookie-аутентификация сейчас не используется, поэтому
+`cors_allow_credentials` оставлен `false`.
+
+Для production web-клиента нужен короткоживущий Bearer JWT, выданный внешним identity
+provider или gateway. Нельзя помещать `SUPPORT_SERVICE_API_KEY`, `SUPPORT_JWT_SECRET`,
+`OPENAI_API_KEY`, `GIGACHAT_AUTH_KEY` и другие серверные секреты в переменные с
+префиксом `VITE_`: Vite встраивает их в публичный JavaScript bundle. Сервисный
+`X-API-Key` допустим для Swagger, Postman и server-to-server интеграций, но не для
+публичного браузерного приложения.
+
+`POST /v1/chat/stream` использует POST и допускает `Authorization`, поэтому будущий
+клиент должен читать `text/event-stream` через `fetch()` и `ReadableStream`, а не через
+нативный `EventSource`, который не позволяет отправить такое тело и произвольный
+заголовок. События имеют типы `started`, `result` и `error`; proxy buffering отключается
+заголовком `X-Accel-Buffering: no`.
+
+Статическую схему для генерации TypeScript-типов можно получить без запуска Uvicorn,
+LLM или платных API-запросов:
+
+```powershell
+rag-support-openapi `
+  --config config/support_agent_openai.yaml `
+  --output data/openapi/support-api.json
+```
+
+Схема строится тем же `create_app()`, который обслуживает production API, и записывается
+атомарно. Каталог `data/openapi/` является генерируемым и исключён из Git. После
+создания Vite-проекта этот JSON можно передать `openapi-typescript` или другому
+OpenAPI-генератору; выбор React либо Vue не требует изменений backend-моделей.
 
 ## Swagger, OpenAPI и ReDoc
 
@@ -3091,11 +3184,13 @@ FastAPI `0.139.2`, Starlette `1.3.1`, SSE-Starlette `3.4.6`, A2A SDK `1.1.2`, MC
 версии для воспроизводимости, а диапазоны совместимости заданы в `requirements.txt` и
 `pyproject.toml`.
 
-На 27 августа 2026 года MLflow `3.15.2` ограничивает зависимость диапазоном
+На 1 сентября 2026 года MLflow `3.15.2` ограничивает зависимость диапазоном
 `cryptography>=43,<50`, тогда как исправление `PYSEC-2026-3552` выпущено только в
-`cryptography 50.x`. Поэтому CI временно исключает только этот advisory для двух наборов,
-содержащих MLflow; другие уязвимости по-прежнему завершают `pip-audit` с ошибкой. Исключение
-нужно удалить после выпуска MLflow с поддержкой `cryptography>=50`.
+`cryptography 50.x`. Для самого MLflow также опубликован `CVE-2026-71211` в механизме AI
+Gateway, но исправленного релиза на PyPI пока нет. Проект не включает AI Gateway, а MLflow UI
+работает только на loopback-интерфейсе. Поэтому CI временно исключает ровно эти два advisory
+для наборов, содержащих MLflow; любая другая уязвимость по-прежнему завершает `pip-audit` с
+ошибкой. Исключения нужно удалить после выпуска совместимого исправленного MLflow.
 
 В [README официального MCP Python SDK версии 1.28.1](https://github.com/modelcontextprotocol/python-sdk/tree/v1.28.1#readme) прямо указано, что v1.x является текущей стабильной и рекомендуемой для production веткой, v2 пока находится в alpha, а приложениям рекомендуется заранее установить верхнюю границу `<2`, например `mcp>=1.27,<2`. Поэтому проект использует `mcp>=1.28.1,<2` и не переходит на v2 автоматически; переход выполняется только после стабильного релиза и отдельной проверки миграции.
 
@@ -3468,6 +3563,7 @@ flowchart LR
 
     subgraph PublicNetwork["Compose default network"]
         Qdrant[("Qdrant server")]
+        Redis[("Redis rate limiter и state")]
     end
 
     subgraph InternalNetwork["code_runner_internal без внешнего доступа"]
@@ -3475,6 +3571,7 @@ flowchart LR
     end
 
     Support --> Qdrant
+    Support --> Redis
     Support -- "CODE_RUNNER_API_KEY" --> Runner
     Embeddings["Готовые embeddings.jsonl"] --> Indexer["indexer profile"]
     Indexer --> Qdrant
@@ -3492,7 +3589,7 @@ flowchart LR
 | `code-runner`          | базовый                 | Изолированно выполняет разрешённый Python для tool `execute_python`. Работает постоянно, но доступен только `support-agent` во внутренней Docker-сети.                     | Порт не опубликован намеренно                                                    |
 | `indexer`              | `indexing`              | Одноразово запускает `rag-index`, загружает готовые embeddings в Qdrant и завершается. При `docker compose ... run --rm` исчезает после успеха.                            | Публичного endpoint нет                                                          |
 | `rabbitmq`             | `orchestration`, `bpmn` | Broker Celery: quorum-очереди, приоритеты, retry и DLQ. Должен быть `healthy`.                                                                                             | AMQP `127.0.0.1:5672`, management UI `http://127.0.0.1:15672`                    |
-| `redis`                | `orchestration`, `bpmn` | Хранит orchestration jobs/events, idempotency keys, leases и Celery results. Должен быть `healthy`.                                                                        | `127.0.0.1:6379`                                                                 |
+| `redis`                | базовый                 | Обеспечивает общий rate limiter support API; orchestration дополнительно хранит в нём jobs/events, idempotency keys, leases и Celery results. Должен быть `healthy`.        | `127.0.0.1:6379`                                                                 |
 | `orchestration-worker` | `orchestration`, `bpmn` | Celery worker исполняет задания через multi-agent runtime. Может масштабироваться в несколько контейнеров; все реплики должны использовать тот же image/config, что и API. | Публичного endpoint нет                                                          |
 | `flower`               | `orchestration`, `bpmn` | Web-монитор Celery workers, активных задач и очередей.                                                                                                                     | `http://127.0.0.1:5555`                                                          |
 | `otel-collector`       | `observability`         | Принимает OTLP traces от приложения и перенаправляет их в Jaeger. Это транспортный сервис, не пользовательский UI.                                                         | OTLP gRPC `127.0.0.1:4317`, HTTP `127.0.0.1:4318`                                |

@@ -17,6 +17,8 @@ from agent_app.memory.policy import (
     validate_memory_value,
 )
 from agent_app.models import (
+    ConversationMessage,
+    ConversationSession,
     MemoryRecord,
     MemorySearchResult,
     MemorySource,
@@ -365,19 +367,85 @@ class SQLiteMemoryStore:
             ).fetchone()
         if row is None:
             return []
+        return [
+            message.model_dump(mode="python")
+            for message in self._decode_conversation_messages(row["messages"])
+        ]
+
+    def get_conversation_session(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+    ) -> ConversationSession | None:
+        """Возвращает сохранённую историю одной сессии без создания runner."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT session_id, messages, updated_at
+                FROM conversation_history
+                WHERE user_id = ? AND session_id = ?
+                """,
+                (user_id, session_id),
+            ).fetchone()
+        return self._conversation_session_from_row(user_id, row) if row else None
+
+    def list_conversation_sessions(
+        self,
+        *,
+        user_id: str,
+        limit: int,
+        before_updated_at: datetime | None = None,
+        before_session_id: str | None = None,
+    ) -> list[ConversationSession]:
+        """Возвращает страницу диалогов пользователя в стабильном порядке."""
+        sql = (
+            "SELECT session_id, messages, updated_at "
+            "FROM conversation_history WHERE user_id = ?"
+        )
+        params: list[Any] = [user_id]
+        if before_updated_at is not None and before_session_id is not None:
+            sql += " AND (updated_at < ? OR (updated_at = ? AND session_id > ?))"
+            timestamp = before_updated_at.isoformat()
+            params.extend([timestamp, timestamp, before_session_id])
+        sql += " ORDER BY updated_at DESC, session_id ASC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._conversation_session_from_row(user_id, row) for row in rows]
+
+    @staticmethod
+    def _decode_conversation_messages(value: object) -> list[ConversationMessage]:
+        """Отбрасывает повреждённые элементы сохранённого диалога."""
         try:
-            payload = json.loads(row["messages"])
-        except (TypeError, json.JSONDecodeError):
+            payload = json.loads(value) if isinstance(value, str) else None
+        except json.JSONDecodeError:
             return []
         if not isinstance(payload, list):
             return []
-        return [
-            {"role": item["role"], "content": item["content"]}
-            for item in payload
-            if isinstance(item, dict)
-            and item.get("role") in {"user", "assistant"}
-            and isinstance(item.get("content"), str)
-        ]
+        messages: list[ConversationMessage] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            try:
+                messages.append(ConversationMessage.model_validate(item))
+            except ValueError:
+                continue
+        return messages
+
+    @classmethod
+    def _conversation_session_from_row(
+        cls,
+        user_id: str,
+        row: sqlite3.Row,
+    ) -> ConversationSession:
+        """Преобразует строку SQLite в типизированную историю диалога."""
+        return ConversationSession(
+            user_id=user_id,
+            session_id=row["session_id"],
+            messages=cls._decode_conversation_messages(row["messages"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
 
     def _valid_record(self, row: sqlite3.Row) -> MemoryRecord | None:
         """Гарантирует, что возвращаемая запись памяти не просрочена, автоматически удаляя устаревшие записи и предотвращая их использование."""

@@ -30,7 +30,7 @@ class CliHelpTest(TestCase):
         source = (
             "import sys; "
             "import rag_prep.cli, agent_app.cli, agent_app.service.cli, "
-            "agent_app.evaluation.cli; "
+            "agent_app.service.openapi_cli, agent_app.evaluation.cli; "
             "forbidden = {'rag_prep.pipeline', 'agent_app.graph', "
             "'agent_app.service.app', 'agent_app.evaluation.runner'}; "
             "assert not (forbidden & set(sys.modules)), "

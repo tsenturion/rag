@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -282,7 +284,33 @@ class AgentServiceConfig(StrictConfigModel):
     request_max_chars: int = Field(default=20000, ge=100, le=1000000)
     session_cache_size: int = Field(default=256, ge=1, le=10000)
     cors_origins: list[str] = Field(default_factory=list)
+    cors_allow_credentials: bool = False
+    cors_max_age_seconds: int = Field(default=600, ge=0, le=86_400)
     public_base_url: str | None = None
+
+    @field_validator("cors_origins")
+    @classmethod
+    def validate_cors_origins(cls, value: list[str]) -> list[str]:
+        """Нормализует только явные HTTP(S) origins без путей и wildcard."""
+        origins: list[str] = []
+        for item in value:
+            origin = item.strip().rstrip("/")
+            parsed = urlparse(origin)
+            if (
+                origin == "*"
+                or parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.path not in {"", "/"}
+                or parsed.params
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    "service.cors_origins должен содержать явные HTTP(S) origins"
+                )
+            if origin not in origins:
+                origins.append(origin)
+        return origins
 
     @field_validator("public_base_url")
     @classmethod
@@ -664,6 +692,15 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
     )
 
     config = AgentAppConfig.model_validate(raw)
+    cors_origins_override = os.getenv("SUPPORT_CORS_ORIGINS")
+    if cors_origins_override is not None:
+        config = config.model_copy(
+            update={
+                "service": config.service.model_copy(
+                    update={"cors_origins": _parse_cors_origins(cors_origins_override)}
+                )
+            }
+        )
     sqlite_path = config.memory.sqlite_path
     if not sqlite_path.is_absolute():
         sqlite_path = base_dir / sqlite_path
@@ -783,6 +820,26 @@ def _resolve_config_path(path: str | Path) -> Path:
         return project_config_path.resolve()
 
     return config_path.resolve()
+
+
+def _parse_cors_origins(value: str) -> list[str]:
+    """Разбирает JSON-массив или CSV-строку SUPPORT_CORS_ORIGINS."""
+    stripped = value.strip()
+    if not stripped:
+        return []
+    try:
+        decoded = json.loads(stripped) if stripped.startswith("[") else None
+    except json.JSONDecodeError as exc:
+        raise ValueError("SUPPORT_CORS_ORIGINS содержит некорректный JSON") from exc
+    if decoded is not None:
+        if not isinstance(decoded, list) or not all(
+            isinstance(item, str) for item in decoded
+        ):
+            raise ValueError("SUPPORT_CORS_ORIGINS должен быть массивом строк")
+        origins = decoded
+    else:
+        origins = [item.strip() for item in stripped.split(",") if item.strip()]
+    return AgentServiceConfig(cors_origins=origins).cors_origins
 
 
 def _config_base_dir(config_path: Path) -> Path:

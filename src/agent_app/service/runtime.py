@@ -28,7 +28,17 @@ from agent_app.multi_agent.runtime import MultiAgentRuntime
 from agent_app.orchestration.service import OrchestrationService, callback_executor
 from agent_app.observability import traced
 from agent_app.rag.runtime import OnlineRagRuntime
-from agent_app.service.schemas import DeleteSessionResponse, SessionResponse
+from agent_app.service.pagination import (
+    SessionCursor,
+    decode_session_cursor,
+    encode_session_cursor,
+)
+from agent_app.service.schemas import (
+    DeleteSessionResponse,
+    SessionListResponse,
+    SessionResponse,
+    SessionSummary,
+)
 from agent_app.support.incidents import IncidentStore
 from agent_app.support.security import redact_secrets
 from agent_app.tools.mcp_external import ExternalMCPToolManager
@@ -165,6 +175,10 @@ class SupportApplicationRuntime:
 
     def session(self, *, user_id: str, session_id: str) -> SessionResponse:
         """Гарантирует получение полной истории пользовательской сессии, включая память, инциденты и мультиагентную активность."""
+        conversation = self.memory_store.get_conversation_session(
+            user_id=user_id,
+            session_id=session_id,
+        )
         memory = self.memory_store.list_memories(
             user_id=user_id,
             session_id=session_id,
@@ -178,6 +192,8 @@ class SupportApplicationRuntime:
         return SessionResponse(
             user_id=user_id,
             session_id=session_id,
+            updated_at=conversation.updated_at if conversation else None,
+            messages=conversation.messages if conversation else [],
             memory=[record.model_dump(mode="json") for record in memory],
             incidents=[record.model_dump(mode="json") for record in incidents],
             multi_agent_history=(
@@ -188,6 +204,46 @@ class SupportApplicationRuntime:
                 if self.multi_agent_runtime is not None
                 else []
             ),
+        )
+
+    def sessions(
+        self,
+        *,
+        user_id: str,
+        limit: int,
+        cursor: str | None,
+    ) -> SessionListResponse:
+        """Возвращает страницу сохранённых диалогов для навигации клиента."""
+        position = decode_session_cursor(cursor) if cursor else None
+        records = self.memory_store.list_conversation_sessions(
+            user_id=user_id,
+            limit=limit + 1,
+            before_updated_at=position.updated_at if position else None,
+            before_session_id=position.session_id if position else None,
+        )
+        page = records[:limit]
+        next_cursor = None
+        if len(records) > limit and page:
+            last = page[-1]
+            next_cursor = encode_session_cursor(
+                SessionCursor(
+                    updated_at=last.updated_at,
+                    session_id=last.session_id,
+                )
+            )
+        return SessionListResponse(
+            user_id=user_id,
+            items=[
+                SessionSummary(
+                    session_id=record.session_id,
+                    updated_at=record.updated_at,
+                    message_count=record.message_count,
+                    preview=record.preview,
+                )
+                for record in page
+            ],
+            next_cursor=next_cursor,
+            limit=limit,
         )
 
     def delete_session(self, *, user_id: str, session_id: str) -> DeleteSessionResponse:

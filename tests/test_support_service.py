@@ -222,6 +222,101 @@ class SupportServiceTest(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200)
         self.assertTrue(deleted.json()["runner_removed"])
 
+    def test_frontend_bootstrap_identity_cors_and_session_pagination(self) -> None:
+        """Проверяет контракты, на которых web-клиент строит старт и навигацию."""
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            config = AgentAppConfig(
+                agent=AgentConfig(provider="local", model="test-model"),
+                memory=MemoryConfig(sqlite_path=root / "memory.sqlite"),
+                tools=AgentToolsConfig(incident_sqlite_path=root / "incidents.sqlite"),
+                service=AgentServiceConfig(
+                    request_max_chars=1000,
+                    cors_origins=["http://127.0.0.1:5173"],
+                ),
+                security=AgentSecurityConfig(
+                    require_api_key=True,
+                    api_key_env="TEST_SUPPORT_API_KEY",
+                ),
+            )
+            runtime = SupportApplicationRuntime(config, llm=SimpleModel())
+            for index in range(3):
+                runtime.memory_store.save_conversation_history(
+                    user_id="engineer",
+                    session_id=f"session-{index}",
+                    messages=[
+                        {"role": "user", "content": f"Запрос {index}"},
+                        {"role": "assistant", "content": f"Ответ {index}"},
+                    ],
+                )
+                time.sleep(0.002)
+
+            with patch.dict(os.environ, {"TEST_SUPPORT_API_KEY": "service-secret"}):
+                with TestClient(create_app(runtime=runtime)) as client:
+                    headers = {"X-API-Key": "service-secret"}
+                    bootstrap = client.get("/v1/app/config")
+                    identity = client.get("/v1/auth/me", headers=headers)
+                    preflight = client.options(
+                        "/v1/chat",
+                        headers={
+                            "Origin": "http://127.0.0.1:5173",
+                            "Access-Control-Request-Method": "POST",
+                            "Access-Control-Request-Headers": (
+                                "authorization,content-type,x-request-id"
+                            ),
+                        },
+                    )
+                    first_page = client.get(
+                        "/v1/sessions",
+                        params={"user_id": "engineer", "limit": 2},
+                        headers=headers,
+                    )
+                    second_page = client.get(
+                        "/v1/sessions",
+                        params={
+                            "user_id": "engineer",
+                            "limit": 2,
+                            "cursor": first_page.json()["next_cursor"],
+                        },
+                        headers=headers,
+                    )
+                    detail = client.get(
+                        "/v1/sessions/session-2",
+                        params={"user_id": "engineer"},
+                        headers=headers,
+                    )
+                    validation = client.post(
+                        "/v1/chat",
+                        json={"message": "Запрос", "user_id": "engineer"},
+                        headers=headers,
+                    )
+            runtime.close()
+
+        self.assertEqual(bootstrap.status_code, 200)
+        self.assertEqual(bootstrap.json()["api_version"], "v1")
+        self.assertTrue(bootstrap.json()["features"]["streaming"])
+        self.assertNotIn("service-secret", bootstrap.text)
+        self.assertEqual(identity.status_code, 200)
+        self.assertEqual(identity.json()["auth_method"], "api_key")
+        self.assertIn("chat:write", identity.json()["permissions"])
+        self.assertEqual(preflight.status_code, 200)
+        self.assertEqual(
+            preflight.headers["access-control-allow-origin"],
+            "http://127.0.0.1:5173",
+        )
+        self.assertEqual(first_page.status_code, 200)
+        self.assertEqual(len(first_page.json()["items"]), 2)
+        self.assertTrue(first_page.json()["next_cursor"])
+        first_ids = {item["session_id"] for item in first_page.json()["items"]}
+        second_ids = {item["session_id"] for item in second_page.json()["items"]}
+        self.assertEqual(len(second_ids), 1)
+        self.assertFalse(first_ids & second_ids)
+        self.assertEqual(detail.json()["messages"][0]["role"], "user")
+        self.assertEqual(detail.json()["messages"][1]["content"], "Ответ 2")
+        self.assertEqual(validation.status_code, 422)
+        self.assertEqual(validation.json()["error"], "validation_error")
+        self.assertEqual(validation.json()["details"][0]["field"], "body.session_id")
+
     def test_message_limit_returns_413(self) -> None:
         """Проверяет, что при превышении максимального размера сообщения сервис возвращает HTTP-статус 413, обеспечивая ограничение на размер входящих данных."""
         with tempfile.TemporaryDirectory() as temporary_dir:

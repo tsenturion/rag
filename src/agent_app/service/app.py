@@ -12,7 +12,17 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    Security,
+    status,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
@@ -48,8 +58,14 @@ from agent_app.service.auth import AuthManager, Permission, Principal
 from agent_app.service.rate_limit import TokenBucketRateLimiter
 from agent_app.service.schemas import (
     ApiError,
+    ApiValidationDetail,
+    AppAuthenticationConfig,
+    AppConfigResponse,
+    AppFeatureFlags,
+    AppLimitsConfig,
     ChatRequest,
     ChatResponse,
+    CurrentPrincipalResponse,
     DeleteSessionResponse,
     HealthResponse,
     HumanReviewDecisionRequest,
@@ -59,6 +75,7 @@ from agent_app.service.schemas import (
     MultiAgentCompareResponse,
     OrchestrationJobRequest,
     SecurityAuditResponse,
+    SessionListResponse,
     SessionResponse,
 )
 from agent_app.observability import (
@@ -71,6 +88,10 @@ from agent_app.support.security import redact_local_paths, redact_secrets
 LOGGER = logging.getLogger(__name__)
 
 OPENAPI_TAGS = [
+    {
+        "name": "Приложение",
+        "description": "Bootstrap-конфигурация web-клиента и текущая identity.",
+    },
     {
         "name": "Диалог",
         "description": "Запросы к агенту, RAG, tools и памяти.",
@@ -192,7 +213,7 @@ def create_app(
             "и сохраняет user-scoped память. Защищённые операции принимают "
             "сервисный `X-API-Key` или ролевой `Bearer JWT`."
         ),
-        version="1.0.0",
+        version="1.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
@@ -216,14 +237,16 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=config.service.cors_origins,
-            allow_credentials=False,
-            allow_methods=["GET", "POST", "DELETE"],
+            allow_credentials=config.service.cors_allow_credentials,
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
             allow_headers=[
                 "Authorization",
                 "Content-Type",
                 "X-API-Key",
                 "X-Request-ID",
             ],
+            expose_headers=["X-Request-ID", "Retry-After"],
+            max_age=config.service.cors_max_age_seconds,
         )
 
     registry = CollectorRegistry()
@@ -587,6 +610,28 @@ def create_app(
             headers=exc.headers,
         )
 
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(
+        request: Request,
+        exc: RequestValidationError,
+    ):
+        """Возвращает frontend безопасные ошибки полей в едином API-формате."""
+        details = [
+            ApiValidationDetail(
+                field=".".join(str(item) for item in error.get("loc", [])),
+                message=str(error.get("msg") or "Некорректное значение"),
+                type=str(error.get("type") or "validation_error"),
+            )
+            for error in exc.errors()
+        ]
+        return _error_response(
+            request,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "validation_error",
+            "Запрос не соответствует API-схеме.",
+            details=details,
+        )
+
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         """Логирует необработанные ошибки и возвращает безопасный ответ с кодом 500, скрывая чувствительные данные из сообщения об ошибке."""
@@ -596,6 +641,79 @@ def create_app(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "internal_error",
             "Внутренняя ошибка сервиса. Используйте request_id для обращения к журналу.",
+        )
+
+    @app.get(
+        "/v1/app/config",
+        response_model=AppConfigResponse,
+        tags=["Приложение"],
+        summary="Получить bootstrap-конфигурацию web-клиента",
+        description=(
+            "Публично возвращает только возможности, способы авторизации и "
+            "лимиты API. Секреты и внутренние пути в ответ не включаются."
+        ),
+    )
+    def app_config() -> AppConfigResponse:
+        """Формирует безопасный runtime-independent bootstrap для frontend."""
+        rate_limit_enabled = config.security.rate_limit_enabled
+        return AppConfigResponse(
+            provider=config.agent.provider,
+            model=config.agent.model,
+            features=AppFeatureFlags(
+                rag=config.rag.enabled,
+                multi_agent=config.multi_agent.enabled,
+                orchestration=config.orchestration.enabled,
+                human_review=(
+                    config.guardrails.enabled
+                    and config.guardrails.output_review_enabled
+                ),
+                a2a=(
+                    config.multi_agent.enabled
+                    and config.multi_agent.protocols.a2a_enabled
+                ),
+                mcp=(
+                    config.multi_agent.enabled
+                    and config.multi_agent.protocols.mcp_enabled
+                ),
+            ),
+            authentication=AppAuthenticationConfig(
+                api_key_enabled=config.security.require_api_key,
+                jwt_enabled=config.security.jwt_enabled,
+                user_scope_enforced=config.security.enforce_user_scope,
+            ),
+            limits=AppLimitsConfig(
+                request_max_chars=config.service.request_max_chars,
+                max_history_messages=config.agent.max_history_messages,
+                rate_limit_enabled=rate_limit_enabled,
+                rate_limit_requests_per_minute=(
+                    config.security.rate_limit_requests_per_minute
+                    if rate_limit_enabled
+                    else None
+                ),
+                rate_limit_burst=(
+                    config.security.rate_limit_burst if rate_limit_enabled else None
+                ),
+            ),
+        )
+
+    @app.get(
+        "/v1/auth/me",
+        response_model=CurrentPrincipalResponse,
+        tags=["Приложение"],
+        summary="Получить текущую identity и разрешения",
+        responses=_error_responses(401, 403, 503),
+    )
+    def auth_me(
+        principal: Principal = Depends(authenticate),
+    ) -> CurrentPrincipalResponse:
+        """Возвращает только проверенные claims, а не содержимое JWT или API key."""
+        return CurrentPrincipalResponse(
+            subject=principal.subject,
+            roles=principal.roles,
+            permissions=sorted(
+                permission.value for permission in auth_manager.permissions(principal)
+            ),
+            auth_method=principal.auth_method,
         )
 
     @app.post(
@@ -955,7 +1073,47 @@ def create_app(
                     },
                 )
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get(
+        "/v1/sessions",
+        response_model=SessionListResponse,
+        tags=["Сессии"],
+        summary="Получить список сохранённых диалогов",
+        description=(
+            "Возвращает диалоги текущего user_id в порядке последней активности. "
+            "Для следующей страницы передайте непрозрачный next_cursor."
+        ),
+        responses=_error_responses(400, 401, 422, 500, 503),
+        dependencies=[Depends(require_permission(Permission.SESSION_READ))],
+    )
+    def list_sessions(
+        request: Request,
+        user_id: str = Query(
+            min_length=1,
+            max_length=128,
+            pattern=r"^[\w.@+-]+$",
+        ),
+        limit: int = Query(default=20, ge=1, le=100),
+        cursor: str | None = Query(default=None, max_length=1024),
+    ) -> SessionListResponse:
+        """Проверяет user scope и возвращает cursor-страницу диалогов."""
+        auth_manager.enforce_user_scope(request.state.principal, user_id)
+        try:
+            return request.app.state.runtime.sessions(
+                user_id=user_id,
+                limit=limit,
+                cursor=cursor,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(
         "/v1/sessions/{session_id}",
@@ -1203,12 +1361,14 @@ def _error_response(
     message: str,
     *,
     headers: dict[str, str] | None = None,
+    details: list[ApiValidationDetail] | None = None,
 ) -> JSONResponse:
     """Гарантирует стандартизированный и безопасный формат ошибок API с маскировкой секретов и трассировкой по request_id."""
     payload = ApiError(
         error=error,
         message=redact_secrets(message),
         request_id=getattr(request.state, "request_id", None),
+        details=details or [],
     )
     return JSONResponse(
         status_code=status_code,

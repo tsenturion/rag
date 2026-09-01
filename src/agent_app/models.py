@@ -49,6 +49,34 @@ class MemorySearchResult(BaseModel):
     count: int = 0
 
 
+class ConversationMessage(BaseModel):
+    """Представляет один безопасный для UI ход сохранённого диалога."""
+
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ConversationSession(BaseModel):
+    """Описывает сохранённый диалог и его данные для списка или просмотра."""
+
+    user_id: str
+    session_id: str
+    messages: list[ConversationMessage] = Field(default_factory=list)
+    updated_at: datetime
+
+    @property
+    def message_count(self) -> int:
+        """Возвращает число сохранённых пользовательских и агентских сообщений."""
+        return len(self.messages)
+
+    @property
+    def preview(self) -> str:
+        """Возвращает однострочный фрагмент последнего сообщения для списка UI."""
+        if not self.messages:
+            return ""
+        return " ".join(self.messages[-1].content.split())[:240]
+
+
 class AgentTraceState(BaseModel):
     """Хранит состояние трассировки агента с произвольными данными, обеспечивая сохранение и передачу контекста выполнения."""
 

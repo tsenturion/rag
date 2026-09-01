@@ -38,6 +38,7 @@ data/qdrant_storage_gigachat/
 data/agent/
 data/multi_agent/
 data/evaluation/
+data/openapi/
 data/fine_tuning/reports/
 data/fine_tuning/runs/
 data/models/
