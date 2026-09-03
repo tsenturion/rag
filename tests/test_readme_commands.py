@@ -52,12 +52,12 @@ def _logical_commands(block: str) -> list[str]:
 
 
 def test_concrete_agent_commands_select_config() -> None:
-    """Не допускает запуск `rag-agent` без обязательного provider-конфига."""
+    """Требует provider-конфиг у рабочих запусков, но не у автономной справки CLI."""
     commands = [
         command
         for block in _concrete_powershell_blocks()
         for command in _logical_commands(block)
-        if command.startswith("rag-agent ")
+        if command.startswith("rag-agent ") and "--help" not in command
     ]
 
     assert commands

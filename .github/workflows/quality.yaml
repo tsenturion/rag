@@ -44,8 +44,11 @@ jobs:
           # MLflow 3.15.2 требует cryptography<50, а исправленный релиз для
           # CVE-2026-71211 ещё не опубликован. Оба исключения ограничены MLflow:
           # проект не включает AI Gateway и не расшифровывает входящие PKCS#7.
-          # Удаляем исключения сразу после появления совместимой версии MLflow.
-          python -m pip_audit --ignore-vuln PYSEC-2026-3552 --ignore-vuln CVE-2026-71211 --requirement requirements.txt
+          # NLTK 3.10.3 остаётся последним релизом и пока не исправляет
+          # PYSEC-2026-3740 в model-artifact API. Проект получает NLTK только
+          # через LlamaIndex и не вызывает уязвимые import/export функции.
+          # Удаляем исключения сразу после появления исправленных MLflow/NLTK.
+          python -m pip_audit --ignore-vuln PYSEC-2026-3552 --ignore-vuln CVE-2026-71211 --ignore-vuln PYSEC-2026-3740 --requirement requirements.txt
           python -m pip_audit --ignore-vuln PYSEC-2026-3552 --ignore-vuln CVE-2026-71211 --requirement requirements-service.txt
           python -m pip_audit --requirement requirements-code-runner.txt
 
