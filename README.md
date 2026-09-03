@@ -256,14 +256,29 @@ mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port
 | Dependabot                                                                                                             | Контроль обновлений Python- и GitHub Actions-зависимостей          | [Dependabot](https://docs.github.com/en/code-security/dependabot)                                                                                                                                                           |
 | GHCR и SBOM                                                                                                            | Публикация контейнера и attestations состава образа                | [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry), [Docker attestations](https://docs.docker.com/build/metadata/attestations/)   |
 
-## Команды rag-prep, rag-index и rag-support
+## Консольные команды проекта
 
-Три консольные команды решают разные задачи:
+После `pip install -e .` проект устанавливает следующие команды. Batch-команды
+завершаются после формирования результата, а server/worker-команды занимают текущий
+терминал до остановки через `Ctrl+C`.
 
-- `rag-prep` запускает конечный batch-пайплайн, сохраняет артефакты и завершает процесс;
-- `rag-index` загружает уже готовые embeddings в Qdrant без запуска остальных offline-пайплайнов;
-- `rag-support` запускает долгоживущий HTTP API поверх уже подготовленной Qdrant collection;
-- Docker Compose запускает тот же `rag-support` внутри контейнера, поэтому после deploy сервисом можно пользоваться через порт `8000`.
+| Команда                    | Назначение                                                                                     | Тип запуска         |
+| -------------------------- | ---------------------------------------------------------------------------------------------- | ------------------- |
+| `rag-prep`                 | Подготовка документов, chunking, расчёт embeddings и полный vector-store stage                 | Batch pipeline      |
+| `rag-index`                | Загрузка уже рассчитанных embeddings в Qdrant без их повторного расчёта                        | Batch indexing      |
+| `rag-agent`                | Один запрос агенту, сценарии, multi-agent режим, MCP и управление orchestration-заданиями       | CLI-клиент          |
+| `rag-support`              | HTTP API агента с LLM, RAG, tools, memory, Swagger и протоколами                               | Долгоживущий API    |
+| `rag-support-openapi`      | Экспорт фактической OpenAPI-схемы для frontend-клиента без запуска LLM                         | Batch export        |
+| `llm-tune`                 | Проверка окружения, LoRA/QLoRA fine-tuning, evaluation и локальная генерация                   | Batch/обучение      |
+| `rag-code-runner`          | Отдельный изолированный HTTP-сервис выполнения разрешённого Python-кода                        | Долгоживущий API    |
+| `rag-orchestration-worker` | Celery worker для распределённого выполнения заданий из RabbitMQ                              | Долгоживущий worker |
+| `rag-camunda`              | Deploy, запуск, диагностика и worker гибридного BPMN-процесса Camunda                          | CLI/worker          |
+| `rag-eval`                 | Регрессионная оценка single- или multi-agent режима по фиксированному набору кейсов             | Batch evaluation    |
+
+Docker Compose запускает `rag-support`, code runner и необходимые workers внутри
+контейнеров. После deploy HTTP API доступен через порт `8000`; консольный
+`rag-agent` при этом остаётся отдельным host-клиентом или инструментом локальной
+диагностики.
 
 ### rag-prep
 
@@ -340,6 +355,37 @@ docker compose --profile indexing run --rm indexer
 rag-index --help
 ```
 
+### rag-agent
+
+Форма одиночного запроса:
+
+```powershell
+rag-agent `
+  --config config/support_agent_openai.yaml `
+  --message "Как обработать заявку на сброс пароля?" `
+  --user-id engineer-1 `
+  --session-id incident-42 `
+  --json
+```
+
+`rag-agent` создаёт тот же `AgentRunner`, который используется HTTP-сервисом, но
+выполняет выбранную операцию непосредственно в консоли. Команда поддерживает:
+
+- обычный запрос через `--message` и multi-agent запуск через `--multi-agent`;
+- один сценарий `--run-scenario` или весь набор `--run-scenarios`;
+- сравнение single-agent и multi-agent через `--compare-agents`;
+- просмотр памяти и истории, симуляцию A2A/ACP и вызов внешних MCP tools;
+- постановку и сопровождение распределённых заданий через `--enqueue`,
+  `--job-status`, `--job-events`, `--cancel-job` и `--queue-status`.
+
+Для операций, которые вызывают LLM или внешние tools, нужны соответствующие ключи
+из `.env`. Для работы с очередью должны быть запущены RabbitMQ, Redis и
+orchestration worker. Полный список взаимоисключающих режимов и параметров:
+
+```powershell
+rag-agent --help
+```
+
 ### rag-support
 
 Форма команды:
@@ -383,7 +429,7 @@ rag-support
 rag-support --config config/support_agent_openai.yaml --host 0.0.0.0 --port 8080
 ```
 
-Host-сервис и Docker-контейнер нельзя одновременно привязать к одному host-порту. Если Docker уже публикует `8000`, используйте только контейнер, остановите его через `docker compose down` либо запустите локальный сервер на другом порту:
+Host-сервис и Docker-контейнер нельзя одновременно привязать к одному host-порту. Если Docker уже публикует `8000`, используйте только контейнер, остановите его через `docker compose stop support-agent` либо запустите локальный сервер на другом порту:
 
 ```powershell
 rag-support --config config/support_agent_openai.yaml --port 8001
@@ -397,6 +443,76 @@ rag-support --config config/support_agent_openai.yaml --port 8001
 
 ```powershell
 rag-support --help
+```
+
+### Остальные CLI
+
+Проверить XPU/CUDA, модель и параметры fine-tuning без запуска обучения:
+
+```powershell
+llm-tune --config config/fine_tuning.yaml inspect-env
+```
+
+Команды `validate-data`, `baseline`, `train`, `evaluate`, `compare` и `generate`
+описаны в разделе fine-tuning. `train` является единственной из них, которая
+изменяет веса LoRA adapter.
+
+Экспортировать OpenAPI для типизации Vite-клиента без запуска сервера и без вызова
+LLM:
+
+```powershell
+rag-support-openapi `
+  --config config/support_agent_openai.yaml `
+  --output data/openapi/support-api.json
+```
+
+Запустить code runner непосредственно на host. Ключ `CODE_RUNNER_API_KEY` читается
+из `.env`, а сервер работает в текущем терминале до `Ctrl+C`:
+
+```powershell
+rag-code-runner --host 127.0.0.1 --port 8010
+```
+
+Запустить Celery worker на host для отладки распределённой оркестрации:
+
+```powershell
+rag-orchestration-worker `
+  --config config/multi_agent_docker_openai.yaml `
+  --queues agent.high.quorum,agent.default.quorum,agent.low.quorum
+```
+
+Для этой команды broker/result backend/Redis URL в `.env` должны быть доступны с
+host. В штатном Docker-контуре worker запускается через Compose, поэтому отдельная
+host-команда не нужна.
+
+Проверить Camunda REST API, BPMN-файл и deployment:
+
+```powershell
+rag-camunda --config config/multi_agent_docker_openai.yaml doctor
+```
+
+Та же команда предоставляет операции `deploy`, `start`, `status`, `approve` и
+`worker`; им требуется запущенный профиль `bpmn`.
+
+Запустить полный evaluation на реальной модели и существующей Qdrant collection:
+
+```powershell
+rag-eval `
+  --config config/multi_agent_openai.yaml `
+  --suite config/evaluation/engineering_support_cases.yaml
+```
+
+Evaluation возвращает exit code `1`, если не пройден quality gate. У каждой
+команды есть безопасная справка, которая не запускает сервер, worker, обучение или
+внешний API:
+
+```powershell
+llm-tune --help
+rag-support-openapi --help
+rag-code-runner --help
+rag-orchestration-worker --help
+rag-camunda --help
+rag-eval --help
 ```
 
 ## Примеры входных данных
@@ -2756,13 +2872,42 @@ docker compose start qdrant support-agent orchestration-worker camunda-worker
 Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
-Остановить сервисы:
+Для временной остановки полного контура сохраняйте контейнеры и Compose-сеть:
 
 ```powershell
-docker compose down
+docker compose --profile observability --profile orchestration --profile bpmn stop
+docker compose --profile observability --profile orchestration --profile bpmn start
 ```
 
-Команда не удаляет volumes. Их удаление через `docker compose down -v` необратимо удалит containerized Qdrant и память агента.
+Для удаления контейнеров и последующего чистого создания используйте один и тот же
+набор профилей в обеих командах:
+
+```powershell
+docker compose --profile observability --profile orchestration --profile bpmn down --remove-orphans
+docker compose --profile observability --profile orchestration --profile bpmn up -d
+```
+
+Обе последовательности сохраняют именованные volumes. Параметр `-v` здесь намеренно
+не используется: `docker compose down -v` необратимо удалит containerized Qdrant,
+память агента, очереди и данные observability.
+
+Ошибка `network <id> not found` означает, что оставшиеся контейнеры ссылаются на уже
+удалённую Compose-сеть. Обычно это происходит, если часть стека была запущена с
+профилями, а `down` затем выполнен с другим набором профилей. Команда `docker compose
+start` повторно использует существующие контейнеры и не умеет восстановить такую
+сеть. Исправление без удаления данных:
+
+```powershell
+docker compose --profile observability --profile orchestration --profile bpmn down --remove-orphans
+docker compose --profile observability --profile orchestration --profile bpmn up -d
+docker compose --profile observability --profile orchestration --profile bpmn ps
+Invoke-RestMethod http://127.0.0.1:8000/ready
+```
+
+После восстановления кнопка запуска Compose application в Docker Desktop снова
+работает. Для обновления исходного кода или images вместо этой процедуры используйте
+`pwsh -File scripts/rebuild_docker.ps1`: скрипт пересоздаёт API и workers на одном
+image digest и также сохраняет volumes.
 
 ## Сценарии support-агента
 
