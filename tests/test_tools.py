@@ -21,7 +21,7 @@ from agent_app.config import (  # noqa: E402
     MemoryConfig,
     WeatherConfig,
 )
-from agent_app.memory.store import SQLiteMemoryStore  # noqa: E402
+from agent_app.memory.store import MemoryStore  # noqa: E402
 from agent_app.tools.calculator import calculate, calculator_tool  # noqa: E402
 from agent_app.tools.registry import build_tools  # noqa: E402
 from agent_app.tools.travel import travel_tools  # noqa: E402
@@ -68,7 +68,7 @@ class ToolsTest(unittest.TestCase):
                 agent=AgentConfig(provider="local", model="test-model"),
                 memory=MemoryConfig(sqlite_path=Path(temporary_dir) / "memory.sqlite"),
             )
-            store = SQLiteMemoryStore(config.memory.sqlite_path)
+            store = MemoryStore(config.memory.sqlite_path)
             names = {
                 tool.name
                 for tool in build_tools(

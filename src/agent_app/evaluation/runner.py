@@ -10,6 +10,7 @@ from uuid import uuid4
 import mlflow
 
 from agent_app.config import AgentAppConfig
+from agent_app.database import DatabaseRuntime
 from agent_app.evaluation.exporting import EvaluationExporter
 from agent_app.evaluation.metrics import evaluate_output, summarize
 from agent_app.evaluation.models import (
@@ -184,11 +185,19 @@ class EvaluationRunner:
 
     def _pending_reviews(self) -> int:
         """Гарантирует получение актуального количества ожидающих ручной проверки оценок для контроля очереди ревью."""
-        store = HumanReviewStore(self.config.guardrails.review_sqlite_path)
+        runtime = getattr(self.executor, "runtime", None)
+        if runtime is not None:
+            return runtime.review_store.count(status="pending")
+        database = DatabaseRuntime.from_config(self.config.persistence)
+        store = HumanReviewStore(
+            self.config.guardrails.review_sqlite_path,
+            database=database,
+        )
         try:
-            return len(store.list(status="pending", limit=10_000))
+            return store.count(status="pending")
         finally:
             store.close()
+            database.close()
 
     def _log_mlflow(self, report: EvaluationReport) -> None:
         """Гарантирует сохранение параметров и метрик оценки в MLflow для воспроизводимости и аудита экспериментов."""

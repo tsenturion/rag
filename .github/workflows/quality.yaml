@@ -79,6 +79,9 @@ jobs:
       SUPPORT_JWT_SECRET: ci-jwt-secret-with-at-least-32-characters
       CODE_RUNNER_API_KEY: ci-code-runner-secret-with-at-least-32-chars
       RABBITMQ_DEFAULT_PASS: ci-rabbitmq-secret-with-at-least-32-chars
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: ci-postgres-secret-with-at-least-32-chars
+      POSTGRES_DB: rag
       GRAFANA_ADMIN_USER: admin
       GRAFANA_ADMIN_PASSWORD: ci-grafana-secret-with-at-least-32-chars
       SUPPORT_AGENT_CONFIG: config/support_agent_docker_openai_smoke.yaml
@@ -96,6 +99,9 @@ jobs:
             printf 'SUPPORT_JWT_SECRET=%s\n' "$SUPPORT_JWT_SECRET"
             printf 'CODE_RUNNER_API_KEY=%s\n' "$CODE_RUNNER_API_KEY"
             printf 'RABBITMQ_DEFAULT_PASS=%s\n' "$RABBITMQ_DEFAULT_PASS"
+            printf 'POSTGRES_USER=%s\n' "$POSTGRES_USER"
+            printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
+            printf 'POSTGRES_DB=%s\n' "$POSTGRES_DB"
             printf 'GRAFANA_ADMIN_USER=%s\n' "$GRAFANA_ADMIN_USER"
             printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$GRAFANA_ADMIN_PASSWORD"
             printf 'SUPPORT_AGENT_CONFIG=%s\n' "$SUPPORT_AGENT_CONFIG"
@@ -109,7 +115,7 @@ jobs:
         shell: bash
         run: |
           docker compose --profile orchestration build support-agent code-runner
-          docker compose --profile orchestration up -d qdrant code-runner rabbitmq redis
+          docker compose --profile orchestration up -d qdrant postgres code-runner rabbitmq redis
           for attempt in {1..60}; do
             if curl --fail --silent http://127.0.0.1:6333/readyz >/dev/null; then
               break
@@ -144,6 +150,11 @@ jobs:
           assert payload['status'] == 'ready'
           assert details['llm']['ready'] is True
           assert details['rag']['ready'] is True
+          assert details['database'] == {
+              'ready': True,
+              'backend': 'postgresql',
+              'error': None,
+          }
           assert details['orchestration']['ready'] is True
           assert details['orchestration']['workers']['ping']
           PY

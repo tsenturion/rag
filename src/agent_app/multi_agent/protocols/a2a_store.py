@@ -1,25 +1,48 @@
-"""SQLite-хранилище A2A-задач с owner scope, TTL и ограничением размера."""
+"""Хранилище A2A-задач с owner scope, TTL и ограничением размера."""
 
 from __future__ import annotations
 
-import sqlite3
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+import threading
 from pathlib import Path
 
 from a2a.types import Task
+
+from agent_app.database import DatabaseRuntime
 
 
 class A2ATaskStore:
     """Сохраняет protobuf Task между запросами, процессами и перезапусками."""
 
-    def __init__(self, path: Path, *, ttl_seconds: int, max_tasks: int):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        ttl_seconds: int,
+        max_tasks: int,
+        database: DatabaseRuntime | None = None,
+    ):
         """Создаёт schema и фиксирует политику хранения A2A-задач."""
         self.path = path
         self.ttl_seconds = ttl_seconds
         self.max_tasks = max_tasks
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._owns_database = database is None
+        self.database = database or DatabaseRuntime(backend="sqlite")
+        self._initialized = False
+        self._initialize_lock = threading.Lock()
+
+    def _ensure_initialized(self) -> None:
+        """Лениво создаёт schema, не подключаясь к БД при генерации OpenAPI."""
+        if self._initialized:
+            return
+        with self._initialize_lock:
+            if self._initialized:
+                return
+            self._initialize_schema()
+            self._initialized = True
+
+    def _initialize_schema(self) -> None:
+        """Создаёт таблицу и индекс A2A-задач в выбранном backend."""
         with self._connect() as connection:
             connection.execute(
                 """
@@ -40,6 +63,7 @@ class A2ATaskStore:
 
     def save(self, task: Task, *, owner_id: str) -> None:
         """Атомарно сохраняет task и удаляет просроченные/самые старые записи."""
+        self._ensure_initialized()
         now = time.time()
         with self._connect() as connection:
             connection.execute("DELETE FROM a2a_tasks WHERE expires_at <= ?", (now,))
@@ -78,6 +102,7 @@ class A2ATaskStore:
 
     def get(self, task_id: str) -> tuple[Task, str] | None:
         """Возвращает актуальную задачу и owner либо удаляет истёкшую запись."""
+        self._ensure_initialized()
         now = time.time()
         with self._connect() as connection:
             row = connection.execute(
@@ -92,11 +117,12 @@ class A2ATaskStore:
                 )
                 return None
         task = Task()
-        task.ParseFromString(row["payload"])
+        task.ParseFromString(bytes(row["payload"]))
         return task, str(row["owner_id"])
 
     def list(self, *, owner_id: str | None = None) -> list[tuple[Task, str]]:
         """Возвращает задачи от новых к старым, при необходимости только owner."""
+        self._ensure_initialized()
         now = time.time()
         sql = "SELECT payload, owner_id FROM a2a_tasks WHERE expires_at > ?"
         params: list[object] = [now]
@@ -110,22 +136,15 @@ class A2ATaskStore:
         result: list[tuple[Task, str]] = []
         for row in rows:
             task = Task()
-            task.ParseFromString(row["payload"])
+            task.ParseFromString(bytes(row["payload"]))
             result.append((task, str(row["owner_id"])))
         return result
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        """Открывает транзакцию и гарантированно закрывает короткое WAL-соединение."""
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=30000")
-        try:
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+    def close(self) -> None:
+        """Закрывает самостоятельно созданный database runtime."""
+        if self._owns_database:
+            self.database.close()
+
+    def _connect(self):
+        """Открывает транзакцию через общий слой persistence."""
+        return self.database.connection(self.path)

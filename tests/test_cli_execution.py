@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -228,3 +229,54 @@ def test_code_runner_cli_passes_network_options_to_uvicorn() -> None:
     run.assert_called_once_with(
         "code_runner.app:app", host="127.0.0.2", port=8123, workers=1
     )
+
+
+def test_support_cli_uses_factory_for_postgresql_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PostgreSQL-профиль запускает несколько workers через importable factory."""
+    from agent_app.service import cli
+
+    config = SimpleNamespace(
+        persistence=SimpleNamespace(backend="postgresql"),
+        service=SimpleNamespace(host="0.0.0.0", port=8000, workers=3),
+        logging=SimpleNamespace(level="INFO"),
+    )
+    monkeypatch.setenv("SUPPORT_AGENT_CONFIG", "old.yaml")
+    with (
+        patch.object(sys, "argv", ["rag-support", "--config", "agent.yaml"]),
+        patch("agent_app.config.load_agent_config", return_value=config),
+        patch("uvicorn.run") as run,
+    ):
+        cli.main()
+
+    expected_path = str(Path("agent.yaml").resolve())
+    assert os.environ["SUPPORT_AGENT_CONFIG"] == expected_path
+    run.assert_called_once_with(
+        "agent_app.service.app:create_app",
+        factory=True,
+        host="0.0.0.0",
+        port=8000,
+        workers=3,
+        log_level="info",
+    )
+
+
+def test_support_cli_rejects_multiple_sqlite_workers() -> None:
+    """Локальный SQLite не допускает конкурентные Uvicorn-процессы."""
+    from agent_app.service import cli
+
+    config = SimpleNamespace(
+        persistence=SimpleNamespace(backend="sqlite"),
+        service=SimpleNamespace(host="127.0.0.1", port=8000, workers=2),
+        logging=SimpleNamespace(level="INFO"),
+    )
+    with (
+        patch.object(sys, "argv", ["rag-support", "--config", "agent.yaml"]),
+        patch("agent_app.config.load_agent_config", return_value=config),
+        patch("uvicorn.run") as run,
+        pytest.raises(ValueError, match="backend=postgresql"),
+    ):
+        cli.main()
+
+    run.assert_not_called()

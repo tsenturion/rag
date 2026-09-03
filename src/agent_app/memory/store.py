@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import contextmanager
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from uuid import uuid4
 
+from psycopg.errors import UniqueViolation
+
+from agent_app.database import DatabaseRuntime
 from agent_app.memory.policy import (
     clamp_importance,
     normalize_key,
@@ -27,14 +30,20 @@ from agent_app.models import (
 )
 
 
-class SQLiteMemoryStore:
-    """Долговременная память с типизированными записями и простым LIKE-поиском."""
+class MemoryStore:
+    """Долговременная память поверх локального SQLite или общего PostgreSQL."""
 
-    def __init__(self, path: Path):
-        """Обеспечивает готовность экземпляра к работе с файловым SQLite-хранилищем, создавая структуру базы и директории при необходимости."""
+    def __init__(self, path: Path, *, database: DatabaseRuntime | None = None):
+        """Создаёт таблицы в выбранном backend и фиксирует владение соединениями."""
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._owns_database = database is None
+        self.database = database or DatabaseRuntime(backend="sqlite")
         self._init_schema()
+
+    def close(self) -> None:
+        """Закрывает database runtime, только если store создал его самостоятельно."""
+        if self._owns_database:
+            self.database.close()
 
     def save(
         self,
@@ -86,17 +95,39 @@ class SQLiteMemoryStore:
             ttl_seconds=ttl_seconds,
             metadata=metadata or {},
         )
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO memories (
-                  id, user_id, session_id, memory_type, key, value, tags,
-                  importance, source, created_at, updated_at, last_accessed_at,
-                  access_count, ttl_seconds, metadata
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO memories (
+                      id, user_id, session_id, memory_type, key, value, tags,
+                      importance, source, created_at, updated_at, last_accessed_at,
+                      access_count, ttl_seconds, metadata
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    self._to_row(record),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                self._to_row(record),
+        except (sqlite3.IntegrityError, UniqueViolation):
+            # Между предварительным чтением и INSERT другой worker мог создать
+            # тот же scoped key. После rollback читаем победившую запись и
+            # применяем обычную политику обновления вместо возврата ошибки.
+            concurrent = self.find_by_key(
+                user_id=user_id,
+                key=normalized_key,
+                memory_type=memory_type,
+                session_id=session_id,
+            )
+            if concurrent is None:
+                raise
+            return self.update(
+                concurrent.id,
+                user_id=user_id,
+                value=cleaned_value,
+                tags=tags,
+                importance=importance,
+                ttl_seconds=ttl_seconds,
+                metadata=metadata,
             )
         return record
 
@@ -437,9 +468,9 @@ class SQLiteMemoryStore:
     def _conversation_session_from_row(
         cls,
         user_id: str,
-        row: sqlite3.Row,
+        row: Mapping[str, Any],
     ) -> ConversationSession:
-        """Преобразует строку SQLite в типизированную историю диалога."""
+        """Преобразует строку СУБД в типизированную историю диалога."""
         return ConversationSession(
             user_id=user_id,
             session_id=row["session_id"],
@@ -447,7 +478,7 @@ class SQLiteMemoryStore:
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
 
-    def _valid_record(self, row: sqlite3.Row) -> MemoryRecord | None:
+    def _valid_record(self, row: Mapping[str, Any]) -> MemoryRecord | None:
         """Гарантирует, что возвращаемая запись памяти не просрочена, автоматически удаляя устаревшие записи и предотвращая их использование."""
         record = self._from_row(row)
         if self._is_expired(record):
@@ -502,7 +533,7 @@ class SQLiteMemoryStore:
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique_scoped_key
-                ON memories(user_id, IFNULL(session_id, ''), memory_type, key)
+                ON memories(user_id, COALESCE(session_id, ''), memory_type, key)
                 """
             )
             conn.execute(
@@ -517,18 +548,9 @@ class SQLiteMemoryStore:
                 """
             )
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        """Обеспечивает безопасное подключение к базе данных с поддержкой транзакций и гарантией закрытия соединения после использования."""
-        conn = sqlite3.connect(self.path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+    def _connect(self):
+        """Возвращает транзакцию общего database runtime для текущего store."""
+        return self.database.connection(self.path)
 
     @staticmethod
     def _to_row(record: MemoryRecord) -> tuple[Any, ...]:
@@ -552,7 +574,7 @@ class SQLiteMemoryStore:
         )
 
     @staticmethod
-    def _from_row(row: sqlite3.Row) -> MemoryRecord:
+    def _from_row(row: Mapping[str, Any]) -> MemoryRecord:
         """Восстанавливает объект памяти из строки базы данных, обеспечивая целостность и соответствие контракту MemoryRecord."""
         return MemoryRecord(
             id=row["id"],

@@ -71,20 +71,22 @@ def main() -> None:
     import uvicorn
 
     from agent_app.config import load_agent_config
-    from agent_app.service.app import create_app
 
     config_path = Path(args.config).expanduser().resolve()
     config = load_agent_config(config_path)
-    if config.service.workers != 1:
+    if config.service.workers != 1 and config.persistence.backend != "postgresql":
         raise ValueError(
-            "SQLite memory/incident storage поддерживает один worker. "
-            "Установите service.workers: 1."
+            "Несколько Uvicorn workers требуют persistence.backend=postgresql."
         )
+    # Factory импортируется отдельно в каждом worker. Абсолютный путь в env
+    # обеспечивает одинаковую конфигурацию независимо от рабочего каталога.
+    os.environ["SUPPORT_AGENT_CONFIG"] = str(config_path)
     uvicorn.run(
-        create_app(config_path),
+        "agent_app.service.app:create_app",
+        factory=True,
         host=args.host or config.service.host,
         port=args.port or config.service.port,
-        workers=1,
+        workers=config.service.workers,
         log_level=config.logging.level.lower(),
     )
 

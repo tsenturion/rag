@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -564,11 +565,15 @@ def _resolve_local_model_reference(model: str, *, base_dir: Path) -> str:
 
 
 def _resolve_logging_tracking_uri(config: Any, *, base_dir: Path) -> Any:
-    """Гарантирует, что URI для отслеживания логов MLflow приведён к абсолютному виду и корректно интегрирован в конфигурацию."""
+    """Выбирает MLflow backend из окружения или YAML и разрешает локальный URI."""
+    tracking_uri = os.getenv(
+        "MLFLOW_TRACKING_URI",
+        config.logging.mlflow_tracking_uri,
+    )
     logging_config = config.logging.model_copy(
         update={
             "mlflow_tracking_uri": resolve_mlflow_tracking_uri(
-                config.logging.mlflow_tracking_uri,
+                tracking_uri,
                 base_dir=base_dir,
             )
         }

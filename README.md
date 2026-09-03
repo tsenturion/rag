@@ -132,7 +132,7 @@ rag-prep --config config/default.yaml --no-prefect
 - `documents.jsonl`
 - `manifest.json`
 
-MLflow tracking использует SQLite БД `mlruns/mlflow.db` относительно корня проекта, определённого по расположению YAML-конфига. Запуск CLI из другого рабочего каталога не создаёт отдельное хранилище экспериментов. Артефакты также остаются в локальном каталоге MLflow; в Docker каталог `mlruns/` подключён как именованный volume.
+При host-запуске MLflow tracking использует локальную SQLite БД `mlruns/mlflow.db` относительно корня проекта, определённого по расположению YAML-конфига. Запуск CLI из другого рабочего каталога не создаёт отдельное хранилище экспериментов. Docker-процессы получают `MLFLOW_TRACKING_URI` из Compose и используют общий PostgreSQL; файловые MLflow-артефакты остаются в именованном volume `mlruns_data`.
 В `manifest.json` сохраняются параметры запуска, числовые счётчики и диагностический блок `parse_failures` для файлов, которые не удалось разобрать при `parser.fail_on_error: false`.
 JSON, JSONL и manifest сначала полностью формируются во временной директории, а затем публикуются как согласованный набор под directory lock. Перед первой заменой создаются durable write-ahead journal и резервные копии, после последней замены фиксируется состояние `committed`. При обычной ошибке набор откатывается сразу; после аварийного завершения следующий экспорт или downstream-проверка по manifest восстанавливает весь старый набор либо принимает весь новый, поэтому смешанное состояние не используется.
 
@@ -186,8 +186,9 @@ mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port
 | Инструмент или аспект                      | Назначение в проекте                                          | Документация                                                                                                                                                                                                                                                  |
 | ------------------------------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `langchain-core`                           | Сообщения, tools и унифицированные интерфейсы LLM             | [LangChain overview](https://docs.langchain.com/oss/python/langchain/overview), [tools](https://docs.langchain.com/oss/python/langchain/tools)                                                                                                                |
-| `langgraph`, `langgraph-checkpoint-sqlite` | Граф состояний, переходы, loop guard и checkpoint persistence | [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview), [persistence](https://docs.langchain.com/oss/python/langgraph/persistence), [SQLite checkpointer](https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint-sqlite) |
-| SQLite                                     | Диалоговая, summary- и долговременная память агента           | [`sqlite3`](https://docs.python.org/3/library/sqlite3.html), [SQLite](https://www.sqlite.org/docs.html)                                                                                                                                                       |
+| `langgraph`, checkpoint SQLite/PostgreSQL  | Граф состояний, переходы, loop guard и checkpoint persistence | [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview), [persistence](https://docs.langchain.com/oss/python/langgraph/persistence), [PostgreSQL saver](https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint-postgres), [SQLite saver](https://github.com/langchain-ai/langgraph/tree/main/libs/checkpoint-sqlite) |
+| PostgreSQL, `psycopg`                      | Общее production-хранилище памяти, истории, incidents, audit, reviews, A2A и checkpoints | [PostgreSQL](https://www.postgresql.org/docs/current/), [Psycopg](https://www.psycopg.org/psycopg3/docs/), [connection pool](https://www.psycopg.org/psycopg3/docs/api/pool.html) |
+| SQLite                                     | Локальное хранилище тех же состояний без отдельного сервера   | [`sqlite3`](https://docs.python.org/3/library/sqlite3.html), [SQLite](https://www.sqlite.org/docs.html)                                                                                                                                                       |
 | `httpx2`                                   | Синхронные и асинхронные обращения к внешним HTTP API         | [HTTPX2](https://httpx2.pydantic.dev/), [репозиторий](https://github.com/pydantic/httpx2)                                                                                                                                                                     |
 | OpenWeatherMap                             | Реальный weather tool                                         | [Current Weather API](https://openweathermap.org/current), [API keys](https://openweathermap.org/appid)                                                                                                                                                       |
 | Банк России                                | Официальная конвертация стоимости иностранных API в RUB       | [ежедневные курсы](https://www.cbr.ru/currency_base/daily/), [веб-сервис курсов](https://www.cbr.ru/development/DWS/), [`XML_daily.asp`](https://www.cbr.ru/scripts/XML_daily.asp)                                                                            |
@@ -274,6 +275,7 @@ mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port
 | `rag-orchestration-worker` | Celery worker для распределённого выполнения заданий из RabbitMQ                              | Долгоживущий worker |
 | `rag-camunda`              | Deploy, запуск, диагностика и worker гибридного BPMN-процесса Camunda                          | CLI/worker          |
 | `rag-eval`                 | Регрессионная оценка single- или multi-agent режима по фиксированному набору кейсов             | Batch evaluation    |
+| `rag-db`                   | Проверка PostgreSQL и однократная миграция локального SQLite-состояния                           | Batch migration     |
 
 Docker Compose запускает `rag-support`, code runner и необходимые workers внутри
 контейнеров. После deploy HTTP API доступен через порт `8000`; консольный
@@ -353,6 +355,42 @@ docker compose --profile indexing run --rm indexer
 
 ```powershell
 rag-index --help
+```
+
+### rag-db
+
+`rag-db` обслуживает реляционное состояние агента и не вызывает LLM, embeddings или
+внешние tools. Команда `status` проверяет соединение и показывает число записей в
+памяти, истории, incidents, security audit, human review и A2A tasks:
+
+```powershell
+rag-db --config config/multi_agent_docker_openai_observability.yaml status
+```
+
+Docker-конфиги выбирают `persistence.backend: postgresql` и читают DSN только из
+`AGENT_DATABASE_URL`; host-конфиги явно используют SQLite. Для однократного переноса
+существующих локальных данных сначала запустите PostgreSQL, остановите процессы,
+которые могут менять состояние, затем выполните миграцию:
+
+```powershell
+docker compose up -d postgres
+docker compose stop support-agent orchestration-worker camunda-worker
+rag-db --config config/multi_agent_docker_openai_observability.yaml migrate-sqlite
+rag-db --config config/multi_agent_docker_openai_observability.yaml status
+docker compose --profile orchestration --profile bpmn up -d support-agent orchestration-worker camunda-worker
+```
+
+Миграция переносит LangGraph checkpoints и все прикладные таблицы, использует upsert
+и поэтому допускает повторный запуск. Ключ `--skip-checkpoints` нужен только когда
+историю графа переносить не требуется. Перед миграцией сохраните резервную копию
+SQLite-файлов из `data/agent/` и `data/multi_agent/`; не меняйте source и target
+параллельно во время копирования.
+
+Справка:
+
+```powershell
+rag-db --help
+rag-db --config config/multi_agent_docker_openai_observability.yaml migrate-sqlite --help
 ```
 
 ### rag-agent
@@ -615,7 +653,8 @@ Quality scoring не удаляет документы сам по себе. О�
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/rag_prep/config_composition.py` | `load_composed_yaml()` рекурсивно раскрывает `extends`; `deep_merge()` объединяет словари; `apply_rag_profile()` проецирует единый RAG-профиль в схему `agent`, `chunking`, `embedding` или `vector_store`; валидатор проверяет совпадение `embedding.dimensions` и `vector_store.vector_size`. |
 | `src/rag_prep/config.py`             | Загружает композицию для prepare/chunking/embeddings/vector-store, валидирует её профильными Pydantic-моделями и разрешает пути данных.                                                                                                                                                         |
-| `src/agent_app/config.py`            | Использует тот же `load_composed_yaml()` и `apply_rag_profile(..., target="agent")` для single-agent, support-, multi-agent и orchestration presets.                                                                                                                                            |
+| `src/agent_app/config.py`            | Использует тот же `load_composed_yaml()` и `apply_rag_profile(..., target="agent")` для single-agent, support-, multi-agent и orchestration presets; валидирует выбор SQLite/PostgreSQL.                                                                                                         |
+| `src/agent_app/database.py`          | Создаёт короткие SQLite-транзакции для host-режима либо общий потокобезопасный `psycopg` connection pool для Docker/production.                                                                                                                                            |
 | `tests/test_config_composition.py`   | Проверяет порядок наследования, замену списков/скаляров, рекурсивное слияние, циклы, отсутствующие файлы и несовместимую размерность.                                                                                                                                                           |
 
 Таким образом, YAML-файлы только декларируют слои. Фактический алгоритм наследования и проверки контрактов сосредоточен в одном файле `config_composition.py`, а два config-loader-а преобразуют итоговый словарь в строго типизированные настройки своих подсистем.
@@ -670,8 +709,8 @@ rag_profile: profiles/rag/local.yaml
 | `config/profiles/support/state_gigachat_openai.yaml`              | Изолирует state комбинации GigaChat chat + OpenAI vectors.                                                                       |
 | `config/profiles/support/state_gigachat_local.yaml`               | Изолирует state комбинации GigaChat chat + local vectors.                                                                        |
 | `config/profiles/support/state_local.yaml`                        | Изолирует state local Qwen + local vectors.                                                                                      |
-| `config/profiles/support/deployment_host.yaml`                    | Host URL, один API worker и embedded Qdrant.                                                                                     |
-| `config/profiles/support/deployment_docker.yaml`                  | Docker hostnames, Qdrant HTTP mode, обязательная API-аутентификация и общий Redis rate limit.                                    |
+| `config/profiles/support/deployment_host.yaml`                    | Host URL, локальный SQLite, один API worker и embedded Qdrant.                                                                   |
+| `config/profiles/support/deployment_docker.yaml`                  | PostgreSQL из `AGENT_DATABASE_URL`, Docker hostnames, Qdrant HTTP mode, обязательная API-аутентификация и общий Redis rate limit. |
 | `config/profiles/support/deployment_docker_local_embeddings.yaml` | Дополняет Docker deployment путями локальной embedding-модели.                                                                   |
 | `config/profiles/support/multi_agent.yaml`                        | Роли, allowlists и LangGraph limits.                                                                                             |
 | `config/profiles/support/multi_agent_llm_mixed.yaml`              | Per-role routing между OpenAI, GigaChat и local Qwen.                                                                            |
@@ -1550,6 +1589,9 @@ rag-prep vector-store --config config/vector_store_gigachat.yaml --no-prefect
 | `config/agent_openai.yaml`, `config/agent_gigachat.yaml`, `config/agent_local.yaml` | Явные single-agent presets для трёх LLM providers.                                          |
 | `src/agent_app/__init__.py`                                                         | Публичная граница пакета агентного приложения.                                              |
 | `src/agent_app/config.py`                                                           | Pydantic-конфигурация LLM, memory, tools, RAG, service, security и orchestration.           |
+| `src/agent_app/database.py`                                                         | Единый transaction API: SQLite для host-запуска и PostgreSQL pool для Docker/production.    |
+| `src/agent_app/database_cli.py`                                                     | Проверяет PostgreSQL и переносит локальные прикладные таблицы и LangGraph checkpoints.      |
+| `tests/test_database.py`                                                           | Проверяет выбор backend, SQL-адаптер, общий runtime, MLflow override и конкурентный save.   |
 | `src/agent_app/models.py`                                                           | Общие модели memory, agent state/response, trace и tool result.                             |
 | `src/agent_app/llm.py`                                                              | Фабрика OpenAI/GigaChat/local Qwen и parser локальных tool calls.                           |
 | `src/agent_app/prompts.py`                                                          | System prompt и правила использования памяти/tools/RAG.                                     |
@@ -1559,7 +1601,7 @@ rag-prep vector-store --config config/vector_store_gigachat.yaml --no-prefect
 | `src/agent_app/memory/__init__.py`                                                  | Экспортирует memory API.                                                                    |
 | `src/agent_app/memory/short_term.py`                                                | Хранит bounded buffer полных диалоговых ходов текущего процесса.                            |
 | `src/agent_app/memory/summary.py`                                                   | Сжимает старую историю и безопасно переживает ошибку summary LLM.                           |
-| `src/agent_app/memory/store.py`                                                     | User/session-scoped long-term SQLite CRUD, search, TTL и access statistics.                 |
+| `src/agent_app/memory/store.py`                                                     | User/session-scoped long-term CRUD, search, TTL и access statistics в выбранной СУБД.       |
 | `src/agent_app/memory/policy.py`                                                    | Определяет допустимые типы/важность/TTL и запрещает хранение секретов.                      |
 | `src/agent_app/tools/__init__.py`                                                   | Экспортирует registry и базовые tools.                                                      |
 | `src/agent_app/tools/registry.py`                                                   | Собирает только разрешённые конфигом tools и проверяет allowlist/disabled list.             |
@@ -1602,7 +1644,7 @@ rag-prep vector-store --config config/vector_store_gigachat.yaml --no-prefect
   - `clear_session_memory`;
 - short-term buffer memory для текущей сессии;
 - summary memory для сжатия длинного диалога;
-- long-term memory в SQLite;
+- long-term memory в PostgreSQL для Docker/production или SQLite для локального запуска;
 - сценарии MVP-агента в `config/agent_scenarios.yaml`;
 - JSON-отчёт прохождения сценариев;
 - CLI-команда `rag-agent`.
@@ -1621,7 +1663,10 @@ rag-prep vector-store --config config/vector_store_gigachat.yaml --no-prefect
 - `agent.max_history_messages` - максимальный размер short-term buffer; при переполнении история делится только на границе полного хода `user -> assistant`;
 - `agent.max_summary_chars` - ограничение summary memory;
 - `agent.tool_error_retries` - количество повторов identical tool call после ошибочного результата, по умолчанию `1`;
-- `memory.sqlite_path` - SQLite-файл долговременной памяти;
+- `persistence.backend` - `postgresql` для общего production-state или `sqlite` для локального режима;
+- `persistence.database_url_env` - имя переменной с PostgreSQL DSN, по умолчанию `AGENT_DATABASE_URL`;
+- `persistence.pool_min_size`, `pool_max_size`, `connect_timeout_seconds` - границы и таймаут общего `psycopg` pool;
+- `memory.sqlite_path` - путь локального SQLite-файла; при PostgreSQL backend таблица `memories` создаётся в общей БД;
 - `memory.default_user_id` и `default_session_id`; global-записи с `session_id=null` и записи конкретных сессий хранятся в независимых scope;
 - `weather.api_key_env` - имя переменной окружения с OpenWeatherMap API-ключом;
 - `weather.default_city`;
@@ -2187,7 +2232,7 @@ llm-tune --config config/fine_tuning.yaml compare --baseline-report data/fine_tu
 | `src/agent_app/rag/context.py`                                              | Упаковывает найденные фрагменты в ограниченный token budget и формирует citations.                                                                              |
 | `src/agent_app/rag/runtime.py`                                              | Владеет embedding provider/Qdrant client и объединяет retrieval с context packing.                                                                              |
 | `src/agent_app/support/__init__.py`                                         | Экспортирует support storage/security helpers.                                                                                                                  |
-| `src/agent_app/support/incidents.py`                                        | User-scoped SQLite CRUD инженерных инцидентов.                                                                                                                  |
+| `src/agent_app/support/incidents.py`                                        | User-scoped CRUD инженерных инцидентов в PostgreSQL или локальном SQLite.                                                                                        |
 | `src/agent_app/support/security.py`                                         | Редактирует секреты и опасные значения в support data.                                                                                                          |
 | `src/agent_app/tools/support.py`                                            | Knowledge-base search, runbook, log analysis, incident operations и diagnostic checklist tools.                                                                 |
 | `src/code_runner/__init__.py`                                               | Публичная граница изолированного code-runner.                                                                                                                   |
@@ -2233,7 +2278,7 @@ flowchart LR
     Tools --> RAG["Online RAG"]
     RAG --> QueryEmbedding["Query embedding"]
     QueryEmbedding --> Qdrant[("Qdrant")]
-    Tools --> Incidents[("SQLite incidents")]
+    Tools --> Incidents[("PostgreSQL / local SQLite")]
     Qdrant --> Citations["Контекст и citations"]
     Citations --> Graph
 ```
@@ -2247,14 +2292,14 @@ flowchart LR
 - tools выполняют поиск документации, анализ логов, формирование чек-листа и операции с инцидентами;
 - buffer, summary и long-term memory сохраняют контекст диалога и изолируют данные по `user_id`;
 - API поддерживает обычный запрос, SSE, просмотр и очистку сессии, health/readiness и Prometheus metrics;
-- Docker Compose воспроизводимо запускает Qdrant, Redis rate limiter, индексатор готовых embeddings и support-сервис.
+- Docker Compose воспроизводимо запускает PostgreSQL, Qdrant, Redis rate limiter, индексатор готовых embeddings и support-сервис.
 
 Системные требования и допущения:
 
 - локальный запуск требует Python 3.13, установленных зависимостей и заранее построенной коллекции Qdrant;
 - Docker-сценарий требует Docker Compose, `SUPPORT_SERVICE_API_KEY` и provider-ключи выбранного preset-а в `.env`;
 - document embeddings повторно не рассчитываются при запуске агента, но query embedding должен быть создан той же embedding-моделью и иметь ту же размерность;
-- SQLite и in-process session cache рассчитаны на один worker; горизонтальное масштабирование требует общего хранилища;
+- Docker-профиль хранит память, историю, incidents, audit, reviews, A2A tasks и LangGraph checkpoints в общем PostgreSQL; локальный SQLite рассчитан на один процесс;
 - `user_id` считается проверенным внешним gateway, а доступ к произвольному shell отсутствует.
 
 Критерии готовности:
@@ -2333,12 +2378,12 @@ Incident storage изолирован по `user_id`. Чтение или изм
 
 - buffer memory хранит последние полные ходы;
 - summary memory сжимает длинную историю;
-- long-term SQLite memory хранит факты, предпочтения и задачи;
+- long-term memory хранит факты, предпочтения и задачи в выбранном SQLite/PostgreSQL backend;
 - session scope отделяет текущее расследование;
 - один shared LLM и один shared RAG runtime используются всеми сессиями процесса.
 
 Размер кэша задаётся `service.session_cache_size`. Последние полные ходы short-term
-buffer сохраняются в таблице `conversation_history` той же SQLite-базы и
+buffer сохраняются в таблице `conversation_history` той же выбранной базы и
 восстанавливаются после LRU-вытеснения runner или перезапуска процесса. Удаление
 сессии синхронизировано с активным запросом и очищает buffer, summary/checkpoint и
 session-scoped память без закрытия работающего runner.
@@ -2492,9 +2537,10 @@ Frontend начинает работу с `GET /v1/app/config`. Ответ по�
 frontend передаёт `next_cursor` следующему запросу без декодирования. Детальная карточка
 сессии дополнительно содержит сохранённые сообщения с ролями `user` и `assistant`.
 Cursor-пагинация не пропускает и не дублирует диалоги при одинаковом времени обновления.
-Таблица `conversation_history` существующей SQLite-базы используется без изменения
-схемы. Миграция storage на PostgreSQL относится к отдельному следующему этапу; до неё
-сервис по-прежнему запускается с одним API worker.
+Таблица `conversation_history` хранится вместе с остальным состоянием. Host-профили
+используют SQLite и один worker; Docker-профили используют PostgreSQL, поэтому история
+доступна всем API- и orchestration-процессам. Однократный перенос выполняется через
+`rag-db migrate-sqlite`.
 
 Ошибки всех validation-запросов имеют единый контракт:
 
@@ -2638,9 +2684,16 @@ SUPPORT_AGENT_CONFIG=<один из config/support_agent_docker_*.yaml>
 VECTOR_STORE_CONFIG=<config/vector_store_docker_openai.yaml или config/vector_store_docker_local.yaml>
 RABBITMQ_DEFAULT_PASS=<отдельный случайный пароль без демонстрационного fallback>
 SUPPORT_PUBLIC_BASE_URL=http://127.0.0.1:8000
+POSTGRES_USER=rag
+POSTGRES_PASSWORD=<отдельный случайный URL-safe пароль>
+POSTGRES_DB=rag
+AGENT_DATABASE_URL=postgresql://rag:<тот же пароль>@127.0.0.1:5433/rag
 ```
 
 Compose не содержит fallback на OpenAI: без `SUPPORT_AGENT_CONFIG` или `VECTOR_STORE_CONFIG` конфигурация считается неполной и запуск останавливается до создания контейнеров.
+`AGENT_DATABASE_URL` используется host-командой `rag-db`; контейнеры получают
+эквивалентный внутренний DSN с hostname `postgres` автоматически. Пароль не включайте
+в YAML и выбирайте из URL-safe символов, чтобы он не менял смысл DSN.
 
 Остальные ключи нужны в зависимости от выбранного сценария:
 
@@ -2651,15 +2704,15 @@ Compose не содержит fallback на OpenAI: без `SUPPORT_AGENT_CONFIG
 | `OPENWEATHER_API_KEY` | Опциональный weather tool во всех presets                            |
 | `HF_TOKEN`            | Скачивание Qwen/E5 на host; уже скачанные модели работают без токена |
 
-Сначала собрать image и запустить общий Qdrant server:
+Сначала собрать image и запустить общие PostgreSQL и Qdrant server:
 
 ```powershell
 docker compose build
-docker compose up -d qdrant
+docker compose up -d postgres qdrant
 ```
 
 Все опубликованные инфраструктурные порты Compose привязаны к `127.0.0.1`:
-Qdrant, Redis, RabbitMQ, Flower, Jaeger, OTLP, Prometheus, Alertmanager, Grafana и
+PostgreSQL, Qdrant, Redis, RabbitMQ, Flower, Jaeger, OTLP, Prometheus, Alertmanager, Grafana и
 Camunda доступны только с локального компьютера. Это соответствует учебному локальному
 deployment; для удалённого окружения требуются TLS, отдельные credentials, firewall и
 явная публикация только необходимых ingress endpoints. `RABBITMQ_DEFAULT_PASS`
@@ -2758,7 +2811,7 @@ docker compose up -d --force-recreate support-agent
 
 ### Использование сервиса после Docker Compose
 
-Docker Compose здесь является не только примером сборки: он запускает рабочий FastAPI-сервис `support-agent` на `http://127.0.0.1:8000` и Qdrant на `http://127.0.0.1:6333`. После состояния `healthy` запросы отправляются в API так же, как при host-запуске `rag-support`.
+Docker Compose здесь является не только примером сборки: он запускает рабочий FastAPI-сервис `support-agent` на `http://127.0.0.1:8000`, PostgreSQL на локальном порту `5433` и Qdrant на `http://127.0.0.1:6333`. После состояния `healthy` запросы отправляются в API так же, как при host-запуске `rag-support`.
 
 Проверить контейнеры и готовность приложения:
 
@@ -2829,7 +2882,11 @@ Indexer повторно нужен только при переходе на д
 
 Qdrant одновременно хранит `rag_chunks_openai` и `rag_chunks_local`. `rag-index` не пересчитывает embeddings и выполняет idempotent upsert с deterministic point IDs. `recreate_collection: false` защищает саму коллекцию от удаления, а `prune_stale_points: true` синхронизирует её с текущим `embeddings.jsonl`: после успешного upsert пакетно удаляются только прежние point IDs, которых больше нет во входном snapshot. Число удалений сохраняется как `stale_points_deleted`; поэтому перенос корпуса или смена стабильных chunk IDs не оставляют смешанный индекс. Для additive/shared collection эту настройку можно явно отключить, но строгая валидация полного snapshot тогда закономерно сообщит о дополнительных точках. После изменения `SUPPORT_AGENT_CONFIG` достаточно пересоздать `support-agent` без перезапуска Qdrant.
 
-Qdrant и SQLite используют persistent volumes `qdrant_data` и `agent_data`. После `docker compose restart` индекс, память и incidents сохраняются.
+Qdrant и PostgreSQL используют persistent volumes `qdrant_data` и `postgres_data`.
+После `docker compose restart` индекс, память, история, incidents, audit, reviews,
+A2A tasks, LangGraph checkpoints и MLflow tracking сохраняются. `agent_data` и
+`multi_agent_data` содержат только файловые workspace/отчёты, а не основное
+транзакционное состояние.
 
 Перед обновлением или переносом deployment volumes можно сохранить в архивы. Команды выполняются из корня проекта при уже созданных контейнерах:
 
@@ -2839,34 +2896,38 @@ New-Item -ItemType Directory -Force $backupDir | Out-Null
 
 docker compose stop support-agent orchestration-worker camunda-worker qdrant
 $qdrantContainer = docker compose ps -aq qdrant
-$agentContainer = docker compose ps -aq support-agent
+$postgresContainer = docker compose ps -aq postgres
 
 docker run --rm --volumes-from $qdrantContainer `
   --mount "type=bind,source=$backupDir,target=/backup" `
   alpine:3.21 tar -czf /backup/qdrant_data.tar.gz -C /qdrant/storage .
 
-docker run --rm --volumes-from $agentContainer `
-  --mount "type=bind,source=$backupDir,target=/backup" `
-  alpine:3.21 tar -czf /backup/agent_data.tar.gz -C /app/data/agent .
+docker exec $postgresContainer sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /tmp/rag.dump'
+docker cp "${postgresContainer}:/tmp/rag.dump" (Join-Path $backupDir "postgres.dump")
 
-docker compose start qdrant support-agent orchestration-worker camunda-worker
+docker compose start postgres qdrant support-agent orchestration-worker camunda-worker
 ```
 
-Архивы `$HOME/rag-backups/qdrant_data.tar.gz` и `$HOME/rag-backups/agent_data.tar.gz` содержат соответственно индекс и память/инциденты. Каталог выбран вне репозитория: backup может содержать пользовательские и служебные данные, поэтому его нельзя добавлять в Git. Для восстановления сначала остановите сервисы и убедитесь, что архивы относятся к совместимой версии приложения и Qdrant. Восстановление заменяет текущее содержимое volumes, поэтому перед ним сохраните отдельную резервную копию:
+Файлы `$HOME/rag-backups/qdrant_data.tar.gz` и `$HOME/rag-backups/postgres.dump`
+содержат соответственно индекс и транзакционное состояние приложения. Каталог выбран
+вне репозитория: backup может содержать пользовательские и служебные данные, поэтому
+его нельзя добавлять в Git. Для восстановления сначала остановите сервисы и убедитесь,
+что архивы относятся к совместимым версиям приложения, PostgreSQL и Qdrant.
+Восстановление заменяет текущее содержимое, поэтому перед ним сохраните отдельную
+резервную копию:
 
 ```powershell
 docker compose stop support-agent orchestration-worker camunda-worker qdrant
 $qdrantContainer = docker compose ps -aq qdrant
-$agentContainer = docker compose ps -aq support-agent
+$postgresContainer = docker compose ps -aq postgres
 $backupDir = Join-Path $HOME "rag-backups"
 
 docker run --rm --volumes-from $qdrantContainer `
   --mount "type=bind,source=$backupDir,target=/backup,readonly" `
   alpine:3.21 sh -c 'rm -rf /qdrant/storage/* /qdrant/storage/.[!.]* /qdrant/storage/..?*; tar -xzf /backup/qdrant_data.tar.gz -C /qdrant/storage'
 
-docker run --rm --volumes-from $agentContainer `
-  --mount "type=bind,source=$backupDir,target=/backup,readonly" `
-  alpine:3.21 sh -c 'rm -rf /app/data/agent/* /app/data/agent/.[!.]* /app/data/agent/..?*; tar -xzf /backup/agent_data.tar.gz -C /app/data/agent'
+docker cp (Join-Path $backupDir "postgres.dump") "${postgresContainer}:/tmp/rag.dump"
+docker exec $postgresContainer sh -c 'pg_restore --clean --if-exists --no-owner -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/rag.dump'
 
 docker compose start qdrant support-agent orchestration-worker camunda-worker
 Invoke-RestMethod http://127.0.0.1:8000/ready
@@ -2889,7 +2950,7 @@ docker compose --profile observability --profile orchestration --profile bpmn up
 
 Обе последовательности сохраняют именованные volumes. Параметр `-v` здесь намеренно
 не используется: `docker compose down -v` необратимо удалит containerized Qdrant,
-память агента, очереди и данные observability.
+PostgreSQL с состоянием агента, очереди и данные observability.
 
 Ошибка `network <id> not found` означает, что оставшиеся контейнеры ссылаются на уже
 удалённую Compose-сеть. Обычно это происходит, если часть стека была запущена с
@@ -2947,7 +3008,7 @@ Docker-проверка:
 ```powershell
 docker compose config --quiet
 docker compose build
-docker compose up -d qdrant
+docker compose up -d postgres qdrant
 docker compose --profile indexing run --rm indexer
 docker compose up -d support-agent
 ```
@@ -2956,8 +3017,8 @@ docker compose up -d support-agent
 
 ## Ограничения
 
-- SQLite memory и incident storage рассчитаны на один API worker. `rag-support` отклоняет `service.workers != 1`.
-- Для нескольких replicas память и incidents нужно перенести в PostgreSQL или другой общий transactional store.
+- Host-профили с SQLite рассчитаны на один API worker. Docker-профили используют общий PostgreSQL и допускают `service.workers > 1`; `rag-support` запускает каждый Uvicorn worker через app factory с тем же абсолютным конфигом.
+- PostgreSQL и Qdrant опубликованы только на loopback; для внешнего production deployment нужны TLS, управляемые credentials, backup policy и сетевой ingress.
 - Embedded Qdrant используется только при локальном запуске одним процессом. Docker использует отдельный Qdrant server.
 - Local Qwen загружается один раз на процесс. Запуск Transformers с Intel Arc XPU надёжнее выполнять на Windows host; passthrough Intel XPU в Linux Docker требует отдельного Intel GPU runtime и не включён в базовый Compose.
 - SSE endpoint отдаёт события этапов и готовый результат, но не выполняет token-by-token streaming конкретного LLM provider.
@@ -2995,7 +3056,7 @@ docker compose up -d support-agent
 | `src/agent_app/multi_agent/roles.py`                                      | Role registry, цели, инструкции, tool allowlists и capability matching.                                   |
 | `src/agent_app/multi_agent/llm_routing.py`                                | Создаёт и кэширует выбранную LLM отдельно для каждой роли.                                                |
 | `src/agent_app/multi_agent/lifecycle.py`                                  | Фиксирует последовательность состояний и проверяет допустимые переходы.                                   |
-| `src/agent_app/multi_agent/persistence.py`                                | SQLite LangGraph checkpoints и восстановление истории user/session.                                       |
+| `src/agent_app/multi_agent/persistence.py`                                | LangGraph checkpoints в PostgreSQL либо local SQLite и восстановление истории user/session.                |
 | `src/agent_app/multi_agent/graph.py`                                      | Supervisor StateGraph: decompose, dispatch, review, retry и synthesize.                                   |
 | `src/agent_app/multi_agent/runtime.py`                                    | Фасад ask/compare, shared resources, persistence, export и tracking.                                      |
 | `src/agent_app/multi_agent/evaluation.py`                                 | Считает single-vs-multi критерии, latency, tool/role coverage.                                            |
@@ -3116,7 +3177,7 @@ A2A используется для взаимодействия независ�
 - HTTP+JSON REST binding под `/a2a/v1`;
 - асинхронные persistent tasks: `SendMessage` сразу возвращает `submitted`, а состояние и
   результат читаются через `GetTask`/`ListTasks`;
-- SQLite-хранилище task state с owner scope, TTL, лимитом записей и общей видимостью для
+- PostgreSQL-хранилище task state в Docker или SQLite на host с owner scope, TTL, лимитом записей и общей видимостью для
   нескольких Uvicorn workers;
 - owner-scoped отмену ещё не начатой задачи, пагинацию с непрозрачным page token, messages и artifacts;
 - `A2A-Version: 1.0` и официальный protobuf/JSON contract.
@@ -3510,7 +3571,7 @@ python -m pytest `
 
 # Инструментарий и фреймворки для мультиагентных систем
 
-Модуль реализован поверх существующего support-агента и не создаёт отдельное приложение. LangGraph управляет общим состоянием и переходами, SQLite хранит диалог и долговременную память, Qdrant выполняет семантический поиск по базе знаний, role-based allowlists ограничивают tools, а вычислительный Python-код исполняется отдельным сервисом.
+Модуль реализован поверх существующего support-агента и не создаёт отдельное приложение. LangGraph управляет общим состоянием и переходами, PostgreSQL в Docker или SQLite на host хранит диалог и долговременную память, Qdrant выполняет семантический поиск по базе знаний, role-based allowlists ограничивают tools, а вычислительный Python-код исполняется отдельным сервисом.
 
 ## Файлы раздела
 
@@ -3546,7 +3607,7 @@ python -m pytest `
 | Тема                         | Реализация в проекте                                                  | Основные файлы                                                                            |
 | ---------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | LangGraph и оркестрация      | Supervisor-граф, ветвления, retry, лимиты и checkpointing             | `src/agent_app/multi_agent/graph.py`, `runtime.py`, `persistence.py`                      |
-| Память, контекст и состояние | История сессии, summary, SQLite memory с TTL, online RAG через Qdrant | `src/agent_app/memory/`, `src/agent_app/rag/`, `src/agent_app/multi_agent/persistence.py` |
+| Память, контекст и состояние | История, summary и memory с TTL в PostgreSQL/local SQLite, online RAG через Qdrant | `src/agent_app/memory/`, `src/agent_app/rag/`, `src/agent_app/multi_agent/persistence.py` |
 | Tools и внешние API          | Function calling, OpenWeatherMap, MCP, безопасные файловые операции   | `src/agent_app/tools/`, `src/agent_app/multi_agent/roles.py`                              |
 | Code interpreter             | Отдельный ограниченный FastAPI-процесс и изолированный Docker-сервис  | `src/code_runner/`, `src/agent_app/tools/code_runner.py`, `Dockerfile.code-runner`        |
 | Инфраструктура               | Support API, Qdrant, code runner, health checks и внутренние сети     | `docker-compose.yaml`, `Dockerfile`, `config/profiles/support/`                           |
@@ -3556,9 +3617,9 @@ flowchart LR
     Request["Запрос и user_id / session_id"] --> Graph["LangGraph supervisor"]
 
     subgraph Context["Контекст и память"]
-        Checkpoint[("SQLite LangGraph checkpoints")]
+        Checkpoint[("PostgreSQL / SQLite checkpoints")]
         Summary[("Summary memory")]
-        LongTerm[("SQLite long-term memory и TTL")]
+        LongTerm[("PostgreSQL / SQLite memory и TTL")]
         Vector[("Qdrant semantic knowledge")]
     end
 
@@ -3583,7 +3644,10 @@ flowchart LR
 
 Сравнение LangGraph, CrewAI и AutoGen приведено в разделе «Выбор фреймворка мультиагентной оркестрации». Практическая реализация использует `StateGraph`: координатор декомпозирует запрос, specialist-роли выполняют задания, критик проверяет результат, а координатор синтезирует ответ. Состояние содержит задания, результаты, lifecycle, историю сообщений, routing LLM и usage; переходы ограничены `max_rounds`, `max_delegations`, timeout и token budget.
 
-Для каждого `user_id + session_id` строится непрозрачный стабильный `thread_id`. `SqliteSaver` из `langgraph-checkpoint-sqlite` сохраняет checkpoint после каждого запуска, поэтому новый HTTP-запрос или перезапуск Python-процесса продолжает тот же диалог. Истории разных пользователей не пересекаются.
+Для каждого `user_id + session_id` строится непрозрачный стабильный `thread_id`. В
+Docker официальный `PostgresSaver` сохраняет checkpoints в общем PostgreSQL, а host-режим
+использует `SqliteSaver`. Новый HTTP-запрос или перезапуск процесса продолжает тот же
+диалог; истории разных пользователей не пересекаются.
 
 Ключевые параметры находятся в `config/profiles/support/multi_agent.yaml`:
 
@@ -3604,7 +3668,7 @@ multi_agent:
 
 - краткосрочная история LangGraph содержит последние `max_history_messages` сообщений текущей сессии;
 - summary memory сжимает вытесняемую часть диалога и возвращает её координатору в следующих запросах;
-- долговременная SQLite memory хранит global user-scoped записи от `save_memory` и внутренние session-scoped записи, включая теги, importance, TTL и счётчик обращений;
+- долговременная memory хранит global user-scoped записи от `save_memory` и внутренние session-scoped записи в выбранной СУБД, включая теги, importance, TTL и счётчик обращений;
 - Qdrant хранит embeddings документов и выполняет семантический поиск для `knowledge_agent` через `search_knowledge_base` и `find_runbook`.
 
 Долговременная память ищется по ключу, значению и тегам; семантический поиск выполняется отдельно по уже построенному Qdrant-индексу. Chat LLM и embedding-модель не обязаны совпадать, но запрос и коллекция Qdrant должны использовать один embedding-профиль и одинаковую размерность vectors.
@@ -3718,6 +3782,7 @@ flowchart LR
     Client["Swagger, Postman или API client"] -- "HTTP :8000 и X-API-Key" --> Support["support-agent"]
 
     subgraph PublicNetwork["Compose default network"]
+        PostgreSQL[("PostgreSQL state и MLflow tracking")]
         Qdrant[("Qdrant server")]
         Redis[("Redis rate limiter и state")]
     end
@@ -3727,11 +3792,13 @@ flowchart LR
     end
 
     Support --> Qdrant
+    Support --> PostgreSQL
     Support --> Redis
     Support -- "CODE_RUNNER_API_KEY" --> Runner
     Embeddings["Готовые embeddings.jsonl"] --> Indexer["indexer profile"]
     Indexer --> Qdrant
-    Support --> AgentVolume[("agent_data")]
+    Indexer --> PostgreSQL
+    Support --> AgentVolume[("agent_data: workspace")]
     Support --> RunsVolume[("multi_agent_data")]
     Support --> MLflowVolume[("mlruns_data")]
 ```
@@ -3740,6 +3807,7 @@ flowchart LR
 
 | Service в Compose      | Профиль                 | Назначение и ожидаемое состояние                                                                                                                                           | Доступ с Windows host                                                            |
 | ---------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `postgres`             | базовый                 | Общая реляционная БД памяти, истории, incidents, audit, reviews, A2A tasks, LangGraph checkpoints и MLflow tracking. Должна быть `healthy`.                                | PostgreSQL `127.0.0.1:5433`; внутри Compose `postgres:5432`                       |
 | `qdrant`               | базовый                 | Сервер векторной БД: хранит отдельные collections для выбранных embedding-пространств и обслуживает retrieval. Должен быть `healthy`.                                      | REST `http://127.0.0.1:6333`, gRPC `127.0.0.1:6334`                              |
 | `support-agent`        | базовый                 | Основной FastAPI/LLM/RAG/tools/memory сервис. Читает `SUPPORT_AGENT_CONFIG` и работает постоянно.                                                                          | API `http://127.0.0.1:8000`, Swagger `/docs`                                     |
 | `code-runner`          | базовый                 | Изолированно выполняет разрешённый Python для tool `execute_python`. Работает постоянно, но доступен только `support-agent` во внутренней Docker-сети.                     | Порт не опубликован намеренно                                                    |
@@ -3758,7 +3826,7 @@ flowchart LR
 | `camunda-process-init` | `bpmn`                  | Одноразово проверяет и идемпотентно разворачивает BPMN вместе со связанной формой. `Exited (0)` означает, что ресурсы готовы.                                               | Публичного endpoint нет                                                          |
 | `camunda-worker`       | `bpmn`                  | External job worker связывает BPMN service task с orchestration/agent runtime. Работает постоянно, публичный порт ему не нужен.                                            | Публичного endpoint нет                                                          |
 
-Именованные записи `qdrant_data`, `agent_data`, `multi_agent_data`, `mlruns_data`,
+Именованные записи `postgres_data`, `qdrant_data`, `agent_data`, `multi_agent_data`, `mlruns_data`,
 `rabbitmq_data`, `redis_data`, `camunda_*`, `prometheus_data`, `alertmanager_data` и
 `grafana_data` в Docker Desktop являются volumes, а не сервисами или контейнерами. Они
 сохраняют данные между обычными `down`/`up`; команда `docker compose down -v` удалит их
@@ -3767,7 +3835,7 @@ flowchart LR
 Какие контейнеры создаёт каждая команда:
 
 ```powershell
-# Только базовый API, Qdrant и code runner
+# Базовый API, PostgreSQL, Qdrant, Redis и code runner
 docker compose up -d --build
 
 # Одноразовая индексация готовых embeddings
@@ -4128,7 +4196,7 @@ docker compose --profile orchestration ps
 docker compose --profile orchestration up -d --scale orchestration-worker=3
 ```
 
-Для OpenAI/GigaChat число процессов ограничивается provider quota и настройкой `provider_concurrency_limits`. Для Qwen на Intel Arc оставьте `ORCHESTRATION_WORKER_CONCURRENCY=1` и одну реплику worker: каждый процесс загружает собственную модель, поэтому увеличение числа реплик может привести к XPU OOM. SQLite memory, incidents и LangGraph checkpoints используют WAL и `busy_timeout`, но для production с несколькими узлами эти хранилища следует заменить внешней БД.
+Для OpenAI/GigaChat число процессов ограничивается provider quota и настройкой `provider_concurrency_limits`. Для Qwen на Intel Arc оставьте `ORCHESTRATION_WORKER_CONCURRENCY=1` и одну реплику worker: каждый процесс загружает собственную модель, поэтому увеличение числа реплик может привести к XPU OOM. Docker replicas совместно используют PostgreSQL для memory, incidents, A2A tasks и LangGraph checkpoints; SQLite с WAL остаётся только в локальном однопроцессном режиме.
 
 ## Гибридная оркестрация Camunda
 
@@ -4277,7 +4345,7 @@ docker compose --profile orchestration --profile bpmn config --quiet
 | `src/agent_app/guardrails/__init__.py`                            | Экспортирует guardrail/audit/review API.                                                                  |
 | `src/agent_app/guardrails/models.py`                              | Модели security decision, audit event и human review.                                                     |
 | `src/agent_app/guardrails/pipeline.py`                            | Input/context/output prompt-injection, privacy и unsafe-content filters.                                  |
-| `src/agent_app/guardrails/audit.py`                               | Append-only SQLite security audit с фильтрацией по пользователю/событию.                                  |
+| `src/agent_app/guardrails/audit.py`                               | Append-only security audit в PostgreSQL/local SQLite с фильтрацией по пользователю/событию.                |
 | `src/agent_app/guardrails/reviews.py`                             | Очередь human-in-the-loop review и контролируемые status transitions.                                     |
 | `src/agent_app/service/auth.py`                                   | API key/JWT validation, RBAC и user-scope authorization.                                                  |
 | `src/agent_app/observability/__init__.py`                         | Экспортирует observability setup API.                                                                     |
@@ -4340,7 +4408,7 @@ flowchart LR
     Runtime --> OutputGuard["Output privacy и safety"]
     OutputGuard --> Client
     OutputGuard --> Review["Human review"]
-    Auth --> Audit[("Append-only audit SQLite")]
+    Auth --> Audit[("Append-only audit PostgreSQL / SQLite")]
     InputGuard --> Audit
     OutputGuard --> Audit
 

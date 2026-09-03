@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from contextlib import contextmanager
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from agent_app.database import DatabaseRuntime
 from agent_app.support.security import redact_secrets
 
 IncidentStatus = Literal["open", "in_progress", "resolved", "closed"]
@@ -42,11 +42,17 @@ class IncidentRecord(BaseModel):
 class IncidentStore:
     """Отвечает за хранение и управление инцидентами, гарантируя создание, обновление и безопасный доступ с валидацией данных."""
 
-    def __init__(self, path: Path):
-        """Гарантирует готовность хранилища инцидентов к работе и создание необходимых директорий и таблиц."""
+    def __init__(self, path: Path, *, database: DatabaseRuntime | None = None):
+        """Создаёт таблицу инцидентов в общем PostgreSQL или локальном SQLite."""
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._owns_database = database is None
+        self.database = database or DatabaseRuntime(backend="sqlite")
         self._initialize()
+
+    def close(self) -> None:
+        """Закрывает самостоятельно созданный database runtime."""
+        if self._owns_database:
+            self.database.close()
 
     def create(
         self,
@@ -174,21 +180,9 @@ class IncidentStore:
                 """
             )
 
-    @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        """Гарантирует безопасное подключение к базе с поддержкой транзакций и автоматическим откатом при ошибках."""
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=30000")
-        try:
-            yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+    def _connect(self):
+        """Открывает транзакцию через общий слой persistence."""
+        return self.database.connection(self.path)
 
     @staticmethod
     def _values(record: IncidentRecord) -> tuple[object, ...]:
@@ -208,7 +202,7 @@ class IncidentStore:
         )
 
     @staticmethod
-    def _record(row: sqlite3.Row) -> IncidentRecord:
+    def _record(row: Mapping[str, Any]) -> IncidentRecord:
         """Гарантирует преобразование строки из БД в инвариантный IncidentRecord для корректной работы подсистемы поддержки."""
         return IncidentRecord(
             id=row["id"],

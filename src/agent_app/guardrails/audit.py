@@ -3,24 +3,26 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
+from agent_app.database import DatabaseRuntime
 from agent_app.guardrails.models import SecurityAuditEvent
 
 
 class SecurityAuditStore:
     """Обеспечивает надежное и потокобезопасное хранение событий аудита безопасности с гарантией атомарности операций и доступности данных для последующего анализа."""
 
-    def __init__(self, path: Path):
-        """Гарантирует потокобезопасное и атомарное хранение аудита безопасности в SQLite с созданием структуры хранения при первом запуске."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path, check_same_thread=False)
-        self._connection.row_factory = sqlite3.Row
+    def __init__(self, path: Path, *, database: DatabaseRuntime | None = None):
+        """Создаёт таблицу аудита в выбранном persistence backend."""
+        self.path = path
+        self._owns_database = database is None
+        self.database = database or DatabaseRuntime(backend="sqlite")
         self._lock = threading.RLock()
-        with self._connection:
-            self._connection.execute(
+        with self.database.connection(self.path) as connection:
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS security_audit (
                     id TEXT PRIMARY KEY,
@@ -40,8 +42,8 @@ class SecurityAuditStore:
 
     def append(self, event: SecurityAuditEvent) -> SecurityAuditEvent:
         """Гарантирует, что событие аудита будет записано в хранилище без потери данных и доступно для последующего анализа."""
-        with self._lock, self._connection:
-            self._connection.execute(
+        with self._lock, self.database.connection(self.path) as connection:
+            connection.execute(
                 "INSERT INTO security_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.id,
@@ -61,8 +63,8 @@ class SecurityAuditStore:
 
     def list(self, *, limit: int = 100) -> list[SecurityAuditEvent]:
         """Гарантирует получение последних событий аудита в порядке убывания времени без дублирования и с ограничением по количеству."""
-        with self._lock:
-            rows = self._connection.execute(
+        with self._lock, self.database.connection(self.path) as connection:
+            rows = connection.execute(
                 "SELECT * FROM security_audit ORDER BY occurred_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -70,11 +72,11 @@ class SecurityAuditStore:
 
     def close(self) -> None:
         """Гарантирует освобождение ресурсов и завершение всех операций с базой аудита без утечек."""
-        with self._lock:
-            self._connection.close()
+        if self._owns_database:
+            self.database.close()
 
     @staticmethod
-    def _record(row: sqlite3.Row) -> SecurityAuditEvent:
+    def _record(row: Mapping[str, Any]) -> SecurityAuditEvent:
         """Преобразует строку из базы в валидированное событие аудита с восстановлением структуры details."""
         payload = dict(row)
         payload["details"] = json.loads(payload.pop("details_json"))

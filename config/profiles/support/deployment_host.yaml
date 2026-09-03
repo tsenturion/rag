@@ -3,6 +3,10 @@ rag:
     mode: local
     host: localhost
 
+persistence:
+  # Локальный однопроцессный режим не требует отдельного PostgreSQL.
+  backend: sqlite
+
 service:
   host: 127.0.0.1
 

@@ -3,6 +3,15 @@ rag:
     mode: http
     host: qdrant
 
+persistence:
+  # API и фоновые workers используют одну транзакционную БД. URL приходит из
+  # AGENT_DATABASE_URL, поэтому пароль не хранится в YAML.
+  backend: postgresql
+  database_url_env: AGENT_DATABASE_URL
+  pool_min_size: 1
+  pool_max_size: 10
+  connect_timeout_seconds: 10
+
 service:
   host: 0.0.0.0
 

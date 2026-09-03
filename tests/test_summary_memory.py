@@ -17,7 +17,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from agent_app.config import load_agent_config  # noqa: E402
 from agent_app.graph import AgentRunner  # noqa: E402
-from agent_app.memory.store import SQLiteMemoryStore  # noqa: E402
+from agent_app.memory.store import MemoryStore  # noqa: E402
 from agent_app.memory.summary import SummaryMemory  # noqa: E402
 
 
@@ -49,7 +49,7 @@ class SummaryMemoryTest(unittest.TestCase):
         """Проверяет, что при достижении границы длины истории суммаризация корректно обрезает историю, сохраняя последние сообщения."""
         with tempfile.TemporaryDirectory() as temp_dir:
             summary = SummaryMemory(
-                SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite"),
+                MemoryStore(Path(temp_dir) / "memory.sqlite"),
                 user_id="user",
                 session_id="session",
                 max_chars=500,

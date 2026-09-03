@@ -13,10 +13,11 @@ from typing import Any, Iterator
 
 from agent_app.config import AgentAppConfig
 from agent_app.currency import CBRCurrencyConverter
+from agent_app.database import DatabaseRuntime
 from agent_app.graph import AgentRunner
 from agent_app.guardrails import GuardrailPipeline, HumanReviewStore, SecurityAuditStore
 from agent_app.llm import build_llm
-from agent_app.memory import SQLiteMemoryStore
+from agent_app.memory import MemoryStore
 from agent_app.models import AgentResponse
 from agent_app.multi_agent.models import (
     ComparisonScenario,
@@ -64,24 +65,39 @@ class SupportApplicationRuntime:
         *,
         llm: Any | None = None,
         rag_runtime: OnlineRagRuntime | None = None,
+        database: DatabaseRuntime | None = None,
     ):
         """Гарантирует готовность экземпляра к обслуживанию запросов, включая владение всеми необходимыми ресурсами и инициализацию зависимостей."""
         self.config = config
+        self._owns_database = database is None
+        self.database = database or DatabaseRuntime.from_config(config.persistence)
         self.currency_converter = CBRCurrencyConverter(config.currency_conversion)
         self._llm = llm
         self._llm_error: str | None = None
         self._multi_agent_error: str | None = None
         self._owns_rag = rag_runtime is None
         self.guardrails = GuardrailPipeline(config.guardrails)
-        self.security_audit = SecurityAuditStore(config.guardrails.audit_sqlite_path)
-        self.review_store = HumanReviewStore(config.guardrails.review_sqlite_path)
+        self.security_audit = SecurityAuditStore(
+            config.guardrails.audit_sqlite_path,
+            database=self.database,
+        )
+        self.review_store = HumanReviewStore(
+            config.guardrails.review_sqlite_path,
+            database=self.database,
+        )
         self.rag_runtime = rag_runtime or OnlineRagRuntime(
             config.rag, context_guardrail=self.guardrails
         )
         if rag_runtime is not None:
             rag_runtime.context_guardrail = self.guardrails
-        self.incident_store = IncidentStore(config.tools.incident_sqlite_path)
-        self.memory_store = SQLiteMemoryStore(config.memory.sqlite_path)
+        self.incident_store = IncidentStore(
+            config.tools.incident_sqlite_path,
+            database=self.database,
+        )
+        self.memory_store = MemoryStore(
+            config.memory.sqlite_path,
+            database=self.database,
+        )
         self.external_mcp_manager = ExternalMCPToolManager(config.tools.mcp_servers)
         self.external_tools = self.external_mcp_manager.start()
         self._runners: OrderedDict[tuple[str, str], AgentRunner] = OrderedDict()
@@ -303,8 +319,10 @@ class SupportApplicationRuntime:
                 ),
             }
         )
+        database = self.database.ping()
         ready = (
             llm_ready
+            and bool(database["ready"])
             and bool(rag["ready"])
             and api_key_ready
             and jwt_secret_ready
@@ -333,6 +351,7 @@ class SupportApplicationRuntime:
                 "error": self._llm_error,
             },
             "rag": rag,
+            "database": database,
             "security": {
                 "api_key_required": self.config.security.require_api_key,
                 "api_key_configured": api_key_ready,
@@ -363,7 +382,7 @@ class SupportApplicationRuntime:
         }
 
     def close(self) -> None:
-        """Дожидается активного запроса и затем закрывает общие LLM/SQLite-ресурсы."""
+        """Дожидается активных запросов и закрывает общие внешние ресурсы."""
         with self._lifecycle:
             if self._closed:
                 return
@@ -393,6 +412,8 @@ class SupportApplicationRuntime:
             self.review_store.close()
             if self._owns_rag:
                 self.rag_runtime.close()
+            if self._owns_database:
+                self.database.close()
         finally:
             with self._lifecycle:
                 self._closed = True
@@ -417,7 +438,9 @@ class SupportApplicationRuntime:
                 session_id=session_id,
                 llm=self._llm,
                 rag_runtime=self.rag_runtime,
+                memory_store=self.memory_store,
                 incident_store=self.incident_store,
+                database=self.database,
                 external_tools=self.external_tools,
             )
             self._runners[key] = runner
@@ -473,7 +496,9 @@ class SupportApplicationRuntime:
                     self.config,
                     llm=self._llm,
                     rag_runtime=self.rag_runtime,
+                    memory_store=self.memory_store,
                     incident_store=self.incident_store,
+                    database=self.database,
                     external_tools=self.external_tools,
                     currency_converter=self.currency_converter,
                 )

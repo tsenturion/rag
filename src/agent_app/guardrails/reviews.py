@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from pathlib import Path
 
+from agent_app.database import DatabaseRuntime
 from agent_app.guardrails.models import HumanReviewRecord, utc_now
 
 
 class HumanReviewStore:
     """Обеспечивает надежное хранение истории ручных проверок с гарантией целостности данных и поддержки аудита в многопоточной среде."""
 
-    def __init__(self, path: Path):
-        """Гарантирует потокобезопасное и атомарное хранение истории ручных ревью с автоматическим созданием структуры БД на диске."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path, check_same_thread=False)
-        self._connection.row_factory = sqlite3.Row
+    def __init__(self, path: Path, *, database: DatabaseRuntime | None = None):
+        """Создаёт очередь ручной проверки в общем или локальном backend."""
+        self.path = path
+        self._owns_database = database is None
+        self.database = database or DatabaseRuntime(backend="sqlite")
         self._lock = threading.RLock()
-        with self._connection:
-            self._connection.execute(
+        with self.database.connection(self.path) as connection:
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS human_reviews (
                     id TEXT PRIMARY KEY,
@@ -42,8 +42,8 @@ class HumanReviewStore:
     def create(self, record: HumanReviewRecord) -> HumanReviewRecord:
         """Гарантирует запись нового события ручного ревью в хранилище с защитой от гонок и сохранением полной информации для аудита."""
         fields = record.model_dump(mode="json")
-        with self._lock, self._connection:
-            self._connection.execute(
+        with self._lock, self.database.connection(self.path) as connection:
+            connection.execute(
                 "INSERT INTO human_reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 tuple(
                     fields[name]
@@ -77,28 +77,28 @@ class HumanReviewStore:
             params.append(status)
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
-        with self._lock:
-            rows = self._connection.execute(sql, params).fetchall()
+        with self._lock, self.database.connection(self.path) as connection:
+            rows = connection.execute(sql, params).fetchall()
         return [HumanReviewRecord.model_validate(dict(row)) for row in rows]
 
     def count(self, *, status: str | None = None) -> int:
         """Возвращает фактическое число заявок, включая накопленные до перезапуска."""
-        sql = "SELECT COUNT(*) FROM human_reviews"
+        sql = "SELECT COUNT(*) AS review_count FROM human_reviews"
         params: list[object] = []
         if status is not None:
             sql += " WHERE status = ?"
             params.append(status)
-        with self._lock:
-            row = self._connection.execute(sql, params).fetchone()
-        return int(row[0]) if row is not None else 0
+        with self._lock, self.database.connection(self.path) as connection:
+            row = connection.execute(sql, params).fetchone()
+        return int(row["review_count"]) if row is not None else 0
 
     def decide(
         self, review_id: str, *, approved: bool, reviewer_id: str, comment: str | None
     ) -> HumanReviewRecord | None:
         """Гарантирует атомарное принятие решения по ревью только в статусе 'pending' с фиксацией результата и идентификатора ревьюера."""
         status = "approved" if approved else "rejected"
-        with self._lock, self._connection:
-            cursor = self._connection.execute(
+        with self._lock, self.database.connection(self.path) as connection:
+            cursor = connection.execute(
                 """
                 UPDATE human_reviews
                 SET status = ?, reviewer_id = ?, comment = ?, updated_at = ?
@@ -108,12 +108,12 @@ class HumanReviewStore:
             )
             if cursor.rowcount == 0:
                 return None
-            row = self._connection.execute(
+            row = connection.execute(
                 "SELECT * FROM human_reviews WHERE id = ?", (review_id,)
             ).fetchone()
         return HumanReviewRecord.model_validate(dict(row))
 
     def close(self) -> None:
         """Гарантирует корректное освобождение ресурсов и завершение работы с файловым хранилищем ревью."""
-        with self._lock:
-            self._connection.close()
+        if self._owns_database:
+            self.database.close()

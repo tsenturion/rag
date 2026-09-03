@@ -8,7 +8,7 @@ from typing import Literal
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from agent_app.memory.store import SQLiteMemoryStore
+from agent_app.memory.store import MemoryStore
 
 TaskStatus = Literal["todo", "in_progress", "blocked", "done"]
 
@@ -56,7 +56,7 @@ class SummarizeProjectInput(BaseModel):
 
 
 def project_tools(
-    store: SQLiteMemoryStore,
+    store: MemoryStore,
     *,
     user_id: str,
     session_id: str,

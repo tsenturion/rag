@@ -20,9 +20,10 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from agent_app.config import AgentAppConfig
+from agent_app.database import DatabaseRuntime
 from agent_app.guardrails import GuardrailPipeline
 from agent_app.llm import build_llm
-from agent_app.memory import SQLiteMemoryStore, ShortTermMemory, SummaryMemory
+from agent_app.memory import MemoryStore, ShortTermMemory, SummaryMemory
 from agent_app.models import (
     AgentResponse,
     AgentRetrievalInfo,
@@ -47,7 +48,7 @@ SECRET_STORAGE_RE = re.compile(
 
 
 class AgentRunner:
-    """LangGraph-агент с tools и полноценной SQLite-памятью."""
+    """LangGraph-агент с tools и персистентной пользовательской памятью."""
 
     def __init__(
         self,
@@ -57,7 +58,9 @@ class AgentRunner:
         session_id: str | None = None,
         llm: Any | None = None,
         rag_runtime: OnlineRagRuntime | None = None,
+        memory_store: MemoryStore | None = None,
         incident_store: IncidentStore | None = None,
+        database: DatabaseRuntime | None = None,
         external_tools: list[BaseTool] | None = None,
     ):
         """Гарантирует готовность экземпляра к обработке запросов пользователя с изолированной памятью, инструментами и внешними зависимостями."""
@@ -65,7 +68,15 @@ class AgentRunner:
         self.guardrails = GuardrailPipeline(config.guardrails)
         self.user_id = user_id or config.memory.default_user_id
         self.session_id = session_id or config.memory.default_session_id
-        self.store = SQLiteMemoryStore(config.memory.sqlite_path)
+        runtime_database = database or getattr(memory_store, "database", None)
+        self._owns_database = runtime_database is None
+        self.database = runtime_database or DatabaseRuntime.from_config(
+            config.persistence
+        )
+        self.store = memory_store or MemoryStore(
+            config.memory.sqlite_path,
+            database=self.database,
+        )
         self.short_term = ShortTermMemory(config.agent.max_history_messages)
         self.summary = SummaryMemory(
             self.store,
@@ -99,7 +110,10 @@ class AgentRunner:
         self.incident_store = (
             incident_store
             if incident_store is not None
-            else IncidentStore(config.tools.incident_sqlite_path)
+            else IncidentStore(
+                config.tools.incident_sqlite_path,
+                database=self.database,
+            )
             if needs_support_tools
             else None
         )
@@ -282,7 +296,7 @@ class AgentRunner:
         )
 
     def _remember_turn(self, message: str, answer: str) -> None:
-        """Добавляет полный ход, применяет summary policy и сохраняет остаток в SQLite."""
+        """Добавляет полный ход, применяет summary policy и сохраняет его в persistence."""
         self.short_term.add(HumanMessage(content=message), AIMessage(content=answer))
         try:
             summarized_messages = self.summary.summarize_if_needed(
@@ -354,6 +368,8 @@ class AgentRunner:
             self._external_mcp_manager = None
         if self._owns_rag_runtime and self.rag_runtime is not None:
             self.rag_runtime.close()
+        if self._owns_database:
+            self.database.close()
 
     def _build_graph(self):
         """Гарантирует построение рабочей вычислительной схемы агента с поддержкой инструментов и защитой от зацикливания."""

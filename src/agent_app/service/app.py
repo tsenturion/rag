@@ -36,6 +36,7 @@ from prometheus_client import (
 )
 
 from agent_app.config import AgentAppConfig, load_agent_config
+from agent_app.database import DatabaseRuntime
 from agent_app.guardrails import GuardrailPipeline
 from agent_app.guardrails.models import HumanReviewRecord, SecurityAuditEvent
 from agent_app.multi_agent.protocols.a2a import install_a2a_routes
@@ -184,6 +185,10 @@ def create_app(
         config.logging.level, json_format=config.logging.json_format
     )
     owns_runtime = runtime is None
+    runtime_database = getattr(runtime, "database", None)
+    owns_database = runtime_database is None
+    database = runtime_database or DatabaseRuntime.from_config(config.persistence)
+    a2a_handler = None
     mcp_server = (
         build_mcp_server(max_log_chars=config.tools.max_log_chars)
         if config.multi_agent.enabled and config.multi_agent.protocols.mcp_enabled
@@ -193,7 +198,10 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Обеспечивает корректную инициализацию и завершение жизненного цикла приложения с управлением зависимостями и ресурсами."""
-        app.state.runtime = runtime or SupportApplicationRuntime(config)
+        app.state.runtime = runtime or SupportApplicationRuntime(
+            config,
+            database=database,
+        )
         async with AsyncExitStack() as stack:
             if mcp_server is not None:
                 await stack.enter_async_context(mcp_server.session_manager.run())
@@ -201,8 +209,12 @@ def create_app(
                 yield
             finally:
                 rate_limiter.close()
+                if a2a_handler is not None:
+                    a2a_handler.close()
                 if owns_runtime:
                     app.state.runtime.close()
+                if owns_database:
+                    database.close()
 
     app = FastAPI(
         title="ИИ-агент поддержки инженера",
@@ -1318,11 +1330,12 @@ def create_app(
             result, _ = app.state.runtime.ask_multi(**kwargs)
             return result
 
-        install_a2a_routes(
+        a2a_handler = install_a2a_routes(
             app,
             config,
             base_url=base_url,
             ask=a2a_ask,
+            database=database,
         )
 
     return app

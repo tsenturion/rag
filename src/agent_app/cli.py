@@ -306,9 +306,14 @@ def main() -> int:
         return 0
 
     if args.list_multi_agent_history:
+        from agent_app.database import DatabaseRuntime
         from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
 
-        checkpoints = MultiAgentCheckpointStore(config.multi_agent.checkpoint_path)
+        database = DatabaseRuntime.from_config(config.persistence)
+        checkpoints = MultiAgentCheckpointStore(
+            config.multi_agent.checkpoint_path,
+            database=database,
+        )
         try:
             history = [
                 {
@@ -323,6 +328,7 @@ def main() -> int:
             ]
         finally:
             checkpoints.close()
+            database.close()
         print(json.dumps(history, ensure_ascii=False, indent=2))
         return 0
 
@@ -370,37 +376,51 @@ def main() -> int:
             runtime.close()
 
     if args.list_memory:
-        from agent_app.memory import SQLiteMemoryStore
+        from agent_app.database import DatabaseRuntime
+        from agent_app.memory import MemoryStore
 
-        store = SQLiteMemoryStore(config.memory.sqlite_path)
-        records = [
-            record.model_dump(mode="json")
-            for record in store.list_memories(
-                user_id=user_id,
-                session_id=session_id,
-                limit=100,
-            )
-        ]
+        database = DatabaseRuntime.from_config(config.persistence)
+        store = MemoryStore(config.memory.sqlite_path, database=database)
+        try:
+            records = [
+                record.model_dump(mode="json")
+                for record in store.list_memories(
+                    user_id=user_id,
+                    session_id=session_id,
+                    limit=100,
+                )
+            ]
+        finally:
+            database.close()
         print(json.dumps(records, ensure_ascii=False, indent=2))
         return 0
 
     if args.clear_session_memory:
-        from agent_app.memory import SQLiteMemoryStore
+        from agent_app.database import DatabaseRuntime
+        from agent_app.memory import MemoryStore
 
-        store = SQLiteMemoryStore(config.memory.sqlite_path)
-        deleted_count = store.clear_session(user_id=user_id, session_id=session_id)
-        checkpoint_deleted = False
-        if config.multi_agent.enabled:
-            from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
+        database = DatabaseRuntime.from_config(config.persistence)
+        store = MemoryStore(config.memory.sqlite_path, database=database)
+        try:
+            deleted_count = store.clear_session(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            checkpoint_deleted = False
+            if config.multi_agent.enabled:
+                from agent_app.multi_agent.persistence import MultiAgentCheckpointStore
 
-            checkpoints = MultiAgentCheckpointStore(config.multi_agent.checkpoint_path)
-            try:
+                checkpoints = MultiAgentCheckpointStore(
+                    config.multi_agent.checkpoint_path,
+                    database=database,
+                )
                 checkpoint_deleted = checkpoints.clear(
                     user_id=user_id,
                     session_id=session_id,
                 )
-            finally:
                 checkpoints.close()
+        finally:
+            database.close()
         print(
             json.dumps(
                 {

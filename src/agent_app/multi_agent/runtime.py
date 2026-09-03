@@ -13,8 +13,10 @@ from langchain_core.tools import BaseTool
 
 from agent_app.config import AgentAppConfig
 from agent_app.currency import CBRCurrencyConverter
+from agent_app.database import DatabaseRuntime
 from agent_app.graph import AgentRunner
 from agent_app.guardrails import GuardrailPipeline
+from agent_app.memory import MemoryStore
 from agent_app.multi_agent.evaluation import assess_answer, assess_multi_response
 from agent_app.multi_agent.exporting import MultiAgentExporter
 from agent_app.multi_agent.graph import MultiAgentRunner
@@ -45,7 +47,9 @@ class MultiAgentRuntime:
         *,
         llm: Any | None = None,
         rag_runtime: OnlineRagRuntime | None = None,
+        memory_store: MemoryStore | None = None,
         incident_store: IncidentStore | None = None,
+        database: DatabaseRuntime | None = None,
         external_tools: list[BaseTool] | None = None,
         llm_registry: MultiAgentLLMRegistry | None = None,
         role_llms: dict[str, Any] | None = None,
@@ -66,10 +70,20 @@ class MultiAgentRuntime:
         self.currency_converter = currency_converter or CBRCurrencyConverter(
             config.currency_conversion
         )
+        runtime_database = database or getattr(memory_store, "database", None)
+        self._owns_database = runtime_database is None
+        self.database = runtime_database or DatabaseRuntime.from_config(
+            config.persistence
+        )
         self._owns_rag = rag_runtime is None
         self.rag_runtime = rag_runtime or OnlineRagRuntime(config.rag)
         self.incident_store = incident_store or IncidentStore(
-            config.tools.incident_sqlite_path
+            config.tools.incident_sqlite_path,
+            database=self.database,
+        )
+        self.memory_store = memory_store or MemoryStore(
+            config.memory.sqlite_path,
+            database=self.database,
         )
         self._external_mcp_manager: ExternalMCPToolManager | None = None
         if external_tools is None and config.tools.mcp_servers:
@@ -80,7 +94,8 @@ class MultiAgentRuntime:
         self.external_tools = external_tools or []
         self._owns_checkpoint_store = checkpoint_store is None
         self.checkpoint_store = checkpoint_store or MultiAgentCheckpointStore(
-            config.multi_agent.checkpoint_path
+            config.multi_agent.checkpoint_path,
+            database=self.database,
         )
         self.exporter = MultiAgentExporter(config.multi_agent.output_dir)
         self.tracker = MultiAgentTracker(config.multi_agent)
@@ -131,7 +146,9 @@ class MultiAgentRuntime:
                 session_id=session_id + "-single",
                 llm=self.llm,
                 rag_runtime=self.rag_runtime,
+                memory_store=self.memory_store,
                 incident_store=self.incident_store,
+                database=self.database,
                 external_tools=self.external_tools,
             )
             started = perf_counter()
@@ -319,6 +336,8 @@ class MultiAgentRuntime:
             self.rag_runtime.close()
         if self._owns_checkpoint_store:
             self.checkpoint_store.close()
+        if self._owns_database:
+            self.database.close()
 
     def _runner(self, *, user_id: str, session_id: str) -> MultiAgentRunner:
         """Гарантирует создание изолированного экземпляра MultiAgentRunner с корректной передачей всех зависимостей для выполнения сессии пользователя."""
@@ -328,7 +347,9 @@ class MultiAgentRuntime:
             session_id=session_id,
             llm=self.llm,
             rag_runtime=self.rag_runtime,
+            memory_store=self.memory_store,
             incident_store=self.incident_store,
+            database=self.database,
             external_tools=self.external_tools,
             llm_registry=self.llm_registry,
             checkpointer=self.checkpoint_store.saver,

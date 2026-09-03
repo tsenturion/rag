@@ -9,8 +9,12 @@ from uuid import NAMESPACE_URL, uuid5
 
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite import SqliteSaver
+
+from agent_app.database import DatabaseRuntime
 
 
 def session_thread_id(user_id: str, session_id: str) -> str:
@@ -19,19 +23,13 @@ def session_thread_id(user_id: str, session_id: str) -> str:
 
 
 class MultiAgentCheckpointStore:
-    """Владеет SQLite checkpointer и операциями над multi-agent сессиями."""
+    """Управляет LangGraph checkpoint через PostgreSQL или локальный SQLite."""
 
-    def __init__(self, path: Path):
-        """Гарантирует готовность экземпляра к потокобезопасному хранению и восстановлению чекпоинтов мультиагентных сессий с сериализацией пользовательских моделей."""
+    def __init__(self, path: Path, *, database: DatabaseRuntime | None = None):
+        """Создаёт официальный saver выбранного backend и его служебные таблицы."""
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(
-            self.path,
-            check_same_thread=False,
-            timeout=30,
-        )
-        self._connection.execute("PRAGMA journal_mode=WAL")
-        self._connection.execute("PRAGMA busy_timeout=30000")
+        self._owns_database = database is None
+        self.database = database or DatabaseRuntime(backend="sqlite")
         serializer = JsonPlusSerializer(
             allowed_msgpack_modules=[
                 ("agent_app.multi_agent.models", "AgentTask"),
@@ -40,12 +38,36 @@ class MultiAgentCheckpointStore:
                 ("agent_app.rag.models", "RagCitation"),
             ]
         )
-        self._saver = SqliteSaver(self._connection, serde=serializer)
-        self._saver.setup()
+        self._connection: sqlite3.Connection | None = None
+        if self.database.is_postgresql:
+            pool = self.database.postgres_pool
+            # API и workers могут впервые стартовать одновременно. Advisory
+            # lock сериализует DDL-миграции официального PostgresSaver.
+            with pool.connection() as setup_connection:
+                setup_connection.execute("SELECT pg_advisory_lock(73420591)")
+                try:
+                    PostgresSaver(setup_connection, serde=serializer).setup()
+                finally:
+                    setup_connection.execute("SELECT pg_advisory_unlock(73420591)")
+            self._saver: BaseCheckpointSaver = PostgresSaver(
+                pool,
+                serde=serializer,
+            )
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = sqlite3.connect(
+                self.path,
+                check_same_thread=False,
+                timeout=30,
+            )
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA busy_timeout=30000")
+            self._saver = SqliteSaver(self._connection, serde=serializer)
+            self._saver.setup()
         self._lock = threading.RLock()
 
     @property
-    def saver(self) -> SqliteSaver:
+    def saver(self) -> BaseCheckpointSaver:
         """Гарантирует доступ к низкоуровневому API сохранения и восстановления состояния сессий через потокобезопасный сериализатор."""
         return self._saver
 
@@ -79,6 +101,10 @@ class MultiAgentCheckpointStore:
         return existed
 
     def close(self) -> None:
-        """Гарантирует корректное освобождение ресурсов и завершение работы с файловым хранилищем чекпоинтов."""
+        """Закрывает SQLite connection и самостоятельно созданный database runtime."""
         with self._lock:
-            self._connection.close()
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
+            if self._owns_database:
+                self.database.close()

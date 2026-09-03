@@ -13,7 +13,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agent_app.memory.store import SQLiteMemoryStore  # noqa: E402
+from agent_app.memory.store import MemoryStore  # noqa: E402
 from agent_app.tools.memory_tools import memory_tools  # noqa: E402
 
 
@@ -23,7 +23,7 @@ class MemoryIsolationTest(unittest.TestCase):
     def test_search_falls_back_to_recent_accessible_memory(self) -> None:
         """Проверяет, что поиск памяти возвращает данные из наиболее недавней доступной сессии при отсутствии результатов в текущей."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite")
+            store = MemoryStore(Path(temp_dir) / "memory.sqlite")
             store.save(
                 user_id="user",
                 session_id="session-1",
@@ -57,7 +57,7 @@ class MemoryIsolationTest(unittest.TestCase):
     def test_memory_id_operations_are_scoped_to_current_user(self) -> None:
         """Проверяет, что операции с памятью по ID ограничены текущим пользователем и не влияют на данные других пользователей."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite")
+            store = MemoryStore(Path(temp_dir) / "memory.sqlite")
             alice_record = store.save(
                 user_id="alice",
                 session_id="alice-session",
@@ -96,7 +96,7 @@ class MemoryIsolationTest(unittest.TestCase):
     def test_tool_memory_is_available_in_following_sessions(self) -> None:
         """Проверяет сквозной поиск и изменение долговременной записи из новой сессии."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite")
+            store = MemoryStore(Path(temp_dir) / "memory.sqlite")
             first_session = {
                 tool.name: tool
                 for tool in memory_tools(
@@ -147,7 +147,7 @@ class MemoryIsolationTest(unittest.TestCase):
     ) -> None:
         """Проверяет, что записи с одинаковым ключом, но разными сессиями, хранятся и удаляются независимо, не перезаписывая друг друга."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite")
+            store = MemoryStore(Path(temp_dir) / "memory.sqlite")
             global_record = store.save(
                 user_id="user",
                 session_id=None,
@@ -187,7 +187,7 @@ class MemoryIsolationTest(unittest.TestCase):
     ) -> None:
         """Проверяет, что контекст сессии состоит только из global-памяти и её собственных записей."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            store = SQLiteMemoryStore(Path(temp_dir) / "memory.sqlite")
+            store = MemoryStore(Path(temp_dir) / "memory.sqlite")
             store.save(user_id="user", session_id=None, key="global", value="Общее")
             store.save(user_id="user", session_id="s1", key="one", value="Первая")
             store.save(user_id="user", session_id="s2", key="two", value="Вторая")

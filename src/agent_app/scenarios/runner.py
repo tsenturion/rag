@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from agent_app.config import AgentAppConfig
+from agent_app.database import DatabaseRuntime
 from agent_app.graph import AgentRunner
-from agent_app.memory import SQLiteMemoryStore
+from agent_app.memory import MemoryStore
 from agent_app.models import AgentResponse, utc_now
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.scenarios.evaluator import ScenarioEvaluator
@@ -41,11 +42,18 @@ class ScenarioRunner:
         self.config = config
         self.suite = suite
         self.config_path = config_path
-        self.store = SQLiteMemoryStore(config.memory.sqlite_path)
+        self.database = DatabaseRuntime.from_config(config.persistence)
+        self.store = MemoryStore(
+            config.memory.sqlite_path,
+            database=self.database,
+        )
         self.evaluator = ScenarioEvaluator()
         self._shared_llm: Any | None = None
         self._shared_rag = OnlineRagRuntime(config.rag) if config.rag.enabled else None
-        self._incident_store = IncidentStore(config.tools.incident_sqlite_path)
+        self._incident_store = IncidentStore(
+            config.tools.incident_sqlite_path,
+            database=self.database,
+        )
         self._external_mcp_manager = ExternalMCPToolManager(config.tools.mcp_servers)
         self._external_tools = self._external_mcp_manager.start()
 
@@ -81,6 +89,7 @@ class ScenarioRunner:
         self._external_mcp_manager.close()
         if self._shared_rag is not None:
             self._shared_rag.close()
+        self.database.close()
 
     def _report(self, scenarios: list[AgentScenario]) -> ScenarioRunReport:
         """Формирует итоговый отчёт по списку сценариев, агрегируя результаты их выполнения и определяя общий статус прохождения."""
@@ -107,7 +116,9 @@ class ScenarioRunner:
             session_id=session_id,
             llm=self._shared_llm,
             rag_runtime=self._shared_rag,
+            memory_store=self.store,
             incident_store=self._incident_store,
+            database=self.database,
             external_tools=self._external_tools,
         )
         if self._shared_llm is None:

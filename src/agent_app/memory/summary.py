@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from agent_app.memory.store import SQLiteMemoryStore
+from agent_app.memory.store import MemoryStore
 
 
 class SummaryMemory:
@@ -12,7 +12,7 @@ class SummaryMemory:
 
     def __init__(
         self,
-        store: SQLiteMemoryStore,
+        store: MemoryStore,
         *,
         user_id: str,
         session_id: str,

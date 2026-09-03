@@ -24,7 +24,8 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from agent_app.config import AgentAppConfig
 from agent_app.currency import CBRCurrencyConverter
-from agent_app.memory import SQLiteMemoryStore, SummaryMemory
+from agent_app.database import DatabaseRuntime
+from agent_app.memory import MemoryStore, SummaryMemory
 from agent_app.multi_agent.bus import AsyncMessageBus
 from agent_app.multi_agent.decomposition import TaskDecomposer
 from agent_app.multi_agent.evaluation import assess_multi_response
@@ -72,7 +73,9 @@ class MultiAgentRunner:
         session_id: str,
         llm: Any | None = None,
         rag_runtime: OnlineRagRuntime | None = None,
+        memory_store: MemoryStore | None = None,
         incident_store: IncidentStore | None = None,
+        database: DatabaseRuntime | None = None,
         external_tools: list[BaseTool] | None = None,
         llm_registry: MultiAgentLLMRegistry | None = None,
         role_llms: dict[str, Any] | None = None,
@@ -103,10 +106,19 @@ class MultiAgentRunner:
             if config.rag.enabled
             else None
         )
-        self.incident_store = incident_store or IncidentStore(
-            config.tools.incident_sqlite_path
+        runtime_database = database or getattr(memory_store, "database", None)
+        self._owns_database = runtime_database is None
+        self.database = runtime_database or DatabaseRuntime.from_config(
+            config.persistence
         )
-        self.memory_store = SQLiteMemoryStore(config.memory.sqlite_path)
+        self.incident_store = incident_store or IncidentStore(
+            config.tools.incident_sqlite_path,
+            database=self.database,
+        )
+        self.memory_store = memory_store or MemoryStore(
+            config.memory.sqlite_path,
+            database=self.database,
+        )
         self.summary = SummaryMemory(
             self.memory_store,
             user_id=user_id,
@@ -418,6 +430,8 @@ class MultiAgentRunner:
             self.llm_registry.close()
         if self._owns_rag and self.rag_runtime is not None:
             self.rag_runtime.close()
+        if self._owns_database:
+            self.database.close()
 
     def _build_graph(
         self,

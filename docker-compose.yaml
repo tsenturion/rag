@@ -15,6 +15,25 @@ services:
       timeout: 5s
       retries: 10
 
+  postgres:
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте случайный POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: ${POSTGRES_DB:-rag}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   support-agent:
     image: rag-support-agent:latest
     build:
@@ -28,6 +47,8 @@ services:
       ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:?Задайте RABBITMQ_DEFAULT_PASS в .env}@rabbitmq:5672//
       ORCHESTRATION_RESULT_BACKEND_URL: redis://redis:6379/1
       ORCHESTRATION_REDIS_URL: redis://redis:6379/0
+      AGENT_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
+      MLFLOW_TRACKING_URI: postgresql+psycopg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
       SUPPORT_CORS_ORIGINS: ${SUPPORT_CORS_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173}
     ports:
       - "127.0.0.1:8000:8000"
@@ -46,6 +67,8 @@ services:
       code-runner:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   code-runner:
@@ -77,6 +100,8 @@ services:
     profiles: ["indexing"]
     env_file:
       - .env
+    environment:
+      MLFLOW_TRACKING_URI: postgresql+psycopg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
     command:
       - rag-index
       - --config
@@ -88,6 +113,8 @@ services:
       - ./data/vector_store_docker_local:/app/data/vector_store_docker_local
     depends_on:
       qdrant:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   rabbitmq:
@@ -136,6 +163,8 @@ services:
       ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:?Задайте RABBITMQ_DEFAULT_PASS в .env}@rabbitmq:5672//
       ORCHESTRATION_RESULT_BACKEND_URL: redis://redis:6379/1
       ORCHESTRATION_REDIS_URL: redis://redis:6379/0
+      AGENT_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
+      MLFLOW_TRACKING_URI: postgresql+psycopg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
     command:
       - rag-orchestration-worker
       - --config
@@ -159,6 +188,8 @@ services:
       qdrant:
         condition: service_healthy
       code-runner:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test:
@@ -347,6 +378,8 @@ services:
       ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:?Задайте RABBITMQ_DEFAULT_PASS в .env}@rabbitmq:5672//
       ORCHESTRATION_RESULT_BACKEND_URL: redis://redis:6379/1
       ORCHESTRATION_REDIS_URL: redis://redis:6379/0
+      AGENT_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
+      MLFLOW_TRACKING_URI: postgresql+psycopg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
     command:
       - rag-camunda
       - --config
@@ -368,6 +401,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -381,6 +416,7 @@ services:
 
 volumes:
   qdrant_data:
+  postgres_data:
   agent_data:
   multi_agent_data:
   mlruns_data:

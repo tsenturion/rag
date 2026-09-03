@@ -95,6 +95,31 @@ class MemoryConfig(StrictConfigModel):
     search_limit: int = Field(default=5, ge=1)
 
 
+class PersistenceConfig(StrictConfigModel):
+    """Выбирает backend состояния без хранения реквизитов PostgreSQL в YAML.
+
+    SQLite оставлен для локальной разработки. В Docker и других production-like
+    средах используется общий PostgreSQL pool, URL которого читается из env.
+    """
+
+    backend: Literal["sqlite", "postgresql"] = "sqlite"
+    database_url_env: str = "AGENT_DATABASE_URL"
+    pool_min_size: int = Field(default=1, ge=1, le=50)
+    pool_max_size: int = Field(default=10, ge=1, le=200)
+    connect_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+
+    @model_validator(mode="after")
+    def validate_pool_bounds(self) -> PersistenceConfig:
+        """Не допускает pool, максимальный размер которого меньше минимального."""
+        if self.pool_max_size < self.pool_min_size:
+            raise ValueError(
+                "persistence.pool_max_size должен быть не меньше pool_min_size"
+            )
+        if not self.database_url_env.strip():
+            raise ValueError("persistence.database_url_env не может быть пустым")
+        return self
+
+
 class WeatherConfig(StrictConfigModel):
     """Гарантирует валидируемую конфигурацию доступа к погодному API с предсказуемыми параметрами."""
 
@@ -650,6 +675,7 @@ class AgentAppConfig(StrictConfigModel):
     model_config = ConfigDict(extra="forbid")
 
     agent: AgentConfig
+    persistence: PersistenceConfig = Field(default_factory=PersistenceConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     rag: AgentRagConfig = Field(default_factory=AgentRagConfig)
@@ -743,16 +769,15 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
     workspace_path = config.file_tools.workspace_path
     if not workspace_path.is_absolute():
         workspace_path = base_dir / workspace_path
-    tracking_uri = resolve_mlflow_tracking_uri(
-        multi_agent.mlflow_tracking_uri,
-        base_dir=base_dir,
+    tracking_uri_override = os.getenv("MLFLOW_TRACKING_URI")
+    tracking_uri = tracking_uri_override or resolve_mlflow_tracking_uri(
+        multi_agent.mlflow_tracking_uri, base_dir=base_dir
     )
     audit_sqlite_path = _resolve_path(config.guardrails.audit_sqlite_path, base_dir)
     review_sqlite_path = _resolve_path(config.guardrails.review_sqlite_path, base_dir)
     evaluation_output_dir = _resolve_path(config.evaluation.output_dir, base_dir)
-    evaluation_tracking_uri = resolve_mlflow_tracking_uri(
-        config.evaluation.mlflow_tracking_uri,
-        base_dir=base_dir,
+    evaluation_tracking_uri = tracking_uri_override or resolve_mlflow_tracking_uri(
+        config.evaluation.mlflow_tracking_uri, base_dir=base_dir
     )
 
     return config.model_copy(

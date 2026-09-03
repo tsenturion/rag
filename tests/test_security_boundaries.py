@@ -12,7 +12,7 @@ from langchain_core.tools import tool
 from agent_app.config import GuardrailsConfig
 from agent_app.guardrails import GuardrailPipeline
 from agent_app.memory.policy import validate_memory_value
-from agent_app.memory.store import SQLiteMemoryStore
+from agent_app.memory.store import MemoryStore
 from agent_app.multi_agent.exporting import MultiAgentExporter
 from agent_app.multi_agent.models import AgentTask
 from agent_app.multi_agent.models import (
@@ -174,7 +174,7 @@ def test_multi_agent_contract_is_sanitized_before_export() -> None:
 def test_project_memory_survives_session_change_for_same_user() -> None:
     """Проекты и задачи являются user-global, а не памятью одного диалога."""
     with tempfile.TemporaryDirectory() as temporary_dir:
-        store = SQLiteMemoryStore(Path(temporary_dir) / "memory.sqlite")
+        store = MemoryStore(Path(temporary_dir) / "memory.sqlite")
         first = {
             tool.name: tool
             for tool in project_tools(store, user_id="alice", session_id="s1")

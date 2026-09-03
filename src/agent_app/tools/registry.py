@@ -5,7 +5,7 @@ from __future__ import annotations
 from langchain_core.tools import BaseTool
 
 from agent_app.config import AgentAppConfig
-from agent_app.memory.store import SQLiteMemoryStore
+from agent_app.memory.store import MemoryStore
 from agent_app.rag.runtime import OnlineRagRuntime
 from agent_app.support.incidents import IncidentStore
 from agent_app.tools.calculator import calculator_tool
@@ -21,7 +21,7 @@ from agent_app.tools.weather import weather_tool
 
 def build_tools(
     config: AgentAppConfig,
-    store: SQLiteMemoryStore,
+    store: MemoryStore,
     *,
     user_id: str,
     session_id: str,
@@ -65,7 +65,8 @@ def build_tools(
     enabled = set(config.tools.enabled)
     if config.rag.enabled or enabled.intersection(support_tool_names):
         effective_incident_store = incident_store or IncidentStore(
-            config.tools.incident_sqlite_path
+            config.tools.incident_sqlite_path,
+            database=store.database,
         )
         tools.extend(
             support_tools(

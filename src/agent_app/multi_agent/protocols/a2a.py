@@ -52,6 +52,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from starlette.requests import Request
 
 from agent_app.config import AgentAppConfig
+from agent_app.database import DatabaseRuntime
 from agent_app.guardrails import GuardrailPipeline
 from agent_app.multi_agent.models import MultiAgentRunResult
 from agent_app.multi_agent.sanitization import (
@@ -136,6 +137,10 @@ class MultiAgentA2AHandler(RequestHandler):
             raise ValueError("request_max_chars должен быть положительным")
         self.request_max_chars = request_max_chars
         self._futures: dict[str, asyncio.Task[None]] = {}
+
+    def close(self) -> None:
+        """Закрывает принадлежащие A2A-хранилищу ресурсы persistence."""
+        self.store.close()
 
     async def on_message_send(
         self,
@@ -526,6 +531,7 @@ def install_a2a_routes(
     *,
     base_url: str,
     ask: A2AAsk,
+    database: DatabaseRuntime | None = None,
 ) -> MultiAgentA2AHandler:
     """Устанавливает все публичные маршруты межагентного взаимодействия и возвращает готовый обработчик для FastAPI-приложения."""
     card = build_agent_card(config, base_url=base_url)
@@ -536,6 +542,7 @@ def install_a2a_routes(
             config.multi_agent.protocols.a2a_task_store_path,
             ttl_seconds=config.multi_agent.protocols.a2a_task_ttl_seconds,
             max_tasks=config.multi_agent.protocols.a2a_max_tasks,
+            database=database,
         ),
         GuardrailPipeline(config.guardrails),
         request_max_chars=config.service.request_max_chars,

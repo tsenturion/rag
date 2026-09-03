@@ -7,7 +7,7 @@ import json
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from agent_app.memory.store import SQLiteMemoryStore
+from agent_app.memory.store import MemoryStore
 from agent_app.models import MemoryType
 
 VALID_MEMORY_TYPES: set[str] = {"fact", "preference", "task", "summary", "note"}
@@ -81,7 +81,7 @@ class ClearSessionMemoryInput(BaseModel):
 
 
 def memory_tools(
-    store: SQLiteMemoryStore,
+    store: MemoryStore,
     *,
     user_id: str,
     session_id: str,
