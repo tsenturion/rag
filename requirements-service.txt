@@ -35,5 +35,5 @@ tiktoken==0.13.0
 uvicorn==0.52.0
 celery==5.6.3
 redis==8.0.1
-flower==2.0.1
+flower==2.1.0
 camunda-orchestration-sdk==9.0.1
