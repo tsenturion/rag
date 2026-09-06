@@ -14,7 +14,7 @@ psycopg[binary,pool]==3.3.5
 mcp==1.28.1
 mlflow==3.15.2
 numpy==2.4.6
-openai==2.50.0
+openai==3.7.0
 portalocker==3.2.0
 prometheus-client==0.26.0
 PyJWT==2.13.0
