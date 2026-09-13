@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Проверить надёжность agent runtime
-        uses: trustabl/trustabl-action@748a5fdd0c329a20c1f1b42efec47a4de6bede67 # v0.4.2
+        uses: trustabl/trustabl-action@d97575c864814bf4965fa2c72c044224d372723a # v0.4.3
         with:
           version: v0.1.6
           detectors: langchain,mcp,openai_sdk
