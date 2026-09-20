@@ -1,0 +1,6 @@
+# Используется только при генерации OpenAPI; lifespan и локальная модель не запускаются.
+agent:
+  provider: local
+  model: schema-only
+web:
+  enabled: true

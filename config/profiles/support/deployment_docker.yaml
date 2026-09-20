@@ -3,6 +3,11 @@ rag:
     mode: http
     host: qdrant
 
+web:
+  operations_catalog: config/web_operations_docker.yaml
+  # Compose публикуется на loopback; внешний HTTPS использует Secure cookie.
+  cookie_secure: false
+
 persistence:
   # API и фоновые workers используют одну транзакционную БД. URL приходит из
   # AGENT_DATABASE_URL, поэтому пароль не хранится в YAML.

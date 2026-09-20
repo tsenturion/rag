@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Воспроизводимый пайплайн подготовки источников для RAG."
 requires-python = ">=3.13"
 dependencies = [
+  "argon2-cffi>=25.1.0,<26",
   "a2a-sdk>=1.1.2,<2",
   "protobuf>=6.33.6,<7",
   "langchain-core>=1.6.0,<2",
@@ -107,6 +108,7 @@ rag-orchestration-worker = "agent_app.orchestration.worker_cli:main"
 rag-camunda = "agent_app.orchestration.camunda_cli:main"
 rag-eval = "agent_app.evaluation.cli:main"
 rag-db = "agent_app.database_cli:main"
+rag-web = "agent_app.service.web_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

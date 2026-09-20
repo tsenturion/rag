@@ -18,6 +18,19 @@ jobs:
     name: Python и конфигурации
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.4-alpine
+        env:
+          POSTGRES_USER: web_test
+          POSTGRES_PASSWORD: isolated-ci-password
+          POSTGRES_DB: web_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U web_test -d web_test"
+          --health-interval 5s --health-timeout 5s --health-retries 15
+    env:
+      TEST_POSTGRES_URL: postgresql://web_test:isolated-ci-password@127.0.0.1:5432/web_test
     steps:
       - name: Получить исходный код
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +73,20 @@ jobs:
             -q
           python -m coverage report --fail-under=80
           python -m coverage xml -o artifacts/coverage.xml
+
+      - name: Настроить Node для проверки API-контракта
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: frontend/.node-version
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Проверить актуальность типов frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run api:generate
+          git diff --exit-code -- src/shared/api/schema.d.ts
 
       - name: Сохранить отчёт тестов
         if: always()
@@ -131,7 +158,7 @@ jobs:
             --request PUT 'http://127.0.0.1:6333/collections/rag_ci_smoke/points?wait=true' \
             --header 'Content-Type: application/json' \
             --data '{"points":[{"id":"00000000-0000-4000-8000-000000000001","vector":[1,0,0],"payload":{"text":"CI knowledge","chunk_id":"ci-chunk","document_id":"ci-document","source":"ci.txt","section":"CI","embedding_provider":"openai","embedding_model":"text-embedding-3-small","metadata":{"id":"ci-chunk","document_id":"ci-document","source":"ci.txt","section":"CI","position":0,"embedding_provider":"openai","embedding_model":"text-embedding-3-small"}}}]}'
-          docker compose --profile orchestration up -d orchestration-worker support-agent
+          docker compose --profile orchestration --profile web-operations up -d orchestration-worker support-agent web-worker
 
       - name: Дождаться полной readiness
         shell: bash
@@ -210,10 +237,20 @@ jobs:
           test "$status" = "400"
           grep --quiet "prompt injection" /tmp/guardrail.json
 
+      - name: Проверить браузерный вход и постоянную очередь операций
+        run: |
+          for attempt in {1..30}; do
+            if docker compose --profile web-operations exec -T web-worker sh -c 'rag-web --config "$SUPPORT_AGENT_CONFIG" worker-health'; then
+              break
+            fi
+            sleep 2
+          done
+          docker compose exec -T support-agent python scripts/check_web_integrations.py
+
       - name: Показать логи при ошибке
         if: failure()
-        run: docker compose --profile orchestration logs --no-color
+        run: docker compose --profile orchestration --profile web-operations logs --no-color
 
       - name: Остановить smoke-окружение
         if: always()
-        run: docker compose --profile orchestration down --volumes --remove-orphans
+        run: docker compose --profile orchestration --profile web-operations down --volumes --remove-orphans

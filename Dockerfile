@@ -21,8 +21,9 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY config ./config
 COPY bpmn ./bpmn
+COPY scripts/check_web_integrations.py ./scripts/check_web_integrations.py
 RUN python -m pip install --no-deps . \
-    && mkdir -p /app/data/agent /app/data/embeddings_openai \
+    && mkdir -p /app/data/agent /app/data/web /app/data/logs /app/data/embeddings_openai \
         /app/data/embeddings_local /app/data/models \
         /app/data/multi_agent /app/data/orchestration \
         /app/data/vector_store_docker_openai \

@@ -1,0 +1,80 @@
+# Пути относятся к этому каталогу; браузер отправляет только идентификатор профиля.
+prepare:
+  title: Подготовка документов
+  kind: prepare
+  config: default.yaml
+chunk-openai:
+  title: Чанкинг для OpenAI
+  kind: chunk
+  config: chunking_openai.yaml
+  parameters: [chunking.chunk_size, chunking.chunk_overlap, chunking.max_chunk_tokens]
+chunk-local:
+  title: Чанкинг для локальных embeddings
+  kind: chunk
+  config: chunking_local.yaml
+  parameters: [chunking.chunk_size, chunking.chunk_overlap, chunking.max_chunk_tokens]
+embed-openai:
+  title: OpenAI embeddings
+  kind: embed
+  config: embeddings_openai.yaml
+  parameters: [embedding.batch_size, embedding.normalize]
+embed-local:
+  title: Локальные embeddings
+  kind: embed
+  config: embeddings_local.yaml
+  parameters: [embedding.batch_size, embedding.normalize]
+index-openai:
+  title: Индексация OpenAI embeddings
+  kind: index
+  config: vector_store_openai.yaml
+index-local:
+  title: Индексация локальных embeddings
+  kind: index
+  config: vector_store_local.yaml
+evaluate-openai:
+  title: Проверка качества OpenAI
+  kind: evaluation
+  config: support_agent_openai.yaml
+  suite: evaluation/engineering_support_cases.yaml
+  parameters: [evaluation.repeats]
+evaluate-gigachat:
+  title: Проверка качества GigaChat
+  kind: evaluation
+  config: support_agent_gigachat_openai_embeddings.yaml
+  suite: evaluation/engineering_support_cases.yaml
+  parameters: [evaluation.repeats]
+evaluate-local:
+  title: Проверка качества локальной модели
+  kind: evaluation
+  config: support_agent_local.yaml
+  suite: evaluation/engineering_support_cases.yaml
+scenarios-openai:
+  title: Сценарии агента OpenAI
+  kind: scenarios
+  config: agent_openai.yaml
+  suite: agent_scenarios.yaml
+tuning-inspect:
+  title: Проверка устройства для обучения
+  kind: tuning-inspect
+  config: fine_tuning.yaml
+tuning-validate:
+  title: Валидация обучающих данных
+  kind: tuning-validate
+  config: fine_tuning.yaml
+tuning-baseline:
+  title: Baseline локальной модели
+  kind: tuning-baseline
+  config: fine_tuning.yaml
+tuning-train:
+  title: Обучение LoRA/QLoRA
+  kind: tuning-train
+  config: fine_tuning.yaml
+  parameters: [training.learning_rate, training.num_train_epochs, training.per_device_train_batch_size, training.max_steps, peft.r, peft.lora_alpha, peft.lora_dropout]
+tuning-evaluate:
+  title: Оценка обученного адаптера
+  kind: tuning-evaluate
+  config: fine_tuning.yaml
+tuning-compare:
+  title: Сравнение baseline и адаптера
+  kind: tuning-compare
+  config: fine_tuning.yaml

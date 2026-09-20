@@ -27,6 +27,10 @@ TABLE_SOURCES = (
     ("guardrails.audit_sqlite_path", "security_audit", "id"),
     ("guardrails.review_sqlite_path", "human_reviews", "id"),
     ("multi_agent.protocols.a2a_task_store_path", "a2a_tasks", "task_id"),
+    ("web.sqlite_path", "web_users", "username"),
+    ("web.sqlite_path", "web_sources", "id"),
+    ("web.sqlite_path", "web_operations", "id"),
+    ("web.sqlite_path", "web_operation_definitions", "id"),
 )
 
 
@@ -67,6 +71,11 @@ def _initialize_schema(
     IncidentStore(config.tools.incident_sqlite_path, database=database)
     SecurityAuditStore(config.guardrails.audit_sqlite_path, database=database)
     HumanReviewStore(config.guardrails.review_sqlite_path, database=database)
+    from agent_app.service.accounts import AccountStore
+    from agent_app.service.operation_store import OperationStore
+
+    AccountStore(database, config.web).initialize()
+    OperationStore(database, config.web).initialize()
     a2a_store = A2ATaskStore(
         config.multi_agent.protocols.a2a_task_store_path,
         ttl_seconds=config.multi_agent.protocols.a2a_task_ttl_seconds,

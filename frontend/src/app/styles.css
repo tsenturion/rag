@@ -1,0 +1,234 @@
+@import 'tailwindcss';
+
+/* Нейтральные токены каркаса: визуальная система уточняется по будущим референсам. */
+@theme {
+  --font-sans: Arial, sans-serif;
+  --color-accent: #16715b;
+}
+@layer base {
+  :root {
+    color: #242a29;
+    background: #f6f8f7;
+    font-family: Arial, sans-serif;
+    letter-spacing: 0;
+  }
+  body {
+    margin: 0;
+  }
+  h1 {
+    font-size: 1.5rem;
+    font-weight: 650;
+    margin-bottom: 1.5rem;
+  }
+  h2 {
+    font-size: 1.125rem;
+    font-weight: 600;
+  }
+  button,
+  input {
+    font: inherit;
+  }
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+  button {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: wait;
+    opacity: 0.6;
+  }
+  :focus-visible {
+    outline: 2px solid #137d68;
+    outline-offset: 3px;
+  }
+  input {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid #a9b3ae;
+    padding: 0.65rem;
+    border-radius: 4px;
+    background: white;
+  }
+  p {
+    margin: 0.6rem 0;
+  }
+  pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 0.85rem;
+  }
+}
+@layer components {
+  .workspace {
+    min-height: 100dvh;
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+  .sidebar {
+    background: #fff;
+    border-right: 1px solid #d9dfdc;
+    display: flex;
+    flex-direction: column;
+    padding: 1.3rem 1rem;
+    gap: 2rem;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    font-weight: 650;
+  }
+  .brand svg {
+    flex-shrink: 0;
+    color: #16715b;
+  }
+  nav {
+    display: grid;
+    gap: 0.25rem;
+  }
+  nav a {
+    padding: 0.55rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    text-decoration: none;
+  }
+  nav a:hover {
+    background: #f1f4f2;
+  }
+  nav a.router-link-active {
+    background: #e1f0e9;
+    color: #0d5745;
+  }
+  .identity {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-top: auto;
+    overflow-wrap: anywhere;
+  }
+  .content {
+    padding: 2rem;
+    min-width: 0;
+  }
+  .page-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+    gap: 1rem;
+  }
+  .page-heading h1 {
+    margin: 0;
+  }
+  .icon-button {
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #b7c4bc;
+    border-radius: 4px;
+    flex: 0 0 36px;
+    background: white;
+  }
+  .login-layout {
+    max-width: 400px;
+    margin: 12dvh auto 0;
+    padding: 1.5rem;
+  }
+  .login-form {
+    display: grid;
+    gap: 0.75rem;
+  }
+  .login-form h2 {
+    margin-bottom: 0.75rem;
+  }
+  .primary-button {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0.7rem 1rem;
+    border-radius: 4px;
+    background: #16715b;
+    color: white;
+    margin-top: 0.75rem;
+  }
+  .error-text {
+    color: #a92738;
+  }
+  .notice {
+    padding: 1rem;
+    border-left: 3px solid #b44823;
+    background: #fff5f0;
+    overflow-wrap: anywhere;
+  }
+  .notice a {
+    text-decoration: underline;
+  }
+  .empty-state {
+    padding: 3rem 0;
+    color: #626c67;
+    border-top: 1px solid #d9dfdc;
+  }
+  .table-scroll {
+    overflow-x: auto;
+  }
+  table {
+    width: 100%;
+    min-width: 600px;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  th,
+  td {
+    text-align: left;
+    padding: 0.85rem 0.75rem;
+    border-bottom: 1px solid #d9dfdc;
+    overflow-wrap: anywhere;
+  }
+  th {
+    color: #59665e;
+    font-weight: 600;
+  }
+  .identifier {
+    font-size: 0.8rem;
+  }
+  .skip-link {
+    position: absolute;
+    transform: translateY(-200%);
+    padding: 1rem;
+    background: white;
+    z-index: 5;
+  }
+  .skip-link:focus {
+    transform: translateY(0);
+  }
+  @media (max-width: 720px) {
+    .workspace {
+      grid-template-columns: minmax(0, 1fr);
+      align-content: start;
+    }
+    .sidebar {
+      border-right: 0;
+      border-bottom: 1px solid #d9dfdc;
+      gap: 1rem;
+    }
+    nav {
+      display: flex;
+      overflow-x: auto;
+    }
+    nav a {
+      flex: 0 0 auto;
+    }
+    .content {
+      padding: 1.25rem;
+    }
+    .identity {
+      margin-top: 0;
+    }
+  }
+}

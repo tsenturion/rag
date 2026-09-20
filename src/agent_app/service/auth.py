@@ -26,6 +26,15 @@ class Permission(StrEnum):
     REVIEW_WRITE = "review:write"
     AUDIT_READ = "audit:read"
     METRICS_READ = "metrics:read"
+    MEMORY_READ = "memory:read"
+    MEMORY_WRITE = "memory:write"
+    INCIDENT_READ = "incident:read"
+    INCIDENT_WRITE = "incident:write"
+    KNOWLEDGE_READ = "knowledge:read"
+    KNOWLEDGE_WRITE = "knowledge:write"
+    OPERATION_READ = "operation:read"
+    OPERATION_WRITE = "operation:write"
+    ADMIN_WRITE = "admin:write"
 
 
 class Principal(BaseModel):
@@ -38,12 +47,22 @@ class Principal(BaseModel):
 
 ROLE_PERMISSIONS: dict[str, set[Permission]] = {
     "viewer": {
+        Permission.MEMORY_READ,
+        Permission.INCIDENT_READ,
+        Permission.KNOWLEDGE_READ,
+        Permission.OPERATION_READ,
         Permission.SESSION_READ,
         Permission.RUN_READ,
         Permission.ORCHESTRATION_READ,
         Permission.METRICS_READ,
     },
     "engineer": {
+        Permission.MEMORY_READ,
+        Permission.MEMORY_WRITE,
+        Permission.INCIDENT_READ,
+        Permission.INCIDENT_WRITE,
+        Permission.KNOWLEDGE_READ,
+        Permission.OPERATION_READ,
         Permission.CHAT,
         Permission.SESSION_READ,
         Permission.SESSION_DELETE,
@@ -51,7 +70,7 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.ORCHESTRATION_READ,
         Permission.ORCHESTRATION_WRITE,
     },
-    "operator": set(Permission) - {Permission.AUDIT_READ},
+    "operator": set(Permission) - {Permission.AUDIT_READ, Permission.ADMIN_WRITE},
     "admin": set(Permission),
     "service": set(Permission),
 }

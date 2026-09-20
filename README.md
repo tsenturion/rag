@@ -206,10 +206,10 @@ mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port
 | `sse-starlette`                   | Потоковые ответы `/v1/chat/stream` по Server-Sent Events     | [sse-starlette](https://github.com/sysid/sse-starlette), [SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html)                                         |
 | OpenAPI, Swagger UI, ReDoc        | Контракт API и интерактивная документация `/docs` и `/redoc` | [OpenAPI](https://spec.openapis.org/oas/latest.html), [Swagger UI](https://swagger.io/tools/swagger-ui/), [ReDoc](https://redocly.com/docs/redoc/)                              |
 | Postman                           | Импорт OpenAPI, environment variables и ручная проверка API  | [Postman](https://learning.postman.com/docs/getting-started/overview/), [environments](https://learning.postman.com/docs/sending-requests/variables/managing-environments/)     |
-| Vite                              | Будущий dev/preview server web-клиента и CORS origins        | [Vite](https://vite.dev/guide/), [server options](https://vite.dev/config/server-options.html)                                                                                 |
-| React или Vue                     | Будущий компонентный web-интерфейс поверх одного API         | [React](https://react.dev/), [Vue](https://vuejs.org/guide/introduction.html)                                                                                                  |
-| Tailwind CSS                      | Будущий utility-first слой оформления интерфейса             | [Tailwind CSS](https://tailwindcss.com/docs/installation/using-vite)                                                                                                          |
-| `openapi-typescript`              | Будущая генерация TypeScript-типов из backend-контракта      | [openapi-typescript](https://openapi-ts.dev/introduction)                                                                                                                     |
+| Vite                              | Dev/preview server Vue-клиента и proxy к API                 | [Vite](https://vite.dev/guide/), [server options](https://vite.dev/config/server-options.html)                                                                                 |
+| Vue, Pinia, Vue Router            | Scaffold web-интерфейса, состояние входа и маршрутизация     | [Vue](https://vuejs.org/guide/introduction.html), [Pinia](https://pinia.vuejs.org/), [Vue Router](https://router.vuejs.org/)                                                   |
+| Tailwind CSS                      | Слой оформления web-интерфейса                               | [Tailwind CSS](https://tailwindcss.com/docs/installation/using-vite)                                                                                                          |
+| `openapi-typescript`              | Генерация TypeScript-типов из backend-контракта              | [openapi-typescript](https://openapi-ts.dev/introduction)                                                                                                                     |
 | `PyJWT` и RBAC                    | JWT-аутентификация, роли и разграничение доступа             | [PyJWT](https://pyjwt.readthedocs.io/en/stable/), [JWT RFC 7519](https://www.rfc-editor.org/rfc/rfc7519), [NIST RBAC](https://csrc.nist.gov/projects/role-based-access-control) |
 | Docker, Docker Compose            | Воспроизводимый образ, сервисы и локальный deploy            | [Dockerfile](https://docs.docker.com/reference/dockerfile/), [Docker Compose](https://docs.docker.com/compose/)                                                                 |
 
@@ -270,6 +270,7 @@ mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --host 127.0.0.1 --port
 | `rag-agent`                | Один запрос агенту, сценарии, multi-agent режим, MCP и управление orchestration-заданиями       | CLI-клиент          |
 | `rag-support`              | HTTP API агента с LLM, RAG, tools, memory, Swagger и протоколами                               | Долгоживущий API    |
 | `rag-support-openapi`      | Экспорт фактической OpenAPI-схемы для frontend-клиента без запуска LLM                         | Batch export        |
+| `rag-web`                  | Создание web-пользователей, запуск worker операций и проверка его heartbeat                    | CLI/worker          |
 | `llm-tune`                 | Проверка окружения, LoRA/QLoRA fine-tuning, evaluation и локальная генерация                   | Batch/обучение      |
 | `rag-code-runner`          | Отдельный изолированный HTTP-сервис выполнения разрешённого Python-кода                        | Долгоживущий API    |
 | `rag-orchestration-worker` | Celery worker для распределённого выполнения заданий из RabbitMQ                              | Долгоживущий worker |
@@ -2520,11 +2521,12 @@ Endpoints:
 
 Для API-key режима передаётся `X-API-Key`. Значение читается из `SUPPORT_SERVICE_API_KEY`; ключ не должен находиться в YAML или Docker image.
 
-## Backend-контракт для будущего web-интерфейса
+## Backend-контракт web-интерфейса
 
-На этом этапе frontend-пакет и Node.js-зависимости намеренно не создаются. Backend уже
-подготовлен к следующему этапу с Vite и одним из компонентных фреймворков React или Vue;
-Tailwind будет подключаться только в самом web-приложении и не влияет на HTTP-контракт.
+Backend web-контура и Vue scaffold этапов 1+2 реализованы. В `frontend/` есть вход,
+общий layout, навигация по feature flags и permissions и read-only списки ресурсов.
+Формы, карточки деталей, полноценный чат, управление операциями и observability UI
+относятся к этапам 3+ и пока не считаются реализованными.
 
 Frontend начинает работу с `GET /v1/app/config`. Ответ позволяет включать элементы
 интерфейса по реальным возможностям выбранного backend-профиля, показывает лимит длины
@@ -2572,20 +2574,22 @@ SUPPORT_CORS_ORIGINS=https://support.example.com,https://support-preview.example
 ```
 
 Также принимается JSON-массив строк. Wildcard `*`, URL с путём и не-HTTP(S) значения
-отклоняются при загрузке конфигурации. Для frontend используются заголовки
-`Authorization`, `Content-Type`, `X-Request-ID`; ответы открывают браузеру
-`X-Request-ID` и `Retry-After`. Cookie-аутентификация сейчас не используется, поэтому
-`cors_allow_credentials` оставлен `false`.
+отклоняются при загрузке конфигурации. Для frontend используются cookie, заголовки
+`Content-Type`, `X-CSRF-Token` и `X-Request-ID`; ответы открывают браузеру
+`X-Request-ID` и `Retry-After`, а CORS разрешает credentials только для явно заданных
+origins. `POST /v1/auth/login` выдаёт host-only `HttpOnly` cookie,
+`GET /v1/auth/session` восстанавливает principal и CSRF, а
+`POST /v1/auth/logout` отзывает серверную сессию.
 
-Для production web-клиента нужен короткоживущий Bearer JWT, выданный внешним identity
-provider или gateway. Нельзя помещать `SUPPORT_SERVICE_API_KEY`, `SUPPORT_JWT_SECRET`,
+Для внешних API-клиентов по-прежнему доступны API key и, при включении, Bearer JWT.
+Нельзя помещать `SUPPORT_SERVICE_API_KEY`, `SUPPORT_JWT_SECRET`,
 `OPENAI_API_KEY`, `GIGACHAT_AUTH_KEY` и другие серверные секреты в переменные с
 префиксом `VITE_`: Vite встраивает их в публичный JavaScript bundle. Сервисный
 `X-API-Key` допустим для Swagger, Postman и server-to-server интеграций, но не для
 публичного браузерного приложения.
 
-`POST /v1/chat/stream` использует POST и допускает `Authorization`, поэтому будущий
-клиент должен читать `text/event-stream` через `fetch()` и `ReadableStream`, а не через
+`POST /v1/chat/stream` использует POST, поэтому клиент этапа 3+ должен читать
+`text/event-stream` через `fetch()` и `ReadableStream`, а не через
 нативный `EventSource`, который не позволяет отправить такое тело и произвольный
 заголовок. События имеют типы `started`, `result` и `error`; proxy buffering отключается
 заголовком `X-Accel-Buffering: no`.
@@ -2969,6 +2973,168 @@ Invoke-RestMethod http://127.0.0.1:8000/ready
 работает. Для обновления исходного кода или images вместо этой процедуры используйте
 `pwsh -File scripts/rebuild_docker.ps1`: скрипт пересоздаёт API и workers на одном
 image digest и также сохраняет volumes.
+
+## Web-интерфейс инженерной поддержки
+
+В `frontend/` находится scaffold Vue-приложения этапа 2: браузерный вход, общий
+layout, RBAC/feature-aware навигация и read-only списки диалогов, источников,
+инцидентов, памяти, проектов, запусков, оркестрации, операций, review, интеграций и
+пользователей. Формы, предметные detail pages, полноценный чат, evaluation,
+fine-tuning и observability UI относятся к следующим этапам и пока не считаются
+реализованными. Полная карта engineer/operator/admin сценариев, данные, действия,
+permissions, ошибки и будущие маршруты описаны в
+[контракте frontend-сценариев](docs/frontend_scenarios.md).
+
+### Запуск frontend
+
+Frontend закреплён на Node.js 24 (`frontend/.node-version`) и TypeScript 5.9 из-за
+peer-контракта OpenAPI toolchain. Из корня репозитория перейдите в `frontend`:
+
+```powershell
+Set-Location frontend
+npm ci
+npm run api:generate
+npm run check
+npm run build
+```
+
+Dev-server запускается в новом окне PowerShell из корня репозитория и занимает
+терминал до `Ctrl+C`:
+
+```powershell
+Set-Location frontend
+npm run dev
+```
+
+Откройте `http://127.0.0.1:5173`; backend и worker запускайте из корня проекта во
+втором терминале.
+
+`npm run api:generate` экспортирует фактическую FastAPI OpenAPI-схему через
+`config/web_contract.yaml` без запуска LLM и генерирует типы клиента. Pinia хранит
+только bootstrap/auth/CSRF, а TanStack Vue Query — серверные ресурсы и их cache.
+Переменные `VITE_*` попадают в публичный bundle: сервисные ключи, JWT secret и ключи
+LLM в них помещать нельзя.
+
+### Структура реализации
+
+| Файл или каталог | Назначение |
+| --- | --- |
+| `src/agent_app/service/web_config.py` | Лимиты загрузки и операций, TTL сессий, cookie и каталог разрешённых профилей. |
+| `src/agent_app/service/accounts.py` | Пароли Argon2id, пользователи, отзываемые сессии и общие счётчики попыток входа в SQL. |
+| `src/agent_app/service/browser_auth.py` | Вход, восстановление сессии, logout, CSRF и административные маршруты. |
+| `src/agent_app/service/operation_store.py` | Постоянная очередь, owner scope, идемпотентность, атомарный claim, lease и отмена. |
+| `src/agent_app/service/operations.py` | Валидация профилей, снимки конфигурации, загрузка источников и изоляция артефактов. |
+| `src/agent_app/service/resource_routes.py` | HTTP-контракт списков, изменений ресурсов, запуска операций и просмотра результатов. |
+| `src/agent_app/service/web_cli.py` | Создание первого администратора и отдельный worker с управлением дочерними CLI-процессами. |
+| `frontend/src/app`, `frontend/src/pages` | Каркас, маршрутизация, ленивые страницы и проверка разрешений. |
+| `frontend/src/features/auth`, `frontend/src/features/resources` | Вход и списки реальных ресурсов; запросы, компоненты и состояние сгруппированы по функции. |
+| `frontend/src/shared/api`, `frontend/src/shared/lib` | Сгенерированные типы OpenAPI, HTTP-клиент, обработка ошибок и общий QueryClient. |
+| `frontend/tests`, `tests/test_web_*.py` | Unit/E2E клиента, авторизация, изоляция ресурсов и очередь на SQLite/PostgreSQL. |
+| `scripts/check_web_integrations.py` | Проверка настоящего HTTP-сервиса, worker и браузерного входа без вызовов LLM. |
+| `docs/frontend_scenarios.md` | Сценарии, карта экранов, права, состояния ошибок и границы последующих этапов UI. |
+
+Конфигурация разделена по назначению:
+
+- `config/profiles/support/base.yaml` включает web API, браузерные сессии и основной
+  каталог операций;
+- host- и Docker-deployment профили задают `cookie_secure` и Docker override каталога;
+- `config/web_contract.yaml` используется только для безопасной генерации OpenAPI;
+- `config/web_operations.yaml` содержит host-профили, а
+  `config/web_operations_docker.yaml` заменяет только контейнерные конфиги;
+- `frontend/.env.example` содержит публичный `VITE_API_BASE_URL` и серверный для Vite
+  `API_PROXY_TARGET`.
+
+### Браузерный вход и worker операций
+
+Вернуться из `frontend/` в корень и создать администратора для host API. Пароль не
+передаётся аргументом и вводится скрыто через `getpass` (минимум 12 символов,
+Argon2id):
+
+```powershell
+Set-Location ..
+rag-web --config config/support_agent_openai.yaml create-user admin `
+  --name "Администратор" `
+  --role admin
+```
+
+Запустить host worker длительных операций:
+
+```powershell
+rag-web --config config/support_agent_openai.yaml worker
+```
+
+Cookie браузера имеет `HttpOnly`, `SameSite=Lax` и host-only scope. Значение
+`Secure=false` допустимо только для loopback HTTP; для HTTPS задайте
+`SUPPORT_COOKIE_SECURE=true`. Существующий API key/JWT доступ сохраняется для
+API-клиентов.
+
+Операции и их состояния сохраняются в SQLite на host или общей PostgreSQL в Docker.
+Worker исполняет subprocess только из зарегистрированных backend-профилей
+`config/web_operations.yaml`: браузер не может передать shell-команду или путь к
+конфигу, а редактируемые параметры ограничены разрешёнными числовыми/булевыми полями.
+При постановке backend валидирует параметры штатной Pydantic-схемой и сохраняет
+неизменяемый snapshot профиля, итоговой конфигурации и suite. Последующее изменение
+YAML не меняет уже поставленную операцию. Точные профили, их параметры, цепочки входов
+и ограничения зафиксированы в
+[контракте frontend-сценариев](docs/frontend_scenarios.md#замороженный-контракт-операций).
+Web-индексация публикует данные в общую коллекцию базы знаний и всегда выполняется
+инкрементально: `recreate_collection=false` и `prune_stale_points=false` задаются
+worker принудительно.
+Отмена и журналы доступны через API; execution logs удаляются через 30 дней.
+Наличие профиля не гарантирует capability. Текущий Docker image не содержит
+`unstructured` и `llama_index`, поэтому `prepare` и оба `chunk-*` имеют
+`worker_ready=false`. Для остальных профилей heartbeat текущего образа проходит
+package-level проверку, но модели, данные и provider keys валидируются уже при
+выполнении операции. Для host worker полного конвейера установите полные зависимости
+из `requirements.txt`. Большие модели и датасеты автоматически не загружаются.
+
+Docker-сервис `web-worker` включается отдельным профилем `web-operations`, использует
+общую с API PostgreSQL и разделяемые volumes `web_data`/`logs_data`:
+
+```powershell
+docker compose --profile web-operations build support-agent web-worker
+docker compose --profile web-operations up -d --force-recreate support-agent web-worker
+docker compose --profile web-operations logs -f web-worker
+```
+
+Первого администратора Docker нужно создавать внутри `support-agent`, чтобы аккаунт
+попал в общую PostgreSQL, а конфигурация точно совпала с API:
+
+```powershell
+docker compose exec support-agent sh -c 'rag-web --config "$SUPPORT_AGENT_CONFIG" create-user admin --name "Администратор" --role admin'
+```
+
+Host-команда выше пишет в SQLite host-профиля и не создаёт пользователя в Docker
+PostgreSQL.
+
+Для полного prepare/chunk на host запускайте worker вместе с host API-профилем и тем
+же корнем путей. Смешивать host worker с Docker API только через общую PostgreSQL
+нельзя: сохранённые в snapshot host- и container-пути различаются.
+
+По умолчанию web-контур ограничивает загрузку 20 МиБ, выполнение операции одним часом,
+100 одновременно ожидающими/выполняемыми операциями и lease worker в 60 секунд.
+Фактические значения публикуются backend; frontend не должен дублировать их
+константами.
+
+Проверить уже запущенные API и настоящий worker без LLM и embeddings:
+
+```powershell
+python scripts/check_web_integrations.py --base-url http://127.0.0.1:8000
+```
+
+Дополнительная проверка входа через поднятый Vite запускает Playwright:
+
+```powershell
+python scripts/check_web_integrations.py `
+  --base-url http://127.0.0.1:8000 `
+  --browser-url http://127.0.0.1:5173
+```
+
+Скрипт проверяет login, cookie/CSRF, пользовательские ресурсы, отзыв временного
+аккаунта и реальный `tuning-inspect` через постоянный SQL worker. Он не вызывает LLM;
+временные аккаунты в `finally` деактивируются. Требуется
+`SUPPORT_SERVICE_API_KEY` из `.env`, а для browser-варианта также установленные
+frontend-зависимости.
 
 ## Сценарии support-агента
 
@@ -4646,9 +4812,10 @@ OpenAI/GigaChat/OpenWeather/Hugging Face интеграции остаются �
 
 ## CI/CD и контроль поставки
 
-Репозиторий содержит четыре независимых GitHub Actions workflow:
+Репозиторий содержит пять независимых GitHub Actions workflow:
 
 - `.github/workflows/quality.yaml` запускается для pull request, push в перечисленные в нём ветки и вручную. Он проверяет зависимости, Ruff, агентные и оркестрационные тесты, сохраняет JUnit-отчёт, собирает Docker-образы и выполняет реальный HTTP smoke test контейнеров;
+- `.github/workflows/frontend.yaml` проверяет TypeScript, ESLint, форматирование, unit-тесты, production-сборку и браузерные сценарии Chromium на desktop/mobile. В `quality.yaml` дополнительно проверяются актуальность сгенерированных API-типов и SQL-транзакции на настоящем PostgreSQL;
 - `.github/workflows/agent-security.yaml` выполняет локальный статический анализ Trustabl для LangChain, MCP и OpenAI-контуров, проверяет зависимости по OSV, публикует SARIF/JSON-артефакты и блокирует только находки уровня `high` или `critical`;
 - `.github/workflows/live-api.yaml` запускается только вручную и выполняет реальные запросы к выбранным внешним интеграциям через проектный код: OpenAI и GigaChat через `AgentRunner`, OpenWeatherMap через `get_weather`, Hugging Face через проверку токена Hub; перед GigaChat-вызовом workflow проверяет SHA-256 DER-отпечаток и срок действия включённого корневого сертификата Минцифры;
 - `.github/workflows/container-release.yaml` при теге `v*` или ручном запуске публикует `support-agent` и `code-runner` в GitHub Container Registry. Тег текущей ветки/релиза создаётся всегда, а `latest` - только для тега или ручного запуска из `main`; образы получают BuildKit cache, SBOM и provenance attestation;

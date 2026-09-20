@@ -4,9 +4,42 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
+from pathlib import Path
 from datetime import datetime, timezone
 
 from agent_app.support.security import redact_secrets
+
+
+class RetainedFileHandler(logging.Handler):
+    """Пишет отдельный JSONL на процесс и день, удаляя журналы старше 30 суток."""
+
+    def __init__(self, directory: Path):
+        """Разделение по PID исключает конфликт ротации нескольких Uvicorn workers."""
+        super().__init__()
+        self.directory = directory.resolve()
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.last_cleanup = 0.0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Проверяет TTL при записи; JSON-формат всегда маскирует секреты."""
+        try:
+            now = time.time()
+            if now - self.last_cleanup > 3600:
+                for path in self.directory.glob("service-*.jsonl"):
+                    if (
+                        not path.is_symlink()
+                        and path.stat().st_mtime < now - 30 * 86400
+                    ):
+                        path.unlink(missing_ok=True)
+                self.last_cleanup = now
+            day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            path = self.directory / f"service-{day}-{os.getpid()}.jsonl"
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(JsonLogFormatter().format(record) + "\n")
+        except OSError:
+            self.handleError(record)
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -55,6 +88,10 @@ def configure_service_logging(level: str, *, json_format: bool) -> None:
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
     if not root.handlers:
         root.addHandler(logging.StreamHandler())
+    if not any(isinstance(handler, RetainedFileHandler) for handler in root.handlers):
+        root.addHandler(
+            RetainedFileHandler(Path(os.getenv("SUPPORT_LOG_DIR", "data/logs")))
+        )
     formatter: logging.Formatter
     if json_format:
         formatter = JsonLogFormatter()

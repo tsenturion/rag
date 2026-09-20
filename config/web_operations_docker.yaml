@@ -1,0 +1,13 @@
+extends: [web_operations.yaml]
+index-openai:
+  config: vector_store_docker_openai.yaml
+index-local:
+  config: vector_store_docker_local.yaml
+evaluate-openai:
+  config: support_agent_docker_openai.yaml
+evaluate-gigachat:
+  config: support_agent_docker_gigachat_openai_embeddings.yaml
+evaluate-local:
+  config: support_agent_docker_local.yaml
+scenarios-openai:
+  config: support_agent_docker_openai.yaml

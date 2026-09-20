@@ -18,7 +18,8 @@ $compose = @(
     "compose",
     "--profile", "observability",
     "--profile", "orchestration",
-    "--profile", "bpmn"
+    "--profile", "bpmn",
+    "--profile", "web-operations"
 )
 
 function Get-DotEnvValue {
@@ -95,6 +96,7 @@ $agentServices = @(
     "support-agent",
     "orchestration-worker",
     "camunda-worker",
+    "web-worker",
     "flower"
 )
 $digests = foreach ($service in $agentServices) {

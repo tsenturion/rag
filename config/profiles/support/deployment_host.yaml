@@ -3,6 +3,10 @@ rag:
     mode: local
     host: localhost
 
+web:
+  # Локальный HTTP; для HTTPS используйте SUPPORT_COOKIE_SECURE=true.
+  cookie_secure: false
+
 persistence:
   # Локальный однопроцессный режим не требует отдельного PostgreSQL.
   backend: sqlite

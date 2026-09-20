@@ -22,6 +22,12 @@ PENDING_STATUSES = {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.RETRYING}
 class JobStore(Protocol):
     """Определяет интерфейс для хранения и управления состояниями заданий, обеспечивая атомарность операций и контроль ресурсов."""
 
+    def list_for_user(
+        self, user_id: str, *, after: str = "", limit: int = 50
+    ) -> list[JobRecord]:
+        """Возвращает ограниченную страницу заданий одного владельца."""
+        ...
+
     def save(self, record: JobRecord) -> None:
         """Сохраняет актуальное состояние задания."""
         ...
@@ -136,6 +142,21 @@ class InMemoryJobStore:
         self._slots: dict[str, set[str]] = {}
         self._run_claims: dict[str, tuple[str, float]] = {}
         self._lock = threading.RLock()
+
+    def list_for_user(
+        self, user_id: str, *, after: str = "", limit: int = 50
+    ) -> list[JobRecord]:
+        """Порядок по UUID не меняется при конкурентных сменах статуса."""
+        with self._lock:
+            records = sorted(
+                (
+                    record
+                    for record in self._records.values()
+                    if record.job.user_id == user_id and record.job.id > after
+                ),
+                key=lambda record: record.job.id,
+            )
+            return [record.model_copy(deep=True) for record in records[:limit]]
 
     def save(self, record: JobRecord) -> None:
         """Гарантирует атомарное сохранение полной копии состояния задания в памяти."""
@@ -371,6 +392,23 @@ class RedisJobStore:
         self.prefix = prefix.rstrip(":")
         self.state_ttl_seconds = state_ttl_seconds
         self.event_limit = event_limit
+
+    def list_for_user(
+        self, user_id: str, *, after: str = "", limit: int = 50
+    ) -> list[JobRecord]:
+        """SCAN не блокирует Redis; ограниченный heap удерживает только текущую страницу."""
+        import heapq
+
+        def records():
+            """Пропускает истёкшие ключи между SCAN и GET, сохраняя изоляцию владельца."""
+            for key in self.client.scan_iter(match=f"{self.prefix}:job:*", count=200):
+                payload = self.client.get(key)
+                if payload:
+                    record = JobRecord.model_validate_json(payload)
+                    if record.job.user_id == user_id and record.job.id > after:
+                        yield record
+
+        return heapq.nsmallest(limit, records(), key=lambda record: record.job.id)
 
     def save(self, record: JobRecord) -> None:
         """Атомарно обновляет запись и индекс её текущего статуса."""

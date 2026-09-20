@@ -1,0 +1,54 @@
+name: Проверка frontend
+
+on:
+  push:
+    branches: [main, multi-agent]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Vue и Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Настроить Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Установить зависимости
+        run: npm ci
+
+      - name: Проверить типы, стиль, тесты и сборку
+        run: npm run check
+
+      - name: Установить Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Выполнить браузерные тесты
+        run: npm run test:e2e
+
+      - name: Сохранить отчёт Playwright
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14

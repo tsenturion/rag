@@ -25,7 +25,12 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import (
+    APIKeyCookie,
+    APIKeyHeader,
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+)
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
@@ -56,6 +61,11 @@ from agent_app.orchestration.models import (
 from agent_app.orchestration.service import OrchestrationService
 from agent_app.service.runtime import SupportApplicationRuntime
 from agent_app.service.auth import AuthManager, Permission, Principal
+from agent_app.service.accounts import AccountStore
+from agent_app.service.browser_auth import cookie_principal, install_browser_auth
+from agent_app.service.operation_store import OperationStore
+from agent_app.service.operations import OperationService
+from agent_app.service.resource_routes import install_resource_routes
 from agent_app.service.rate_limit import TokenBucketRateLimiter
 from agent_app.service.schemas import (
     ApiError,
@@ -146,7 +156,7 @@ def _error_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
     """Формирует стандартные HTTP-ответы с описаниями ошибок для заданных кодов, обеспечивая единообразие обработки ошибок в API."""
     descriptions = {
         400: "Запрос отклонён guardrail-проверкой.",
-        401: "API key отсутствует или некорректен.",
+        401: "Учётные данные отсутствуют, недействительны или срок сессии истёк.",
         403: "Роль не имеет требуемого разрешения.",
         404: "Задание или ресурс не найден.",
         409: "Операция конфликтует с текущим состоянием задания.",
@@ -188,6 +198,9 @@ def create_app(
     runtime_database = getattr(runtime, "database", None)
     owns_database = runtime_database is None
     database = runtime_database or DatabaseRuntime.from_config(config.persistence)
+    accounts = AccountStore(database, config.web)
+    operation_store = OperationStore(database, config.web)
+    operation_service = OperationService(operation_store)
     a2a_handler = None
     mcp_server = (
         build_mcp_server(max_log_chars=config.tools.max_log_chars)
@@ -198,6 +211,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Обеспечивает корректную инициализацию и завершение жизненного цикла приложения с управлением зависимостями и ресурсами."""
+        if config.web.enabled:
+            accounts.initialize()
+            operation_store.initialize()
         app.state.runtime = runtime or SupportApplicationRuntime(
             config,
             database=database,
@@ -223,7 +239,8 @@ def create_app(
             "API итогового агента инженерной поддержки. Агент выбирает tools через "
             "LLM, извлекает подтверждённый контекст из Qdrant, возвращает citations "
             "и сохраняет user-scoped память. Защищённые операции принимают "
-            "сервисный `X-API-Key` или ролевой `Bearer JWT`."
+            "сервисный `X-API-Key`, ролевой `Bearer JWT` или браузерную HttpOnly "
+            "cookie. Изменения через cookie требуют `X-CSRF-Token`."
         ),
         version="1.1.0",
         docs_url="/docs",
@@ -249,13 +266,15 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origins=config.service.cors_origins,
-            allow_credentials=config.service.cors_allow_credentials,
-            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_credentials=config.service.cors_allow_credentials
+            or config.web.enabled,
+            allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
             allow_headers=[
                 "Authorization",
                 "Content-Type",
                 "X-API-Key",
                 "X-Request-ID",
+                "X-CSRF-Token",
             ],
             expose_headers=["X-Request-ID", "Retry-After"],
             max_age=config.service.cors_max_age_seconds,
@@ -344,7 +363,9 @@ def create_app(
             config.multi_agent.protocols.mcp_path,
         )
         protocol_auth_enabled = (
-            config.security.require_api_key or config.security.jwt_enabled
+            config.security.require_api_key
+            or config.security.jwt_enabled
+            or config.web.enabled
         )
         is_protected_protocol = any(
             request.url.path == path or request.url.path.startswith(path + "/")
@@ -363,9 +384,8 @@ def create_app(
                 else None
             )
             try:
-                principal = auth_manager.authenticate(
-                    api_key=request.headers.get("X-API-Key"),
-                    bearer_token=bearer_token,
+                principal = resolve_principal(
+                    request, request.headers.get("X-API-Key"), bearer_token
                 )
                 auth_manager.authorize(principal, Permission.CHAT)
                 if config.security.rate_limit_enabled:
@@ -400,14 +420,22 @@ def create_app(
             content_length_value = int(content_length) if content_length else 0
         except ValueError:
             content_length_value = 0
-        if content_length_value > config.service.request_max_chars * 4:
+        is_upload = (
+            request.url.path == "/v1/knowledge/sources" and request.method == "POST"
+        )
+        body_limit = (
+            config.web.upload_max_bytes
+            if is_upload
+            else config.service.request_max_chars * 4
+        )
+        if content_length_value > body_limit:
             return _error_response(
                 request,
                 status.HTTP_413_CONTENT_TOO_LARGE,
                 "request_too_large",
                 "Размер HTTP-запроса превышает допустимый предел.",
             )
-        if request.method in {"POST", "PUT", "PATCH"}:
+        if request.method in {"POST", "PUT", "PATCH"} and not is_upload:
             # Content-Length может отсутствовать при chunked transfer encoding.
             # Читаем тело один раз: Starlette кэширует bytes для FastAPI parser.
             body = await request.body()
@@ -421,6 +449,8 @@ def create_app(
         started = perf_counter()
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
+        if request.url.path.startswith("/v1/"):
+            response.headers["Cache-Control"] = "no-store"
         route_object = request.scope.get("route")
         route = getattr(route_object, "path", request.url.path)
         # StreamingResponse начинает исполнять generator уже после возврата из
@@ -466,18 +496,39 @@ def create_app(
                 )
         return response
 
+    browser_cookie = APIKeyCookie(
+        name=config.web.cookie_name,
+        scheme_name="BrowserSession",
+        description=(
+            "HttpOnly cookie выдаётся через /v1/auth/login. Изменяющие запросы "
+            "дополнительно требуют X-CSRF-Token из /v1/auth/session."
+        ),
+        auto_error=False,
+    )
+
     def authenticate(
         request: Request,
         supplied: str | None = Security(API_KEY_HEADER),
         credentials: HTTPAuthorizationCredentials | None = Security(BEARER_SCHEME),
+        _cookie: str | None = Security(browser_cookie),
     ) -> Principal:
-        """Гарантирует аутентификацию пользователя по API-ключу или токену и сохраняет результат в состоянии запроса."""
-        principal = auth_manager.authenticate(
-            api_key=supplied,
-            bearer_token=(credentials.credentials if credentials else None),
+        """Объявляет способы входа в OpenAPI; проверка cookie и CSRF централизована в resolve_principal."""
+        principal = resolve_principal(
+            request, supplied, credentials.credentials if credentials else None
         )
         request.state.principal = principal
         return principal
+
+    def resolve_principal(
+        request: Request, api_key: str | None, bearer_token: str | None
+    ) -> Principal:
+        """Cookie не даёт обойти CSRF; явно переданные API credentials проверяются отдельно."""
+        if config.web.enabled:
+            if not (api_key or bearer_token):
+                return cookie_principal(request, accounts)
+            if api_key and not config.security.require_api_key:
+                raise HTTPException(401, "API-key аутентификация отключена.")
+        return auth_manager.authenticate(api_key=api_key, bearer_token=bearer_token)
 
     def require_permission(permission: Permission):
         """Проверяет, что вызывающий обладает требуемым разрешением, и прерывает выполнение при отсутствии прав."""
@@ -672,6 +723,8 @@ def create_app(
             provider=config.agent.provider,
             model=config.agent.model,
             features=AppFeatureFlags(
+                resource_management=config.web.enabled,
+                operations=config.web.enabled,
                 rag=config.rag.enabled,
                 multi_agent=config.multi_agent.enabled,
                 orchestration=config.orchestration.enabled,
@@ -689,12 +742,15 @@ def create_app(
                 ),
             ),
             authentication=AppAuthenticationConfig(
+                browser_session_enabled=config.web.enabled,
                 api_key_enabled=config.security.require_api_key,
                 jwt_enabled=config.security.jwt_enabled,
                 user_scope_enforced=config.security.enforce_user_scope,
             ),
             limits=AppLimitsConfig(
                 request_max_chars=config.service.request_max_chars,
+                upload_max_bytes=config.web.upload_max_bytes,
+                operation_timeout_seconds=config.web.operation_timeout_seconds,
                 max_history_messages=config.agent.max_history_messages,
                 rate_limit_enabled=rate_limit_enabled,
                 rate_limit_requests_per_minute=(
@@ -1338,6 +1394,10 @@ def create_app(
             database=database,
         )
 
+    install_browser_auth(app, config, accounts, authenticate, require_permission)
+    install_resource_routes(
+        app, config, operation_service, require_permission, authenticate
+    )
     return app
 
 

@@ -42,7 +42,7 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    environment:
+    environment: &support_environment
       SUPPORT_AGENT_CONFIG: ${SUPPORT_AGENT_CONFIG:?Задайте явный provider-конфиг в .env}
       ORCHESTRATION_BROKER_URL: amqp://${RABBITMQ_DEFAULT_USER:-rag}:${RABBITMQ_DEFAULT_PASS:?Задайте RABBITMQ_DEFAULT_PASS в .env}@rabbitmq:5672//
       ORCHESTRATION_RESULT_BACKEND_URL: redis://redis:6379/1
@@ -50,14 +50,24 @@ services:
       AGENT_DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
       MLFLOW_TRACKING_URI: postgresql+psycopg://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env}@postgres:5432/${POSTGRES_DB:-rag}
       SUPPORT_CORS_ORIGINS: ${SUPPORT_CORS_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173}
+      SUPPORT_LOG_DIR: /app/data/logs
     ports:
       - "127.0.0.1:8000:8000"
-    volumes:
+    volumes: &support_volumes
       - agent_data:/app/data/agent
       - multi_agent_data:/app/data/multi_agent
+      - web_data:/app/data/web
+      - logs_data:/app/data/logs
       - mlruns_data:/app/mlruns
       - ./data/models:/app/data/models:ro
       - ./data/certs:/app/data/certs:ro
+      - ./data/raw:/app/data/raw:ro
+      - ./data/prepared:/app/data/prepared:ro
+      - ./data/chunks_openai:/app/data/chunks_openai:ro
+      - ./data/chunks_local:/app/data/chunks_local:ro
+      - ./data/embeddings_openai:/app/data/embeddings_openai:ro
+      - ./data/embeddings_local:/app/data/embeddings_local:ro
+      - ./data/fine_tuning:/app/data/fine_tuning:ro
     networks:
       - default
       - code_runner_internal
@@ -70,6 +80,35 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+
+  web-worker:
+    image: rag-support-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["web-operations"]
+    restart: unless-stopped
+    env_file: [.env]
+    environment: *support_environment
+    volumes: *support_volumes
+    command: ["sh", "-c", "exec rag-web --config \"$$SUPPORT_AGENT_CONFIG\" worker"]
+    networks: [default, code_runner_internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      code-runner:
+        condition: service_healthy
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD-SHELL", "rag-web --config \"$$SUPPORT_AGENT_CONFIG\" worker-health"]
+      interval: 20s
+      timeout: 15s
+      start_period: 45s
+      retries: 3
 
   code-runner:
     image: rag-code-runner:latest
@@ -418,6 +457,8 @@ volumes:
   qdrant_data:
   postgres_data:
   agent_data:
+  web_data:
+  logs_data:
   multi_agent_data:
   mlruns_data:
   rabbitmq_data:

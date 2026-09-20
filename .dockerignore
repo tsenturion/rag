@@ -12,3 +12,13 @@ data/fine_tuning
 mlruns
 tests
 data/multi_agent
+data/web
+data/logs
+frontend/node_modules
+frontend/dist
+frontend/coverage
+frontend/test-results
+frontend/playwright-report
+AGENTS.md
+CLAUDE.md
+GEMINI.md

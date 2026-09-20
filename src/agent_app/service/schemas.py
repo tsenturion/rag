@@ -122,6 +122,8 @@ class AppFeatureFlags(BaseModel):
 
     chat: bool = True
     streaming: bool = True
+    resource_management: bool = False
+    operations: bool = False
     rag: bool
     multi_agent: bool
     orchestration: bool
@@ -138,12 +140,19 @@ class AppAuthenticationConfig(BaseModel):
     user_scope_enforced: bool
     api_key_header: str = "X-API-Key"
     bearer_scheme: str = "Bearer"
+    browser_session_enabled: bool = False
+    csrf_header: str = "X-CSRF-Token"
 
 
 class AppLimitsConfig(BaseModel):
     """Публикует ограничения, необходимые клиентской валидации запросов."""
 
     request_max_chars: int
+    upload_max_bytes: int = 20971520
+    upload_extensions: list[str] = Field(
+        default_factory=lambda: ["pdf", "txt", "html", "csv"]
+    )
+    operation_timeout_seconds: int = 3600
     max_history_messages: int
     rate_limit_enabled: bool
     rate_limit_requests_per_minute: int | None = None

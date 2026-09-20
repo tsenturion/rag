@@ -90,6 +90,13 @@ service:
   # Внешний URL задаётся явно в deployment-профиле или SUPPORT_PUBLIC_BASE_URL.
   public_base_url: null
 
+web:
+  enabled: true
+  cookie_secure: true
+  session_ttl_seconds: 28800
+  operations_catalog: config/web_operations.yaml
+  data_dir: data/web
+
 security:
   api_key_env: SUPPORT_SERVICE_API_KEY
   api_key_role: service

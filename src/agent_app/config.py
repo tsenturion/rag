@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from rag_prep.config import EmbeddingConfig, VectorStoreConfig
 from rag_prep.config_composition import apply_rag_profile, load_composed_yaml
 from rag_prep.mlflow_uri import resolve_mlflow_tracking_uri
+from agent_app.service.web_config import WebConfig
 
 DEFAULT_GIGACHAT_MODEL_PRIORITY = [
     "GigaChat-3-Ultra",
@@ -676,6 +677,7 @@ class AgentAppConfig(StrictConfigModel):
 
     agent: AgentConfig
     persistence: PersistenceConfig = Field(default_factory=PersistenceConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     rag: AgentRagConfig = Field(default_factory=AgentRagConfig)
@@ -782,6 +784,22 @@ def load_agent_config(path: str | Path) -> AgentAppConfig:
 
     return config.model_copy(
         update={
+            "web": config.web.model_copy(
+                update={
+                    "sqlite_path": _resolve_path(config.web.sqlite_path, base_dir),
+                    "operations_catalog": _resolve_path(
+                        config.web.operations_catalog, base_dir
+                    ),
+                    "data_dir": _resolve_path(config.web.data_dir, base_dir),
+                    "cookie_secure": WebConfig.model_validate(
+                        {
+                            "cookie_secure": os.getenv(
+                                "SUPPORT_COOKIE_SECURE", str(config.web.cookie_secure)
+                            )
+                        }
+                    ).cookie_secure,
+                }
+            ),
             "agent": agent,
             "memory": config.memory.model_copy(
                 update={"sqlite_path": sqlite_path.resolve()}

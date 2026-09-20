@@ -7,6 +7,16 @@ artifacts/
 .env.*
 !.env.example
 AGENTS.md
+CLAUDE.md
+GEMINI.md
+data/web/
+data/logs/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+frontend/.cache/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
